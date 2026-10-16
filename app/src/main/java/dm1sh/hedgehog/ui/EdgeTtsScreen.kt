@@ -179,12 +179,10 @@ fun EdgeTtsScreen(
         },
         bottomBar = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                if (vm.activeMainTab == MainTab.BOOK || vm.runWork) {
-                    ConversionActionDock(
-                        vm = vm,
-                        onRequestNativePicker = onRequestNativePicker
-                    )
-                }
+                ConversionActionDock(
+                    vm = vm,
+                    onRequestNativePicker = onRequestNativePicker
+                )
                 NavigationBar {
                     NavigationBarItem(
                         selected = vm.activeMainTab == MainTab.BOOK,
