@@ -1,0 +1,1512 @@
+package dm1sh.hedgehog.ui
+
+import android.app.Application
+import android.media.MediaPlayer
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import dm1sh.hedgehog.accessibility.ScreenReaderTts
+import dm1sh.hedgehog.book.ProcessingFile
+import dm1sh.hedgehog.book.TextsConverter
+import dm1sh.hedgehog.data.SettingsRepository
+import dm1sh.hedgehog.localization.LocalizationManager
+import dm1sh.hedgehog.model.AppSettings
+import dm1sh.hedgehog.model.PartStatus
+import dm1sh.hedgehog.service.ForegroundWorkService
+import dm1sh.hedgehog.tts.OfflineInstaller
+import dm1sh.hedgehog.tts.OfflineTtsEngine
+import dm1sh.hedgehog.tts.SecMsGecGenerator
+import dm1sh.hedgehog.tts.SocketEdgeTtsWorker
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+enum class SettingsTab {
+    VOICE, BOOK, TOOL, INTERFACE
+}
+
+enum class FileDialogPurpose {
+    NONE, OPEN_BOOKS, SAVE_DIR, LOAD_DIR, LEXX_FILE, GLAV_MP3
+}
+
+enum class DopModal {
+    NONE, REGEX_GLAVA, RECYCLE_BIN
+}
+
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    val repo = SettingsRepository(application)
+    val localization = LocalizationManager(application)
+    val screenReader = ScreenReaderTts(application) {
+        refreshUiTtsList()
+    }
+
+    var settings by mutableStateOf(repo.loadSettings())
+        private set
+
+    var localeVersion by mutableIntStateOf(0)
+        private set
+
+    // Dropdown lists
+    val voicesList = mutableStateListOf<String>()
+    val languagesList = mutableStateListOf<String>()
+    val uiTtsList = mutableStateListOf<String>()
+
+    var voicesDropdownOpen by mutableStateOf(false)
+    var languagesDropdownOpen by mutableStateOf(false)
+    var uiTtsDropdownOpen by mutableStateOf(false)
+
+    // UI navigation states
+    var activeSettingsTab by mutableStateOf(SettingsTab.VOICE)
+    var dopModal by mutableStateOf(DopModal.NONE)
+    var fileDialogPurpose by mutableStateOf(FileDialogPurpose.NONE)
+
+    // Chapter modal temp states
+    var tempRegexGlava by mutableStateOf("")
+    var tempGlavMp3Use by mutableStateOf(false)
+    var tempGlavTextUse by mutableStateOf(false)
+    var tempGlavMp3Path by mutableStateOf("")
+
+    // Status & progress states
+    var statInfo by mutableStateOf("")
+    var statInfoDoneHighlight by mutableStateOf(false)
+    var statStr by mutableStateOf("0 / 0")
+    var totalPartsCount by mutableIntStateOf(0)
+    var elapsedTimeText by mutableStateOf("")
+    var elapsedVisible by mutableStateOf(false)
+    var workFinished by mutableStateOf(true)
+
+    var progressBarVisible by mutableStateOf(false)
+    var progressBarValue by mutableIntStateOf(0)
+    var progressBarMax by mutableIntStateOf(1)
+
+    val partStatuses = mutableStateListOf<PartStatus>()
+
+    // Conversion state
+    var runWork by mutableStateOf(false)
+        private set
+    var workPaused by mutableStateOf(false)
+        private set
+
+    var onlineVoicesBusy by mutableStateOf(false)
+        private set
+    var offlineVoicesBusy by mutableStateOf(false)
+        private set
+
+    // Book & Part Editor state
+    private var book: ProcessingFile? = null
+    var bookLoaded by mutableStateOf(false)
+        private set
+    private val filesList = mutableListOf<String>()
+    private var lexxRules: List<String> = emptyList()
+    private var numTextCounter = 0
+
+    var textAreaText by mutableStateOf("")
+    var editorPartIndex by mutableIntStateOf(0)
+    var editorPartFieldText by mutableStateOf("0")
+    var partPreviewActive by mutableStateOf(false)
+        private set
+
+    private var editorSnapshot: List<String> = emptyList()
+    private var editorSnapshotIndex = 0
+    private var editorSnapshotBook: ProcessingFile? = null
+
+    // Jobs & synchronization
+    private var conversionMasterJob: Job? = null
+    private var elapsedJob: Job? = null
+    private var previewJob: Job? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private var voicePreviewPrevStatus: String? = null
+
+    private var workStartMsec = 0L
+    private var pauseIdleSince = 0L
+    private val runIdGen = AtomicInteger(0)
+    private val mergeMutex = Mutex()
+    private val mergeList = mutableMapOf<String, MutableMap<String, MutableMap<String, MutableList<String>>>>()
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+
+    // 10-fast-click screen reader toggle
+    private var lastTapMsec = 0L
+    private var fastTapCount = 0
+
+    init {
+        OfflineTtsEngine.setMaxJobs(settings.maxThreads)
+        setupInitialLists()
+        loadLexx()
+        activeSettingsTab = when {
+            settings.group8Visible -> SettingsTab.INTERFACE
+            settings.group7Visible -> SettingsTab.TOOL
+            settings.group6Visible -> SettingsTab.BOOK
+            else -> SettingsTab.VOICE
+        }
+    }
+
+    fun tr(key: String): String {
+        @Suppress("UNUSED_EXPRESSION")
+        localeVersion
+        return localization.tr(key)
+    }
+
+    private fun setupInitialLists() {
+        languagesList.clear()
+        languagesList.add("AUTO")
+        languagesList.addAll(localization.loadedLocales)
+        val langIdx = settings.languagesSelect.coerceIn(0, (languagesList.size - 1).coerceAtLeast(0))
+        val selectedLang = languagesList.getOrElse(langIdx) { "AUTO" }
+        localization.setLocale(selectedLang)
+        localeVersion++
+
+        refreshVoicesList()
+        refreshUiTtsList()
+    }
+
+    fun refreshVoicesList() {
+        val combined = repo.combinedVoicesList()
+        voicesList.clear()
+        voicesList.addAll(combined)
+        if (voicesList.isNotEmpty()) {
+            var select = settings.voicesSelect.coerceIn(0, voicesList.size - 1)
+            val savedName = settings.voicesName
+            val foundIdx = voicesList.indexOfFirst { it == savedName }
+            if (foundIdx >= 0) {
+                select = foundIdx
+            }
+            val chosenName = voicesList[select]
+            updateSettings { it.copy(voicesSelect = select, voicesName = chosenName) }
+        }
+    }
+
+    fun refreshUiTtsList() {
+        screenReader.reloadVoices(localization.currentLocale)
+        uiTtsList.clear()
+        uiTtsList.add("KEY_OFF")
+        uiTtsList.addAll(screenReader.voiceNames)
+        val sel = settings.languagesUiTtsSelect.coerceIn(0, (uiTtsList.size - 1).coerceAtLeast(0))
+        if (sel != settings.languagesUiTtsSelect) {
+            updateSettings { it.copy(languagesUiTtsSelect = sel) }
+        }
+    }
+
+    fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        settings = transform(settings)
+        repo.saveSettings(settings)
+    }
+
+    fun ttsSay(message: String, hard: Boolean = false, stopFirst: Boolean = true) {
+        if (message.isNotBlank()) {
+            screenReader.speak(
+                message = message,
+                selectedUiTtsIndex = settings.languagesUiTtsSelect,
+                ratePercent = settings.rate,
+                hard = hard,
+                stopFirst = stopFirst
+            )
+        }
+    }
+
+    fun voiceSayText(voice: String): String {
+        return if (repo.isVoiceOffline(voice)) {
+            "$voice. ${tr("KEY_VOICE_OFFLINE")}"
+        } else {
+            voice
+        }
+    }
+
+    fun onBackgroundTap() {
+        closeAllDropdowns()
+        val now = System.currentTimeMillis()
+        if (now - lastTapMsec < 300L) {
+            fastTapCount++
+            if (fastTapCount >= 10) {
+                fastTapCount = 0
+                toggleScreenReader()
+            }
+        } else {
+            fastTapCount = 0
+        }
+        lastTapMsec = now
+    }
+
+    fun toggleScreenReader() {
+        if (settings.languagesUiTtsSelect > 0) {
+            updateSettings { it.copy(languagesUiTtsSelect = 0) }
+            ttsSay("${tr("KEY_UITTS")} ${tr("KEY_OFF")}", hard = true)
+        } else {
+            refreshUiTtsList()
+            val newIdx = if (uiTtsList.size > 1) 1 else 0
+            updateSettings { it.copy(languagesUiTtsSelect = newIdx) }
+            ttsSay("${tr("KEY_UITTS")} ${tr("KEY_ON")}", hard = true)
+        }
+    }
+
+    fun closeAllDropdowns() {
+        voicesDropdownOpen = false
+        languagesDropdownOpen = false
+        uiTtsDropdownOpen = false
+    }
+
+    fun selectVoice(index: Int) {
+        if (index !in voicesList.indices) return
+        val newVoice = voicesList[index]
+        if (settings.voicesName == newVoice) {
+            voicesDropdownOpen = false
+        }
+        updateSettings { it.copy(voicesSelect = index, voicesName = newVoice) }
+        voicesDropdownOpen = false
+        ttsSay(voiceSayText(newVoice))
+        if (!runWork && settings.voicePreview) {
+            previewStart(tr("KEY_VOICE_PREVIEW_TEXT"), isPartPreview = false)
+        }
+    }
+
+    fun selectLanguage(index: Int) {
+        if (index !in languagesList.indices) return
+        val lang = languagesList[index]
+        languagesDropdownOpen = false
+        localization.setLocale(lang)
+        localeVersion++
+        val newUiTts = if (settings.languagesUiTtsSelect > 0) 1 else 0
+        updateSettings { it.copy(languagesSelect = index, languagesUiTtsSelect = newUiTts) }
+        refreshVoicesList()
+        refreshUiTtsList()
+        ttsSay(lang)
+    }
+
+    fun selectUiTts(index: Int) {
+        if (index !in uiTtsList.indices) return
+        uiTtsDropdownOpen = false
+        updateSettings { it.copy(languagesUiTtsSelect = index) }
+        val text = if (index == 0) tr("KEY_OFF") else uiTtsList[index]
+        ttsSay(text, hard = true)
+    }
+
+    fun setRate(value: Int) {
+        val stepped = ((value + 50) / 5) * 5 - 50
+        val clamped = stepped.coerceIn(-50, 100)
+        if (clamped != settings.rate) {
+            updateSettings { it.copy(rate = clamped) }
+            ttsSay("${tr("KEY_SPEED")} ${formatSignedValue(clamped)}%")
+        }
+    }
+
+    fun setPitch(value: Int) {
+        val clamped = value.coerceIn(-50, 50)
+        if (clamped != settings.pitch) {
+            updateSettings { it.copy(pitch = clamped) }
+            ttsSay("${tr("KEY_PITCH")} ${formatSignedValue(clamped)}Hz")
+        }
+    }
+
+    fun setMaxThreads(value: Int) {
+        val clamped = value.coerceIn(1, 100)
+        if (clamped != settings.maxThreads) {
+            OfflineTtsEngine.setMaxJobs(clamped)
+            updateSettings { it.copy(maxThreads = clamped) }
+            ttsSay("${tr("KEY_THREADSCOUNT")} $clamped")
+        }
+    }
+
+    fun setRestartDelayIndex(index: Int) {
+        val clampedIdx = index.coerceIn(0, AppSettings.RESTART_DELAY_STEPS.size)
+        val secs = AppSettings.restartDelaySecondsFromIndex(clampedIdx)
+        if (secs != settings.restartDelay) {
+            updateSettings { it.copy(restartDelay = secs) }
+            val label = if (secs < 0) "∞" else secs.toString()
+            ttsSay("${tr("KEY_RESTARTDELAY")} $label")
+        }
+    }
+
+    fun setMergeFiles(value: Int) {
+        val clamped = value.coerceIn(1, 100)
+        if (clamped != settings.mergeFiles) {
+            updateSettings { it.copy(mergeFiles = clamped) }
+            val label = if (clamped == 100) tr("KEY_ALL") else "$clamped ${tr("KEY_UNIT")}"
+            ttsSay("${tr("KEY_MARGE_FILES")} $label")
+        }
+    }
+
+    fun setZoomUi(value: Float) {
+        val stepped = kotlin.math.round(value * 10f) / 10f
+        val clamped = stepped.coerceIn(0.5f, 4.0f)
+        if (clamped != settings.zoomUi) {
+            updateSettings { it.copy(zoomUi = clamped) }
+            ttsSay("${tr("KEY_ZOOM")} ${(clamped * 100).toInt()}%")
+        }
+    }
+
+    fun setFontSize(value: Int) {
+        val clamped = value.coerceIn(16, 24)
+        if (clamped != settings.fontSize) {
+            updateSettings { it.copy(fontSize = clamped) }
+            ttsSay("${tr("KEY_FONTSIZE")} $clamped")
+        }
+    }
+
+    fun toggleDopSettings() {
+        val next = !settings.dopSettingsPressed
+        updateSettings { it.copy(dopSettingsPressed = next) }
+        ttsSay(tr(if (next) "KEY_SETTINGS" else "KEY_SETTINGS_BACK"))
+    }
+
+    fun selectSettingsTab(tab: SettingsTab) {
+        activeSettingsTab = tab
+        updateSettings {
+            it.copy(
+                group1Visible = tab == SettingsTab.VOICE,
+                group2Visible = tab == SettingsTab.VOICE,
+                group6Visible = tab == SettingsTab.BOOK,
+                group7Visible = tab == SettingsTab.TOOL,
+                group8Visible = tab == SettingsTab.INTERFACE
+            )
+        }
+        val key = when (tab) {
+            SettingsTab.VOICE -> "KEY_SETTINGS_VOICE"
+            SettingsTab.BOOK -> "KEY_SETTINGS_BOOK"
+            SettingsTab.TOOL -> "KEY_SETTINGS_TOOL"
+            SettingsTab.INTERFACE -> "KEY_SETTINGS_INTERFACE"
+        }
+        ttsSay(tr(key))
+    }
+
+    fun toggleStatusGridVisible() {
+        if (partStatuses.isNotEmpty()) {
+            val next = !settings.group4Visible
+            updateSettings { it.copy(group4Visible = next) }
+        }
+    }
+
+    fun openChapterSettingsModal() {
+        tempRegexGlava = settings.regexGlavaCompile
+        tempGlavMp3Use = settings.glavMp3Use
+        tempGlavTextUse = settings.glavTextUse
+        tempGlavMp3Path = settings.glavMp3Path
+        dopModal = DopModal.REGEX_GLAVA
+        ttsSay(tr("KEY_REGEX_GLAVA"))
+    }
+
+    fun confirmChapterSettingsModal() {
+        val regex = tempRegexGlava.ifEmpty { AppSettings.DEFAULT_REGEX_GLAVA }
+        val mp3Path = if (tempGlavMp3Use) tempGlavMp3Path else ""
+        updateSettings {
+            it.copy(
+                regexGlavaCompile = regex,
+                glavMp3Use = tempGlavMp3Use,
+                glavTextUse = tempGlavTextUse,
+                glavMp3Path = mp3Path
+            )
+        }
+        dopModal = DopModal.NONE
+        ttsSay(tr("KEY_OK"))
+    }
+
+    fun cancelChapterSettingsModal() {
+        dopModal = DopModal.NONE
+        ttsSay(tr("KEY_CANCEL"))
+    }
+
+    fun openRecycleBinModal() {
+        dopModal = DopModal.RECYCLE_BIN
+        ttsSay(tr("KEY_CLEAR_BIN"))
+    }
+
+    fun confirmEmptyRecycleBin() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val binDir = File(repo.programDir, "Bin")
+            if (binDir.exists()) {
+                binDir.deleteRecursively()
+            }
+        }
+        dopModal = DopModal.NONE
+        ttsSay(tr("KEY_YES"))
+    }
+
+    fun cancelEmptyRecycleBin() {
+        dopModal = DopModal.NONE
+        ttsSay(tr("KEY_NO"))
+    }
+
+    fun loadLexx() {
+        val path = settings.lexxPath
+        if (path.isNotBlank()) {
+            val file = File(path)
+            lexxRules = if (file.exists() && file.canRead()) {
+                try {
+                    TextsConverter.readTextWithFallback(file.readBytes()).split("\n")
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+        } else {
+            lexxRules = emptyList()
+        }
+    }
+
+    // Online & Offline Voices Download
+    fun fetchOnlineVoices() {
+        if (onlineVoicesBusy) return
+        onlineVoicesBusy = true
+        ttsSay(tr("KEY_GET_VOICES"))
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val url = "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=${SecMsGecGenerator.TRUSTED_CLIENT_TOKEN}"
+                val req = Request.Builder().url(url).build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bodyStr = resp.body?.string().orEmpty()
+                        val arr = JSONArray(bodyStr)
+                        val names = mutableListOf<String>()
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            val fullName = obj.optString("Name", "")
+                            val start = fullName.indexOf('(')
+                            val end = fullName.indexOf(')')
+                            if (start != -1 && end != -1 && end > start + 1) {
+                                names.add(fullName.substring(start + 1, end))
+                            }
+                        }
+                        if (names.isNotEmpty()) {
+                            val sorted = repo.sortVoices(names, localization.currentLocale)
+                            withContext(Dispatchers.Main) {
+                                repo.updateOnlineVoices(sorted)
+                                refreshVoicesList()
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                withContext(Dispatchers.Main) {
+                    onlineVoicesBusy = false
+                }
+            }
+        }
+    }
+
+    fun fetchOfflineVoices() {
+        if (runWork || offlineVoicesBusy) return
+        offlineVoicesBusy = true
+        ttsSay(tr("KEY_GET_OFFLINE_VOICES"))
+        viewModelScope.launch {
+            val ok = OfflineInstaller.install(
+                programDir = repo.programDir,
+                currentLocale = localization.currentLocale,
+                onRegisterVoice = { voice ->
+                    repo.registerOfflineVoice(voice)
+                },
+                onProgress = { fileName, downloaded, total ->
+                    val shortName = if (fileName.length > 24) fileName.take(24) + "…" else fileName
+                    val progressSuffix = when {
+                        total > 0 -> " ${downloaded * 100 / total}%"
+                        downloaded > 0 -> " ${downloaded / 1048576} MB"
+                        else -> ""
+                    }
+                    viewModelScope.launch(Dispatchers.Main) {
+                        statInfoDoneHighlight = false
+                        statInfo = tr("KEY_OFFLINE_DOWNLOADING") + shortName + progressSuffix
+                    }
+                }
+            )
+            refreshVoicesList()
+            offlineVoicesBusy = false
+            statInfoDoneHighlight = false
+            statInfo = tr(if (ok) "KEY_OFFLINE_READY" else "KEY_OFFLINE_FAILED")
+            ttsSay(statInfo)
+        }
+    }
+
+    // Book Open / Clear
+    fun onFileButtonClicked() {
+        if (book != null) {
+            stopConversion(announce = false)
+            bookLoaded = false
+            partStatuses.clear()
+            textAreaText = ""
+            statStr = "0 / 0"
+            totalPartsCount = 0
+            book = null
+            editorPartIndex = 0
+            clearEditorSnapshot()
+            editorRefreshFields()
+            ttsSay(tr("KEY_BOOK_CLEAR"))
+        } else {
+            val loadDirFile = File(settings.loadDir)
+            if (settings.loadDirUse && settings.loadDir.isNotBlank() && loadDirFile.isDirectory) {
+                val files = loadDirFile.listFiles()
+                    ?.filter { it.isFile && AppSettings.BOOK_EXTENSIONS.contains(it.extension.lowercase()) }
+                    ?.sortedBy { it.name }
+                    ?.map { it.absolutePath }
+                    .orEmpty()
+                if (files.isNotEmpty()) {
+                    onOpenBooks(files)
+                } else {
+                    fileDialogPurpose = FileDialogPurpose.OPEN_BOOKS
+                }
+            } else {
+                fileDialogPurpose = FileDialogPurpose.OPEN_BOOKS
+            }
+        }
+    }
+
+    fun onOpenBooks(paths: List<String>) {
+        if (paths.isEmpty()) return
+        stopConversion(announce = false)
+        clearEditorSnapshot()
+        bookLoaded = false
+        statInfoDoneHighlight = false
+        statInfo = tr("KEY_LOAD")
+        partStatuses.clear()
+        textAreaText = ""
+        statStr = "0 / 0"
+        totalPartsCount = 0
+        resetElapsedLabel()
+        filesList.clear()
+        book = null
+        editorPartIndex = 0
+        editorRefreshFields()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var currentBook: ProcessingFile? = null
+            val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
+
+            fun appendTextEntry(saveName: String, content: String, voice: String, rate: String, pitch: String) {
+                if (content.isEmpty()) return
+                val b = currentBook
+                if (b == null) {
+                    currentBook = ProcessingFile(
+                        fileName = saveName,
+                        text = content,
+                        langLexx = activeLexx,
+                        lexxRegister = settings.lexxRegister,
+                        bookChapter = settings.bookChapter,
+                        glavTextUse = settings.glavTextUse,
+                        regexGlavaPattern = settings.regexGlavaCompile,
+                        voice = voice,
+                        rate = rate,
+                        pitch = pitch
+                    )
+                } else {
+                    b.addNewText(saveName, content, voice, rate, pitch)
+                }
+            }
+
+            var lastSentencesSize = 0
+            for (path in paths) {
+                val file = File(path)
+                if (!file.exists() || !file.isFile) continue
+                val ext = file.extension.lowercase()
+                val baseName = file.nameWithoutExtension
+                try {
+                    when (ext) {
+                        "txt", "ini" -> {
+                            val text = TextsConverter.readTextWithFallback(file.readBytes())
+                            appendTextEntry(baseName, text, "", "", "")
+                        }
+                        "fb2" -> {
+                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
+                            appendTextEntry(baseName, TextsConverter.convertFb2ToTxt(raw), "", "", "")
+                        }
+                        "epub" -> {
+                            val text = TextsConverter.convertEpubToTxt(file.absolutePath)
+                            appendTextEntry(baseName, text, "", "", "")
+                        }
+                        "zip" -> {
+                            TextsConverter.extractZipEntries(file.absolutePath) { saveName, text, v, r, p ->
+                                appendTextEntry(saveName, text, v, r, p)
+                            }
+                        }
+                        "csv" -> {
+                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
+                            val lines = TextsConverter.parseCsv(raw)
+                            lines.forEachIndexed { idx, row ->
+                                TextsConverter.processCsvLine(row, baseName, idx + 1) { saveName, text, v, r, p ->
+                                    appendTextEntry(saveName, text, v, r, p)
+                                }
+                            }
+                        }
+                    }
+                    val newSize = currentBook?.allSentences?.size ?: 0
+                    if (newSize != lastSentencesSize) {
+                        lastSentencesSize = newSize
+                        filesList.add(path)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                book = currentBook
+                val count = currentBook?.allSentences?.size ?: 0
+                bookLoaded = count > 0
+                totalPartsCount = count
+                partStatuses.clear()
+                repeat(count) { partStatuses.add(PartStatus.OPENED) }
+                statStr = "0 / $count"
+                statInfo = ""
+                editorPartIndex = 0
+                if (settings.showTextAreaPressed) {
+                    editorLoadCurrentPart()
+                } else {
+                    editorRefreshFields()
+                }
+                ttsSay("${tr("KEY_BOOK_LOADED")}. $statStr")
+            }
+        }
+    }
+
+    // Editor functions
+    fun toggleTextAreaPanel() {
+        val next = !settings.showTextAreaPressed
+        updateSettings { it.copy(showTextAreaPressed = next) }
+        if (next) {
+            val b = book
+            if (b != null) {
+                editorPartIndex = editorPartIndex.coerceIn(0, (b.allSentences.size - 1).coerceAtLeast(0))
+            }
+            editorLoadCurrentPart()
+            takeEditorSnapshot()
+        } else {
+            if (partPreviewActive) voicePreviewStop()
+            if (!runWork) {
+                revertEditorSnapshotIfPossible()
+            } else {
+                clearEditorSnapshot()
+            }
+        }
+    }
+
+    fun onEditorClosePressed() {
+        if (partPreviewActive) voicePreviewStop()
+        if (!runWork) {
+            revertEditorSnapshotIfPossible()
+        } else {
+            clearEditorSnapshot()
+        }
+        updateSettings { it.copy(showTextAreaPressed = false) }
+        ttsSay(tr("KEY_EDITOR_CLOSE"))
+    }
+
+    fun onEditorSavePressed() {
+        if (runWork) return
+        clearEditorSnapshot()
+        val currentBook = book
+        val nBefore = currentBook?.allSentences?.size ?: 0
+        if (currentBook == null || nBefore == 0) {
+            val seed = textAreaText.ifEmpty { " " }
+            val newBook = ProcessingFile(
+                fileName = "Text ${"%04d".format(numTextCounter + 1)}",
+                text = seed,
+                langLexx = if (settings.lexxUse) lexxRules else emptyList(),
+                lexxRegister = settings.lexxRegister,
+                bookChapter = settings.bookChapter,
+                glavTextUse = settings.glavTextUse,
+                regexGlavaPattern = settings.regexGlavaCompile,
+                voice = "",
+                rate = "",
+                pitch = ""
+            )
+            if (newBook.allSentences.isEmpty()) {
+                newBook.allSentences.add("")
+                newBook.allGlavs.add("")
+            }
+            book = newBook
+            editorPartIndex = 0
+        } else {
+            val k = currentBook.replacePart(editorPartIndex, textAreaText)
+            if (k <= 0 && currentBook.allSentences.isEmpty()) {
+                currentBook.allSentences.add("")
+                currentBook.allGlavs.add("")
+                editorPartIndex = 0
+            } else {
+                editorPartIndex = editorPartIndex.coerceIn(0, (currentBook.allSentences.size - 1).coerceAtLeast(0))
+            }
+        }
+        val finalCount = book?.allSentences?.size ?: 0
+        totalPartsCount = finalCount
+        statStr = "0 / $finalCount"
+        partStatuses.clear()
+        repeat(finalCount) { partStatuses.add(PartStatus.OPENED) }
+        editorLoadCurrentPart()
+        ttsSay(tr("KEY_SAVED"))
+        updateSettings { it.copy(showTextAreaPressed = false) }
+    }
+
+    fun onEditorPrevPressed() {
+        val b = book ?: return
+        if (b.allSentences.isEmpty()) return
+        editorGotoPart(editorPartIndex - 1)
+    }
+
+    fun onEditorNextPressed() {
+        val b = book ?: return
+        if (b.allSentences.isEmpty()) return
+        editorGotoPart(editorPartIndex + 1)
+    }
+
+    fun onEditorPartNumberSubmitted(raw: String) {
+        val b = book
+        if (b == null || b.allSentences.isEmpty()) {
+            editorRefreshFields()
+            return
+        }
+        val human = raw.trim().toIntOrNull()
+        if (human == null) {
+            editorRefreshFields()
+            return
+        }
+        val target = (human - 1).coerceIn(0, b.allSentences.size - 1)
+        if (target == editorPartIndex) {
+            editorRefreshFields()
+            return
+        }
+        editorGotoPart(target)
+    }
+
+    private fun editorGotoPart(newIndex: Int) {
+        val b = book ?: return
+        if (b.allSentences.isEmpty()) return
+        if (!runWork && editorPartIndex in b.allSentences.indices) {
+            b.allSentences[editorPartIndex] = textAreaText
+        }
+        editorPartIndex = newIndex.coerceIn(0, b.allSentences.size - 1)
+        editorLoadCurrentPart()
+    }
+
+    private fun editorLoadCurrentPart() {
+        if (partPreviewActive) voicePreviewStop()
+        val b = book
+        if (b != null) {
+            if (b.allSentences.isEmpty()) {
+                textAreaText = ""
+            } else {
+                editorPartIndex = editorPartIndex.coerceIn(0, b.allSentences.size - 1)
+                textAreaText = b.allSentences[editorPartIndex]
+            }
+        }
+        editorRefreshFields()
+    }
+
+    private fun editorRefreshFields() {
+        val b = book
+        val count = b?.allSentences?.size ?: 0
+        totalPartsCount = count
+        editorPartFieldText = if (count == 0) "0" else (editorPartIndex + 1).toString()
+    }
+
+    private fun takeEditorSnapshot() {
+        clearEditorSnapshot()
+        val b = book ?: return
+        if (runWork) return
+        editorSnapshot = b.allSentences.toList()
+        editorSnapshotIndex = editorPartIndex
+        editorSnapshotBook = b
+    }
+
+    private fun revertEditorSnapshotIfPossible() {
+        val snapBook = editorSnapshotBook ?: return
+        val currentBook = book
+        if (snapBook !== currentBook || runWork) {
+            clearEditorSnapshot()
+            return
+        }
+        currentBook.allSentences.clear()
+        currentBook.allSentences.addAll(editorSnapshot)
+        editorPartIndex = editorSnapshotIndex.coerceIn(0, (currentBook.allSentences.size - 1).coerceAtLeast(0))
+        clearEditorSnapshot()
+    }
+
+    private fun clearEditorSnapshot() {
+        editorSnapshot = emptyList()
+        editorSnapshotIndex = 0
+        editorSnapshotBook = null
+    }
+
+    // Voice & Part Preview
+    fun onEditorPlayPressed() {
+        if (partPreviewActive) {
+            voicePreviewStop()
+        } else if (!runWork && textAreaText.trim().isNotEmpty()) {
+            val sanitized = textAreaText
+                .replace("&", " and ")
+                .replace("<", "(")
+                .replace(">", ")")
+            if (previewStart(sanitized, isPartPreview = true)) {
+                partPreviewActive = true
+            }
+        }
+    }
+
+    private fun previewStart(previewText: String, isPartPreview: Boolean): Boolean {
+        if (isOfflineUnavailable(listOf(settings.voicesName))) return false
+        voicePreviewStop()
+        voicePreviewPrevStatus = statInfo
+        statInfoDoneHighlight = false
+        statInfo = tr("KEY_VOICE_LOADING")
+        partPreviewActive = isPartPreview
+
+        val voice = settings.voicesName
+        val pitchStr = "${formatSignedValue(settings.pitch)}Hz"
+        val rateStr = "${formatSignedValue(settings.rate)}%"
+        val lowBitrate = settings.lowBitrate
+
+        previewJob = viewModelScope.launch(Dispatchers.IO) {
+            val mp3Bytes = if (repo.isVoiceOffline(voice)) {
+                val voiceDir = File(File(repo.programDir, "Voices"), voice)
+                OfflineTtsEngine.synthesizePart(
+                    context = getApplication(),
+                    voiceDir = voiceDir,
+                    text = previewText,
+                    rate = rateStr,
+                    pitch = pitchStr,
+                    lowBitrate = lowBitrate,
+                    isPreview = true,
+                    isPaused = { false },
+                    isCancelled = { !isActive },
+                    onStatusUpdate = {}
+                )
+            } else {
+                SocketEdgeTtsWorker.synthesizePart(
+                    voice = voice,
+                    pitch = pitchStr,
+                    rate = rateStr,
+                    text = previewText,
+                    lowBitrate = lowBitrate,
+                    timeoutMsec = 30_000L,
+                    isPreview = true,
+                    isPaused = { false },
+                    isCancelled = { !isActive },
+                    onStatusUpdate = {}
+                )
+            }
+
+            withContext(Dispatchers.Main) {
+                restorePreviewStatus()
+                if (mp3Bytes == null || mp3Bytes.isEmpty() || !isActive) {
+                    partPreviewActive = false
+                    return@withContext
+                }
+                playPreviewBytes(mp3Bytes)
+            }
+        }
+        return true
+    }
+
+    private fun playPreviewBytes(mp3Bytes: ByteArray) {
+        try {
+            val tempFile = File.createTempFile("preview_", ".mp3", getApplication<Application>().cacheDir)
+            tempFile.writeBytes(mp3Bytes)
+            val mp = MediaPlayer()
+            mediaPlayer = mp
+            mp.setDataSource(tempFile.absolutePath)
+            mp.setOnCompletionListener { player ->
+                player.release()
+                tempFile.delete()
+                if (mediaPlayer === player) {
+                    mediaPlayer = null
+                    partPreviewActive = false
+                }
+            }
+            mp.setOnErrorListener { player, _, _ ->
+                player.release()
+                tempFile.delete()
+                if (mediaPlayer === player) {
+                    mediaPlayer = null
+                    partPreviewActive = false
+                }
+                true
+            }
+            mp.prepare()
+            mp.start()
+        } catch (_: Exception) {
+            partPreviewActive = false
+        }
+    }
+
+    fun voicePreviewStop() {
+        restorePreviewStatus()
+        previewJob?.cancel()
+        previewJob = null
+        try {
+            mediaPlayer?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            mediaPlayer?.release()
+        } catch (_: Exception) {
+        }
+        mediaPlayer = null
+        partPreviewActive = false
+    }
+
+    private fun restorePreviewStatus() {
+        val prev = voicePreviewPrevStatus
+        if (prev != null && statInfo == tr("KEY_VOICE_LOADING")) {
+            statInfo = prev
+        }
+        voicePreviewPrevStatus = null
+    }
+
+    // Conversion Run / Pause / Stop
+    fun onSaveOrStopButtonPressed() {
+        if (runWork || progressBarVisible) {
+            stopConversion(announce = true)
+        } else {
+            startConversion()
+        }
+    }
+
+    fun onPauseOrResumeButtonPressed() {
+        if (!runWork) return
+        workPaused = !workPaused
+        if (workPaused) {
+            pauseIdleSince = System.currentTimeMillis()
+            statInfoDoneHighlight = false
+            statInfo = tr("KEY_PAUSE")
+            ttsSay("${tr("KEY_PAUSE")}. $statStr")
+        } else {
+            if (pauseIdleSince > 0L) {
+                workStartMsec += System.currentTimeMillis() - pauseIdleSince
+            }
+            pauseIdleSince = 0L
+            statInfoDoneHighlight = false
+            statInfo = tr("KEY_PROCESSED")
+            ttsSay(tr("KEY_WORK_ON"))
+        }
+        updateElapsedLabel()
+    }
+
+    private fun isOfflineUnavailable(voicesToCheck: List<String>): Boolean {
+        for (v in voicesToCheck) {
+            val voiceDir = File(File(repo.programDir, "Voices"), v)
+            if (repo.isVoiceOffline(v) && (offlineVoicesBusy || !OfflineTtsEngine.voiceInstalled(voiceDir))) {
+                statInfoDoneHighlight = false
+                statInfo = tr("KEY_OFFLINE_UNAVAILABLE")
+                ttsSay(statInfo)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun startConversion() {
+        val currentBook = book
+        val usedVoices = if (currentBook == null) {
+            listOf(settings.voicesName)
+        } else {
+            currentBook.fileNames.map { it.voice.ifEmpty { settings.voicesName } }
+        }
+        if (isOfflineUnavailable(usedVoices)) return
+
+        stopConversion(announce = false)
+        voicePreviewStop()
+
+        if (book == null) {
+            numTextCounter++
+            val seedText = textAreaText
+            val created = ProcessingFile(
+                fileName = "Text ${"%04d".format(numTextCounter)}",
+                text = seedText,
+                langLexx = if (settings.lexxUse) lexxRules else emptyList(),
+                lexxRegister = settings.lexxRegister,
+                bookChapter = settings.bookChapter,
+                glavTextUse = settings.glavTextUse,
+                regexGlavaPattern = settings.regexGlavaCompile,
+                voice = "",
+                rate = "",
+                pitch = ""
+            )
+            book = created
+        }
+
+        val activeBook = book ?: return
+        val total = activeBook.allSentences.size
+        totalPartsCount = total
+        partStatuses.clear()
+        repeat(total) { partStatuses.add(PartStatus.OPENED) }
+
+        workPaused = false
+        pauseIdleSince = 0L
+        runWork = true
+        val currentRunId = runIdGen.incrementAndGet()
+        ForegroundWorkService.setActive(getApplication(), true, tr("KEY_WORK_RUNNING"))
+
+        statInfoDoneHighlight = false
+        statInfo = tr("KEY_PROCESSED")
+        statStr = "0 / $total"
+        ttsSay("${tr("KEY_WORK_ON")}. $statInfo $statStr")
+
+        workStartMsec = System.currentTimeMillis()
+        workFinished = false
+        elapsedVisible = true
+        updateElapsedLabel()
+        startElapsedLoop()
+
+        val runMergeFiles = settings.mergeFiles
+        val runBookDirCreate = settings.bookDirCreate
+        val runLowBitrate = settings.lowBitrate
+        val runSaveDir = settings.saveDir.ifEmpty { repo.defaultDownloadsDir }
+        val timeoutMsec = if (settings.restartDelay < 0) Long.MAX_VALUE else settings.restartDelay * 1000L
+
+        progressBarMax = total + 1
+        progressBarValue = 1
+        progressBarVisible = true
+
+        if (total == 0) {
+            finalizeConversion(currentRunId, runBookDirCreate, runMergeFiles, runLowBitrate)
+            return
+        }
+
+        // Precompute per-part metadata matching index.gd thread_work_run
+        data class PartJobSpec(
+            val index: Int,
+            val fileName: String,
+            val glava: String,
+            val fileNum: String,
+            val voice: String,
+            val pitch: String,
+            val rate: String,
+            val text: String
+        )
+
+        val specs = mutableListOf<PartJobSpec>()
+        var fileNameInd = 0
+        var fixNumBook = 0
+        for (idx in 0 until total) {
+            val currentMeta = activeBook.fileNames[fileNameInd]
+            if (currentMeta.endSentenceIndex in 1..idx && fileNameInd + 1 < activeBook.fileNames.size) {
+                fileNameInd++
+                fixNumBook = idx
+            }
+            val meta = activeBook.fileNames[fileNameInd]
+            val fVoice = meta.voice.ifEmpty { settings.voicesName }
+            val fRate = meta.rate.ifEmpty { formatSignedValue(settings.rate) }
+            val fPitch = meta.pitch.ifEmpty { formatSignedValue(settings.pitch) }
+            specs.add(
+                PartJobSpec(
+                    index = idx,
+                    fileName = meta.fileName,
+                    glava = activeBook.allGlavs[idx],
+                    fileNum = "%04d".format(idx + 1 - fixNumBook),
+                    voice = fVoice,
+                    pitch = "${fPitch}Hz",
+                    rate = "${fRate}%",
+                    text = activeBook.allSentences[idx]
+                )
+            )
+        }
+
+        val savedPartsAtomic = AtomicInteger(0)
+        val launchedAtomic = AtomicInteger(0)
+
+        conversionMasterJob = viewModelScope.launch(Dispatchers.IO) {
+            mergeMutex.withLock { mergeList.clear() }
+            val childJobs = mutableListOf<Job>()
+
+            while (isActive && launchedAtomic.get() < total) {
+                if (workPaused) {
+                    delay(100)
+                    continue
+                }
+                val savedCount = savedPartsAtomic.get()
+                val maxWindow = savedCount + settings.maxThreads
+                val nextIdx = launchedAtomic.get()
+                if (nextIdx < maxWindow && nextIdx < total) {
+                    launchedAtomic.incrementAndGet()
+                    val spec = specs[nextIdx]
+                    val job = launch {
+                        val mp3Data = if (repo.isVoiceOffline(spec.voice)) {
+                            val voiceDir = File(File(repo.programDir, "Voices"), spec.voice)
+                            OfflineTtsEngine.synthesizePart(
+                                context = getApplication(),
+                                voiceDir = voiceDir,
+                                text = spec.text,
+                                rate = spec.rate,
+                                pitch = spec.pitch,
+                                lowBitrate = runLowBitrate,
+                                isPreview = false,
+                                isPaused = { workPaused },
+                                isCancelled = { !isActive || runIdGen.get() != currentRunId },
+                                onStatusUpdate = { statusKey ->
+                                    updateStatusBox(spec.index, statusKey, currentRunId)
+                                }
+                            )
+                        } else {
+                            SocketEdgeTtsWorker.synthesizePart(
+                                voice = spec.voice,
+                                pitch = spec.pitch,
+                                rate = spec.rate,
+                                text = spec.text,
+                                lowBitrate = runLowBitrate,
+                                timeoutMsec = timeoutMsec,
+                                isPreview = false,
+                                isPaused = { workPaused },
+                                isCancelled = { !isActive || runIdGen.get() != currentRunId },
+                                onStatusUpdate = { statusKey ->
+                                    updateStatusBox(spec.index, statusKey, currentRunId)
+                                }
+                            )
+                        }
+
+                        if (!isActive || runIdGen.get() != currentRunId || mp3Data == null || mp3Data.isEmpty()) {
+                            return@launch
+                        }
+
+                        savePartMp3File(
+                            data = mp3Data,
+                            saveDirBase = runSaveDir,
+                            inBookDir = runBookDirCreate,
+                            fileName = spec.fileName,
+                            glava = spec.glava,
+                            fileNum = spec.fileNum
+                        )
+                        updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
+
+                        val doneCount = savedPartsAtomic.incrementAndGet()
+                        withContext(Dispatchers.Main) {
+                            if (runIdGen.get() == currentRunId && runWork) {
+                                progressBarValue = doneCount + 1
+                                statStr = "$doneCount / $totalPartsCount"
+                            }
+                        }
+
+                        if (doneCount >= total && runIdGen.get() == currentRunId) {
+                            finalizeConversion(currentRunId, runBookDirCreate, runMergeFiles, runLowBitrate)
+                        }
+                    }
+                    childJobs.add(job)
+                    delay(50)
+                } else {
+                    delay(100)
+                }
+            }
+            childJobs.forEach { it.join() }
+        }
+    }
+
+    private fun updateStatusBox(index: Int, statusKey: String, expectedRunId: Int) {
+        val status = PartStatus.fromKey(statusKey)
+        viewModelScope.launch(Dispatchers.Main) {
+            if (runIdGen.get() == expectedRunId && runWork && index in partStatuses.indices) {
+                if (partStatuses[index] != status) {
+                    partStatuses[index] = status
+                }
+            }
+        }
+    }
+
+    private suspend fun savePartMp3File(
+        data: ByteArray,
+        saveDirBase: String,
+        inBookDir: Boolean,
+        fileName: String,
+        glava: String,
+        fileNum: String
+    ) {
+        val targetDir = if (inBookDir) {
+            "$saveDirBase/${bookStem(fileName)}"
+        } else {
+            saveDirBase
+        }
+        val stripName = stripBookName(inBookDir, targetDir, fileName, glava)
+        val dirObj = File(targetDir)
+        if (dirObj.exists() || dirObj.mkdirs()) {
+            val mp3File = File(dirObj, "${mp3BaseName(stripName, fileName, glava, fileNum)}.mp3")
+            try {
+                FileOutputStream(mp3File).use { it.write(data) }
+                mergeMutex.withLock {
+                    val byName = mergeList.getOrPut(targetDir) { mutableMapOf() }
+                    val byGlava = byName.getOrPut(fileName) { mutableMapOf() }
+                    val nums = byGlava.getOrPut(glava) { mutableListOf() }
+                    nums.add(fileNum)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun finalizeConversion(
+        rid: Int,
+        inBookDir: Boolean,
+        perFile: Int,
+        lowBitrate: Boolean
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val snapshot = mergeMutex.withLock {
+                val copy = mergeList.mapValues { (_, byName) ->
+                    byName.mapValues { (_, byGlava) ->
+                        byGlava.mapValues { (_, nums) -> nums.toMutableList() }.toMutableMap()
+                    }.toMutableMap()
+                }.toMutableMap()
+                mergeList.clear()
+                copy
+            }
+
+            if (perFile != 1) {
+                doMerge(snapshot, inBookDir, perFile, lowBitrate, rid)
+            }
+            fixNames(snapshot, inBookDir, rid)
+            if (runIdGen.get() == rid) {
+                moveToRecycleBin()
+            }
+            withContext(Dispatchers.Main) {
+                if (runIdGen.get() == rid && runWork) {
+                    runWork = false
+                    ForegroundWorkService.setActive(getApplication(), false)
+                    if (workPaused && pauseIdleSince > 0L) {
+                        workStartMsec += System.currentTimeMillis() - pauseIdleSince
+                    }
+                    workPaused = false
+                    pauseIdleSince = 0L
+                    workFinished = true
+                    updateElapsedLabel()
+                    progressBarVisible = false
+                    progressBarValue = 0
+                    val msg = "${tr("KEY_WORK_COMPLETED")}. $statInfo $statStr"
+                    statInfo = tr("KEY_WORK_COMPLETED")
+                    statInfoDoneHighlight = true
+                    ttsSay(msg)
+                }
+            }
+        }
+    }
+
+    private fun doMerge(
+        ml: Map<String, Map<String, Map<String, MutableList<String>>>>,
+        inBookDir: Boolean,
+        perFile: Int,
+        lowBitrate: Boolean,
+        rid: Int
+    ) {
+        val addGlavMp3 = settings.bookChapter && settings.glavMp3Use
+        var soundGlavaBytes = ByteArray(0)
+        if (addGlavMp3) {
+            soundGlavaBytes = try {
+                if (settings.glavMp3Path.isBlank()) {
+                    val assetName = if (lowBitrate) "Silence_48.mp3" else "Silence_96.mp3"
+                    getApplication<Application>().assets.open(assetName).use { it.readBytes() }
+                } else {
+                    val f = File(settings.glavMp3Path)
+                    if (f.exists()) f.readBytes() else ByteArray(0)
+                }
+            } catch (_: Exception) {
+                ByteArray(0)
+            }
+        }
+
+        for ((dir, byName) in ml) {
+            for ((name, byGlava) in byName) {
+                for ((glava, nums) in byGlava) {
+                    nums.sort()
+                    if (nums.size > 1 || addGlavMp3) {
+                        val stripName = stripBookName(inBookDir, dir, name, glava)
+                        var mergeNum = 0
+                        var mergeStep = 0
+                        val mergeBuffer = ByteArrayOutputStream()
+                        if (soundGlavaBytes.isNotEmpty()) {
+                            mergeBuffer.write(soundGlavaBytes)
+                        }
+                        for (num in nums) {
+                            if (runIdGen.get() != rid) return
+                            mergeStep++
+                            val fullFile = File(dir, "${mp3BaseName(stripName, name, glava, num)}.mp3")
+                            if (fullFile.exists()) {
+                                try {
+                                    mergeBuffer.write(fullFile.readBytes())
+                                } catch (_: Exception) {
+                                }
+                                fullFile.delete()
+                            }
+                            if ((perFile < 100 && mergeStep >= perFile) || num >= nums.last()) {
+                                mergeNum++
+                                mergeStep = 0
+                                val dirObj = File(dir)
+                                if (dirObj.exists()) {
+                                    val outFile = when {
+                                        nums.size <= 1 -> fullFile
+                                        perFile < 100 && perFile < nums.size ->
+                                            File(dir, "${mp3BaseName(stripName, name, glava, "%04d".format(mergeNum), merged = true)}.mp3")
+                                        else ->
+                                            File(dir, "${mp3BaseName(stripName, name, glava)}.mp3")
+                                    }
+                                    try {
+                                        FileOutputStream(outFile).use { it.write(mergeBuffer.toByteArray()) }
+                                    } catch (_: Exception) {
+                                    }
+                                    mergeBuffer.reset()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun fixNames(
+        ml: Map<String, Map<String, Map<String, MutableList<String>>>>,
+        inBookDir: Boolean,
+        rid: Int
+    ) {
+        for ((dir, byName) in ml) {
+            for ((name, byGlava) in byName) {
+                for ((glava, nums) in byGlava) {
+                    if (runIdGen.get() != rid) return
+                    nums.sort()
+                    if (nums.size == 1) {
+                        val stripName = stripBookName(inBookDir, dir, name, glava)
+                        val src = File(dir, "${mp3BaseName(stripName, name, glava, nums[0])}.mp3")
+                        val dst = File(dir, "${mp3BaseName(stripName, name, glava)}.mp3")
+                        if (src.exists()) {
+                            src.renameTo(dst)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun moveToRecycleBin() {
+        if (settings.recycleBinUse && filesList.isNotEmpty()) {
+            val binDir = File(repo.programDir, "Bin")
+            if (binDir.exists() || binDir.mkdirs()) {
+                for (bookPath in filesList) {
+                    val src = File(bookPath)
+                    if (src.exists()) {
+                        val dst = File(binDir, src.name)
+                        if (!src.renameTo(dst)) {
+                            try {
+                                src.copyTo(dst, overwrite = true)
+                                src.delete()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopConversion(announce: Boolean = true) {
+        if (announce) {
+            ttsSay(tr("KEY_WORK_OFF"))
+        }
+        runIdGen.incrementAndGet()
+        conversionMasterJob?.cancel(CancellationException("Stopped by user"))
+        conversionMasterJob = null
+        runWork = false
+        workPaused = false
+        pauseIdleSince = 0L
+        ForegroundWorkService.setActive(getApplication(), false)
+
+        for (i in partStatuses.indices) {
+            partStatuses[i] = PartStatus.OPENED
+        }
+        progressBarVisible = false
+        progressBarValue = 0
+        statInfoDoneHighlight = false
+        statInfo = ""
+        statStr = "0 / $totalPartsCount"
+        resetElapsedLabel()
+    }
+
+    private fun startElapsedLoop() {
+        if (elapsedJob?.isActive == true) return
+        elapsedJob = viewModelScope.launch {
+            while (!workFinished) {
+                updateElapsedLabel()
+                delay(1000)
+            }
+            updateElapsedLabel()
+        }
+    }
+
+    private fun updateElapsedLabel() {
+        val now = if (workPaused && pauseIdleSince > 0L) pauseIdleSince else System.currentTimeMillis()
+        val totalSec = ((now - workStartMsec).coerceAtLeast(0L)) / 1000L
+        val h = totalSec / 3600L
+        val m = (totalSec / 60L) % 60L
+        val s = totalSec % 60L
+        elapsedTimeText = if (h > 0L) {
+            "%d:%02d:%02d".format(h, m, s)
+        } else {
+            "%d:%02d".format(m, s)
+        }
+    }
+
+    private fun resetElapsedLabel() {
+        workFinished = true
+        elapsedVisible = false
+        elapsedTimeText = ""
+    }
+
+    private fun bookStem(name: String): String {
+        val f = File(name)
+        val ext = f.extension.lowercase()
+        return if (AppSettings.BOOK_EXTENSIONS.contains(ext)) f.nameWithoutExtension else name
+    }
+
+    private fun stripBookName(inBookDir: Boolean, dir: String, name: String, glava: String): Boolean {
+        val candidate = "$dir/${mp3BaseName(false, name, glava, "0000", merged = true)}.mp3"
+        return inBookDir && candidate.length > MAX_SAVE_PATH_LEN
+    }
+
+    private fun mp3BaseName(
+        stripName: Boolean,
+        name: String,
+        glava: String,
+        num: String = "",
+        merged: Boolean = false
+    ): String {
+        var stem = if (!stripName) File(bookStem(name)).name else ""
+        stem = (stem + glava).trim()
+        if (stem.isEmpty()) {
+            if (num.isEmpty()) return "${MERGED_PREFIX}0001"
+            return if (merged) "$MERGED_PREFIX$num" else num
+        }
+        if (num.isEmpty()) return stem
+        return stem + (if (merged) " - " else " ") + num
+    }
+
+    fun formatSignedValue(value: Int): String {
+        val sign = if (value >= 0) "+" else "-"
+        return "$sign${kotlin.math.abs(value)}"
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        voicePreviewStop()
+        ForegroundWorkService.setActive(getApplication(), false)
+        screenReader.shutdown()
+    }
+
+    companion object {
+        private const val MERGED_PREFIX = "F"
+        private const val MAX_SAVE_PATH_LEN = 220
+    }
+}
