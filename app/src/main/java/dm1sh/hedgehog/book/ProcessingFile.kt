@@ -172,27 +172,21 @@ class ProcessingFile(
 
     private fun getGlavText(text: String): String {
         val sb = StringBuilder()
-        val length = minOf(text.length, 20)
+        val trimmedInput = text.trim()
+        val length = minOf(trimmedInput.length, 50)
         for (i in 0 until length) {
-            val c = text[i]
+            val c = trimmedInput[i]
             if (isValidFilenameChar(c) && c != '.') {
                 sb.append(c)
             } else if (sb.isNotEmpty() && sb[sb.length - 1] != ' ') {
                 sb.append(' ')
             }
         }
-        val trimmed = sb.toString().trimEnd(' ')
-        return if (trimmed.isNotEmpty()) " $trimmed" else ""
+        return sb.toString().trim()
     }
 
     private fun isValidFilenameChar(c: Char): Boolean {
         return c.code >= 32 && c !in "/\\?%*|\"<>:"
-    }
-
-    private fun glavaNumFormat(glavaNum: Int, glavText: String): String {
-        if (!bookChapter) return ""
-        val numStr = "%04d".format(glavaNum)
-        return if (glavTextUse) " c_$numStr$glavText" else " c_$numStr"
     }
 
     private fun getFixSection(sentences: List<String>): Pair<List<String>, List<String>> {
@@ -202,6 +196,24 @@ class ProcessingFile(
         var glavText = ""
         var glavaNum = 0
         val hardLimit = (lastStringsLength * 1.2).toInt()
+        val chapterLabelByNum = HashMap<Int, String>()
+        val usedChapterLabels = HashSet<String>()
+
+        fun glavaLabel(num: Int, title: String): String {
+            if (!bookChapter) return ""
+            chapterLabelByNum[num]?.let { return it }
+            val cleanTitle = title.trim()
+            val base = if (cleanTitle.isNotEmpty()) cleanTitle else "c%04d".format(num)
+            val resolved = if (usedChapterLabels.add(base)) {
+                base
+            } else {
+                val fallback = "${base}_c${"%04d".format(num)}"
+                usedChapterLabels.add(fallback)
+                fallback
+            }
+            chapterLabelByNum[num] = resolved
+            return resolved
+        }
 
         for (i in sentences.indices) {
             val line = sentences[i]
@@ -214,10 +226,10 @@ class ProcessingFile(
                 val str = currentText.toString()
                 if (str.trim().isNotEmpty() && containsLetterOrDigit(str)) {
                     outSentences.add(str)
-                    outGlavs.add(glavaNumFormat(glavaNum, glavText))
-                    glavText = getGlavText(line)
+                    outGlavs.add(glavaLabel(glavaNum, glavText))
                     currentText.setLength(0)
                 }
+                glavText = getGlavText(line)
                 glavaNum++
             } else if (bookChapter &&
                 i > 2 &&
@@ -231,11 +243,11 @@ class ProcessingFile(
                 val str = currentText.toString()
                 if (str.trim().isNotEmpty()) {
                     outSentences.add(str)
-                    outGlavs.add(glavaNumFormat(glavaNum, glavText))
-                    val sliceEnd = minOf(i + 3, sentences.size)
-                    glavText = getGlavText(sentences.subList(i, sliceEnd).joinToString(" "))
+                    outGlavs.add(glavaLabel(glavaNum, glavText))
                     currentText.setLength(0)
                 }
+                val sliceEnd = minOf(i + 3, sentences.size)
+                glavText = getGlavText(sentences.subList(i, sliceEnd).joinToString(" "))
                 glavaNum++
             }
 
@@ -258,7 +270,7 @@ class ProcessingFile(
                     val textToAdd = currentText.toString()
                     if (containsLetterOrDigit(textToAdd)) {
                         outSentences.add(textToAdd)
-                        outGlavs.add(glavaNumFormat(glavaNum, glavText))
+                        outGlavs.add(glavaLabel(glavaNum, glavText))
                     }
                     currentText.setLength(0)
                 } else {
@@ -279,7 +291,7 @@ class ProcessingFile(
 
         if (currentText.isNotEmpty() && containsLetterOrDigit(currentText)) {
             outSentences.add(currentText.toString())
-            outGlavs.add(glavaNumFormat(glavaNum, glavText))
+            outGlavs.add(glavaLabel(glavaNum, glavText))
         }
 
         return outSentences to outGlavs
