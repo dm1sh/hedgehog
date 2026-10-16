@@ -628,7 +628,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onFileButtonClicked(onLaunchSystemPicker: () -> Unit) {
-        onLaunchSystemPicker()
+        if (book != null || bookLoaded) {
+            clearBook()
+        } else {
+            onLaunchSystemPicker()
+        }
     }
 
     fun onOpenBookUris(uris: List<Uri>) {

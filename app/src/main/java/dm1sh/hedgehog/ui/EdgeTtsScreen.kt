@@ -1395,35 +1395,51 @@ private fun ConversionActionDock(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            FilledTonalButton(
-                onClick = {
-                    vm.onFileButtonClicked {
-                        onRequestNativePicker(NativePickerType.OPEN_BOOKS)
-                    }
-                },
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.FolderOpen,
-                    contentDescription = vm.tr("KEY_OPEN_BOOKS"),
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = vm.tr("KEY_OPEN_BOOKS"),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (vm.bookLoaded && !vm.runWork) {
-                OutlinedIconButton(
-                    onClick = { vm.clearBook() },
-                    modifier = Modifier.size(44.dp)
+            if (vm.bookLoaded) {
+                val closeLabel = vm.tr(if (vm.loadedBooksCount <= 1) "KEY_CLOSE_BOOK" else "KEY_CLOSE_BOOKS")
+                Button(
+                    onClick = {
+                        vm.onFileButtonClicked {
+                            onRequestNativePicker(NativePickerType.OPEN_BOOKS)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = vm.tr("KEY_BOOK_CLEAR")
+                        contentDescription = vm.tr("KEY_BOOK_CLEAR"),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = closeLabel,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else {
+                FilledTonalButton(
+                    onClick = {
+                        vm.onFileButtonClicked {
+                            onRequestNativePicker(NativePickerType.OPEN_BOOKS)
+                        }
+                    },
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.FolderOpen,
+                        contentDescription = vm.tr("KEY_OPEN_BOOKS"),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = vm.tr("KEY_OPEN_BOOKS"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
