@@ -1,8 +1,6 @@
 package dm1sh.hedgehog.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,8 +8,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,14 +22,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dm1sh.hedgehog.model.PartStatus
 import kotlin.math.max
 import kotlin.math.min
@@ -40,14 +36,13 @@ fun StatusGridView(
     statuses: List<PartStatus>,
     tr: (String) -> String,
     onSpeakTooltip: (String) -> Unit,
-    fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
     val count = statuses.size
     if (count == 0) return
 
     val density = LocalDensity.current
-    val boxSizeDp = 16.dp
+    val boxSizeDp = 18.dp
     val boxGapDp = 6.dp
     val boxSizePx = with(density) { boxSizeDp.toPx() }
     val minGapPx = with(density) { boxGapDp.toPx() }
@@ -61,7 +56,7 @@ fun StatusGridView(
     val boxesPerRow = if (containerWidthPx > 0) {
         max(1, (containerWidthPx / cellMinPx).toInt())
     } else {
-        10
+        12
     }
     val actualGapPx = if (boxesPerRow > 1 && containerWidthPx > 0) {
         max(minGapPx, (containerWidthPx - boxesPerRow * boxSizePx) / boxesPerRow.toFloat())
@@ -72,7 +67,7 @@ fun StatusGridView(
     val totalRows = (count + boxesPerRow - 1) / boxesPerRow
     val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - minGapPx)
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
-    val containerHeightDp = (contentHeightDp + 20.dp).coerceIn(60.dp, 260.dp)
+    val containerHeightDp = (contentHeightDp + 16.dp).coerceIn(52.dp, 220.dp)
 
     val scrollState = rememberScrollState()
 
@@ -120,7 +115,7 @@ fun StatusGridView(
                         }
                     }
             ) {
-                val cornerPx = with(density) { 3.dp.toPx() }
+                val cornerPx = with(density) { 4.dp.toPx() }
                 val scrollY = scrollState.value.toFloat()
                 val viewH = with(density) { containerHeightDp.toPx() }
                 val firstRow = max(0, (scrollY / rowHeightPx).toInt() - 1)
@@ -148,20 +143,20 @@ fun StatusGridView(
         if (selectedTooltipIndex in 0 until count) {
             val st = statuses[selectedTooltipIndex]
             val tooltipText = "${tr("KEY_STAT_AREA_TEXT_1")}${selectedTooltipIndex + 1}: ${tr(st.trKey)}"
-            val tx = tooltipOffsetPx.x.toInt().coerceIn(0, (containerWidthPx - 180).coerceAtLeast(0))
-            val ty = (tooltipOffsetPx.y.toInt() - 44).coerceAtLeast(0)
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(tx, ty) }
-                    .background(Color(0xFF222222), RoundedCornerShape(4.dp))
-                    .border(1.dp, Color(0xFF555555), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            val tx = tooltipOffsetPx.x.toInt().coerceIn(0, (containerWidthPx - 200).coerceAtLeast(0))
+            val ty = (tooltipOffsetPx.y.toInt() - 42).coerceAtLeast(0)
+            Surface(
+                modifier = Modifier.offset { IntOffset(tx, ty) },
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.inverseSurface,
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                tonalElevation = 4.dp,
+                shadowElevation = 4.dp
             ) {
                 Text(
                     text = tooltipText,
-                    color = Color(0xFFEEEEEE),
-                    fontSize = 15.sp,
-                    fontFamily = fontFamily
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                 )
             }
         }

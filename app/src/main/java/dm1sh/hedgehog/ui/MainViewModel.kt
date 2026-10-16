@@ -44,8 +44,8 @@ enum class SettingsTab {
     VOICE, BOOK, TOOL, INTERFACE
 }
 
-enum class FileDialogPurpose {
-    NONE, OPEN_BOOKS, SAVE_DIR, LOAD_DIR, LEXX_FILE, GLAV_MP3
+enum class NativePickerType {
+    OPEN_BOOKS, SAVE_DIR, LOAD_DIR, LEXX_FILE, GLAV_MP3
 }
 
 enum class DopModal {
@@ -78,7 +78,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // UI navigation states
     var activeSettingsTab by mutableStateOf(SettingsTab.VOICE)
     var dopModal by mutableStateOf(DopModal.NONE)
-    var fileDialogPurpose by mutableStateOf(FileDialogPurpose.NONE)
 
     // Chapter modal temp states
     var tempRegexGlava by mutableStateOf("")
@@ -537,7 +536,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Book Open / Clear
-    fun onFileButtonClicked() {
+    fun onFileButtonClicked(onLaunchSystemPicker: () -> Unit) {
         if (book != null) {
             stopConversion(announce = false)
             bookLoaded = false
@@ -561,10 +560,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (files.isNotEmpty()) {
                     onOpenBooks(files)
                 } else {
-                    fileDialogPurpose = FileDialogPurpose.OPEN_BOOKS
+                    onLaunchSystemPicker()
                 }
             } else {
-                fileDialogPurpose = FileDialogPurpose.OPEN_BOOKS
+                onLaunchSystemPicker()
             }
         }
     }

@@ -15,8 +15,11 @@ Native Android reimplementation of **EdgeTTS** built with **Kotlin** and **Jetpa
   - Native parsers for `.txt`, `.ini`, `.fb2`, `.epub`, `.csv`, and `.zip` archives containing books, with automatic UTF-8 and Windows-1251 (CP1251) encoding detection.
   - `.lexx` pronunciation & regex dictionary support (`regex"=replacement`, case-sensitive `#` rules, whole-word vs. substring replacements).
   - Chapter splitting by customizable regular expression, optional chapter intro audio (`glav.mp3`), chapter titles in output filenames, and configurable MP3 chunk merging (`1..99` parts or `All`).
-- **Original Dark UI in Jetpack Compose**:
-  - Faithful recreation of the Godot dark UI (`CenterMenu`, `Group1`–`Group8`, bottom icon toolbar, `DopMenu` modals, full-screen/split-screen Part Editor with live preview, and interactive `StatusGrid` Canvas with per-part status colors and tooltips).
+- **Material 3 UI with Monet Dynamic Color**:
+  - Designed according to **Material 3** guidelines (`Scaffold`, `TopAppBar`, `NavigationBar`, `ElevatedCard` / `OutlinedCard`, `ExposedDropdownMenuBox`, searchable `ModalBottomSheet` voice picker, `OutlinedTextField`, Material 3 `Slider`, `Switch` with check icon, and `AlertDialog`).
+  - Supports **Monet Dynamic Color** (`dynamicDarkColorScheme` / `dynamicLightColorScheme` on Android 12+) and edge-to-edge system bars respecting system light/dark theme.
+  - Native Android system file & directory pickers (`OpenMultipleDocuments`, `OpenDocument`, `OpenDocumentTree`).
+  - Interactive `StatusGrid` Canvas with per-part status colors and Material 3 tooltips, plus full-screen/split-screen Part Editor with live preview.
   - 12-language localization (`localization/translations.csv`: Auto, English, Russian, Ukrainian, Belarusian, Kazakh, German, French, Spanish, Italian, Portuguese, Chinese, Turkish).
   - Built-in UI Screen Reader (`TextToSpeech`) for accessibility.
 - **Background Execution & Storage**:

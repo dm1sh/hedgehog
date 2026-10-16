@@ -296,6 +296,65 @@ class SettingsRepository(private val context: Context) {
     }
 
     /**
+     * Resolves an Android directory tree content:// URI (from OpenDocumentTree) to an absolute filesystem path.
+     */
+    fun resolveAndroidTreeUriToPath(uri: Uri): String {
+        try {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            context.contentResolver.takePersistableUriPermission(uri, flags)
+        } catch (_: Exception) {
+        }
+
+        val rawStr = uri.toString()
+        if (!rawStr.startsWith("content://")) {
+            return uri.path ?: defaultDownloadsDir
+        }
+
+        try {
+            val docId = try {
+                DocumentsContract.getTreeDocumentId(uri)
+            } catch (_: Exception) {
+                val decoded = Uri.decode(rawStr)
+                val marker = "/tree/"
+                val idx = decoded.indexOf(marker)
+                if (idx != -1) decoded.substring(idx + marker.length).substringBefore("/document/") else ""
+            }
+
+            if (docId.isNotEmpty()) {
+                if (docId.startsWith("raw:")) {
+                    return docId.removePrefix("raw:")
+                }
+                if (docId.equals("downloads", ignoreCase = true)) {
+                    return defaultDownloadsDir
+                }
+                if (docId.startsWith("home:", ignoreCase = true)) {
+                    val rel = docId.substringAfter(':')
+                    val docs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS).absolutePath
+                    return if (rel.isNotEmpty()) "$docs/$rel" else docs
+                }
+                val colon = docId.indexOf(':')
+                if (colon >= 0) {
+                    val volume = docId.substring(0, colon)
+                    val rel = docId.substring(colon + 1).trim('/')
+                    val base = if (volume.equals("primary", ignoreCase = true)) {
+                        Environment.getExternalStorageDirectory().absolutePath
+                    } else {
+                        "/storage/$volume"
+                    }
+                    val real = if (rel.isNotEmpty()) "$base/$rel" else base
+                    try {
+                        File(real).mkdirs()
+                    } catch (_: Exception) {
+                    }
+                    return real
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return defaultDownloadsDir
+    }
+
+    /**
      * Resolves an Android content:// URI to an absolute filesystem path (matching Globals.resolve_android_path),
      * or copies it into cacheDir if direct path access is unavailable.
      */

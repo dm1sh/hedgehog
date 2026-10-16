@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.CompositionLocalProvider
@@ -16,13 +17,14 @@ import androidx.compose.ui.unit.Density
 import androidx.core.content.ContextCompat
 import dm1sh.hedgehog.ui.DopModal
 import dm1sh.hedgehog.ui.EdgeTtsScreen
-import dm1sh.hedgehog.ui.FileDialogPurpose
 import dm1sh.hedgehog.ui.MainViewModel
+import dm1sh.hedgehog.ui.NativePickerType
+import dm1sh.hedgehog.ui.theme.HedgehogTheme
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
-    private var pendingPickerPurpose: FileDialogPurpose = FileDialogPurpose.NONE
+    private var pendingPickerType: NativePickerType? = null
     private var lastBackPressTime = 0L
 
     private val openMultipleDocumentsLauncher = registerForActivityResult(
@@ -30,7 +32,10 @@ class MainActivity : ComponentActivity() {
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
             val paths = uris.map { viewModel.repo.resolveAndroidUriToPath(it) }
+            viewModel.ttsSay(viewModel.tr("KEY_FD_CONFIRMED"))
             viewModel.onOpenBooks(paths)
+        } else {
+            viewModel.ttsSay(viewModel.tr("KEY_FD_CANCELLED"))
         }
     }
 
@@ -39,16 +44,42 @@ class MainActivity : ComponentActivity() {
     ) { uri: Uri? ->
         if (uri != null) {
             val path = viewModel.repo.resolveAndroidUriToPath(uri)
-            when (pendingPickerPurpose) {
-                FileDialogPurpose.LEXX_FILE -> {
-                    viewModel.updateSettings { it.copy(lexxPath = path) }
+            viewModel.ttsSay(viewModel.tr("KEY_FD_CONFIRMED"))
+            when (pendingPickerType) {
+                NativePickerType.LEXX_FILE -> {
+                    viewModel.updateSettings { it.copy(lexxPath = path, lexxUse = path.isNotBlank()) }
                     viewModel.loadLexx()
                 }
-                FileDialogPurpose.GLAV_MP3 -> {
+                NativePickerType.GLAV_MP3 -> {
                     viewModel.tempGlavMp3Path = path
+                    if (path.isNotBlank()) {
+                        viewModel.tempGlavMp3Use = true
+                    }
                 }
                 else -> {}
             }
+        } else {
+            viewModel.ttsSay(viewModel.tr("KEY_FD_CANCELLED"))
+        }
+    }
+
+    private val openDocumentTreeLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val dirPath = viewModel.repo.resolveAndroidTreeUriToPath(uri)
+            viewModel.ttsSay(viewModel.tr("KEY_FD_CONFIRMED"))
+            when (pendingPickerType) {
+                NativePickerType.SAVE_DIR -> {
+                    viewModel.updateSettings { it.copy(saveDir = dirPath) }
+                }
+                NativePickerType.LOAD_DIR -> {
+                    viewModel.updateSettings { it.copy(loadDir = dirPath, loadDirUse = dirPath.isNotBlank()) }
+                }
+                else -> {}
+            }
+        } else {
+            viewModel.ttsSay(viewModel.tr("KEY_FD_CANCELLED"))
         }
     }
 
@@ -57,6 +88,7 @@ class MainActivity : ComponentActivity() {
     ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         requestNeededPermissions()
@@ -64,9 +96,6 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
-                    viewModel.fileDialogPurpose != FileDialogPurpose.NONE -> {
-                        viewModel.fileDialogPurpose = FileDialogPurpose.NONE
-                    }
                     viewModel.dopModal != DopModal.NONE -> {
                         viewModel.dopModal = DopModal.NONE
                     }
@@ -75,9 +104,6 @@ class MainActivity : ComponentActivity() {
                     }
                     viewModel.settings.showTextAreaPressed -> {
                         viewModel.onEditorClosePressed()
-                    }
-                    viewModel.settings.dopSettingsPressed -> {
-                        viewModel.toggleDopSettings()
                     }
                     else -> {
                         val now = System.currentTimeMillis()
@@ -98,28 +124,32 @@ class MainActivity : ComponentActivity() {
                 density = baseDensity.density * zoom,
                 fontScale = baseDensity.fontScale
             )
-            CompositionLocalProvider(LocalDensity provides scaledDensity) {
-                EdgeTtsScreen(
-                    vm = viewModel,
-                    onRequestSystemFilePicker = { purpose ->
-                        pendingPickerPurpose = purpose
-                        when (purpose) {
-                            FileDialogPurpose.OPEN_BOOKS -> {
-                                openMultipleDocumentsLauncher.launch(arrayOf("*/*"))
+            HedgehogTheme(dynamicColor = true) {
+                CompositionLocalProvider(LocalDensity provides scaledDensity) {
+                    EdgeTtsScreen(
+                        vm = viewModel,
+                        onRequestNativePicker = { pickerType ->
+                            pendingPickerType = pickerType
+                            when (pickerType) {
+                                NativePickerType.OPEN_BOOKS -> {
+                                    openMultipleDocumentsLauncher.launch(arrayOf("*/*"))
+                                }
+                                NativePickerType.LEXX_FILE -> {
+                                    openSingleDocumentLauncher.launch(arrayOf("*/*"))
+                                }
+                                NativePickerType.GLAV_MP3 -> {
+                                    openSingleDocumentLauncher.launch(arrayOf("audio/*"))
+                                }
+                                NativePickerType.SAVE_DIR, NativePickerType.LOAD_DIR -> {
+                                    openDocumentTreeLauncher.launch(null)
+                                }
                             }
-                            FileDialogPurpose.LEXX_FILE -> {
-                                openSingleDocumentLauncher.launch(arrayOf("*/*"))
-                            }
-                            FileDialogPurpose.GLAV_MP3 -> {
-                                openSingleDocumentLauncher.launch(arrayOf("audio/*"))
-                            }
-                            else -> {}
+                        },
+                        onExitApp = {
+                            finish()
                         }
-                    },
-                    onExitApp = {
-                        finish()
-                    }
-                )
+                    )
+                }
             }
         }
     }
