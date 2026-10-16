@@ -397,6 +397,35 @@ private fun BookTabContent(
                         .weight(1f)
                         .fillMaxWidth()
                 )
+                if (vm.bookTitles.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val multiBooks = vm.bookTitles.size > 1
+                        vm.bookTitles.forEachIndexed { idx, title ->
+                            OutlinedTextField(
+                                value = title,
+                                onValueChange = { if (!vm.runWork) vm.updateBookTitle(idx, it) },
+                                readOnly = vm.runWork,
+                                singleLine = true,
+                                label = {
+                                    Text(
+                                        text = if (multiBooks) {
+                                            "${vm.tr("KEY_BOOK")} ${idx + 1}"
+                                        } else {
+                                            vm.tr("KEY_BOOK")
+                                        }
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
             }
             else -> {
                 LoadFolderFilesCard(

@@ -129,6 +129,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var loadedBooksCount by mutableIntStateOf(0)
         private set
+    val bookTitles = mutableStateListOf<String>()
     private val filesList = mutableListOf<String>()
     private var lexxRules: List<String> = emptyList()
     private var numTextCounter = 0
@@ -609,12 +610,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return tr(if (loadedBooksCount <= 1) "KEY_SINGLE_BOOK_LOADED" else "KEY_BOOK_LOADED")
     }
 
+    private fun syncBookTitlesFromBook() {
+        bookTitles.clear()
+        book?.fileNames?.forEach { meta ->
+            bookTitles.add(meta.fileName)
+        }
+    }
+
+    fun updateBookTitle(index: Int, newTitle: String) {
+        if (index in bookTitles.indices) {
+            bookTitles[index] = newTitle
+        }
+        book?.fileNames?.getOrNull(index)?.let { meta ->
+            meta.fileName = newTitle
+        }
+    }
+
     // Book Open / Clear
     fun clearBook() {
         stopConversion(announce = false)
         isBookLoading = false
         bookLoaded = false
         loadedBooksCount = 0
+        bookTitles.clear()
         partStatuses.clear()
         textAreaText = ""
         statStr = "0 / 0"
@@ -670,6 +688,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         totalPartsCount = 0
         resetElapsedLabel()
         filesList.clear()
+        bookTitles.clear()
         book = null
         editorPartIndex = 0
         editorRefreshFields()
@@ -760,7 +779,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isBookLoading = false
                 book = currentBook
                 val count = currentBook?.allSentences?.size ?: 0
-                loadedBooksCount = filesList.size.coerceAtLeast(if (count > 0) 1 else 0)
+                syncBookTitlesFromBook()
+                loadedBooksCount = bookTitles.size.coerceAtLeast(if (count > 0) 1 else 0)
                 bookLoaded = count > 0
                 totalPartsCount = count
                 partStatuses.clear()
@@ -819,8 +839,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val nBefore = currentBook?.allSentences?.size ?: 0
         if (currentBook == null || nBefore == 0) {
             val seed = textAreaText.ifEmpty { " " }
+            val defaultTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
+                ?: "Text ${"%04d".format(numTextCounter + 1)}"
             val newBook = ProcessingFile(
-                fileName = "Text ${"%04d".format(numTextCounter + 1)}",
+                fileName = defaultTitle,
                 text = seed,
                 langLexx = if (settings.lexxUse) lexxRules else emptyList(),
                 lexxRegister = settings.lexxRegister,
@@ -848,6 +870,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val finalCount = book?.allSentences?.size ?: 0
+        syncBookTitlesFromBook()
+        loadedBooksCount = bookTitles.size.coerceAtLeast(if (finalCount > 0) 1 else 0)
         bookLoaded = finalCount > 0
         totalPartsCount = finalCount
         statStr = "0 / $finalCount"
@@ -1130,8 +1154,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (book == null) {
             numTextCounter++
             val seedText = textAreaText
+            val defaultTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
+                ?: "Text ${"%04d".format(numTextCounter)}"
             val created = ProcessingFile(
-                fileName = "Text ${"%04d".format(numTextCounter)}",
+                fileName = defaultTitle,
                 text = seedText,
                 langLexx = if (settings.lexxUse) lexxRules else emptyList(),
                 lexxRegister = settings.lexxRegister,
@@ -1143,9 +1169,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 pitch = ""
             )
             book = created
+            syncBookTitlesFromBook()
+            loadedBooksCount = bookTitles.size.coerceAtLeast(1)
+            bookLoaded = created.allSentences.isNotEmpty()
         }
 
         val activeBook = book ?: return
+        activeBook.fileNames.forEachIndexed { i, meta ->
+            val edited = bookTitles.getOrNull(i)?.trim().orEmpty()
+            if (edited.isNotEmpty()) {
+                meta.fileName = edited
+            } else if (meta.fileName.isBlank()) {
+                meta.fileName = "Text ${"%04d".format(i + 1)}"
+            }
+        }
         val total = activeBook.allSentences.size
         totalPartsCount = total
         partStatuses.clear()

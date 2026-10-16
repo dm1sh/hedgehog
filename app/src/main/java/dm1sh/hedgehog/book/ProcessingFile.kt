@@ -3,7 +3,7 @@ package dm1sh.hedgehog.book
 import java.util.Locale
 
 data class FileBookMeta(
-    val fileName: String,
+    var fileName: String,
     var endSentenceIndex: Int,
     val voice: String,
     val rate: String,
