@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val ciVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
+val ciVersionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.$ciVersionCode"
+val keystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+val keystoreFile = if (!keystorePath.isNullOrBlank()) file(keystorePath) else null
+val hasCustomSigning = keystoreFile != null && keystoreFile.exists()
+
 android {
     namespace = "dm1sh.hedgehog"
     compileSdk = 35
@@ -12,17 +18,31 @@ android {
         applicationId = "dm1sh.hedgehog"
         minSdk = 24
         targetSdk = 34
-        versionCode = 46
-        versionName = "1.0.1.24"
+        versionCode = ciVersionCode
+        versionName = ciVersionName
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
     }
 
+    signingConfigs {
+        if (hasCustomSigning) {
+            create("persistent") {
+                storeFile = keystoreFile
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasCustomSigning) {
+                signingConfig = signingConfigs.getByName("persistent")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -30,6 +50,9 @@ android {
         }
         debug {
             isDebuggable = true
+            if (hasCustomSigning) {
+                signingConfig = signingConfigs.getByName("persistent")
+            }
         }
     }
 
