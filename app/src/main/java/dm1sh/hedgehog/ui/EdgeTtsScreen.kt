@@ -1437,126 +1437,110 @@ private fun TextAreaEditorPanel(
     val taFontSize = (vm.settings.fontSize + 2).sp
     val noNav = vm.totalPartsCount <= 1
 
-    OutlinedCard(modifier = modifier) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+    Column(
+        modifier = modifier.padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Header bar: Preview Play/Stop & Part Counter
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Header bar: Preview Play/Stop & Part Counter
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            if (!vm.runWork) {
+                FilledTonalIconButton(
+                    onClick = { vm.onEditorPlayPressed() }
                 ) {
-                    if (!vm.runWork) {
-                        FilledTonalIconButton(
-                            onClick = { vm.onEditorPlayPressed() }
-                        ) {
-                            Icon(
-                                imageVector = if (vm.partPreviewActive) {
-                                    Icons.Default.Stop
-                                } else {
-                                    Icons.Default.PlayArrow
-                                },
-                                contentDescription = null
-                            )
-                        }
-                    }
-                    Text(
-                        text = "${vm.tr("KEY_TOTAL_PARTS")}${vm.totalPartsCount}",
-                        style = MaterialTheme.typography.titleMedium
+                    Icon(
+                        imageVector = if (vm.partPreviewActive) {
+                            Icons.Default.Stop
+                        } else {
+                            Icons.Default.PlayArrow
+                        },
+                        contentDescription = null
+                    )
+                }
+            }
+            Text(
+                text = "${vm.tr("KEY_TOTAL_PARTS")}${vm.totalPartsCount}",
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+
+        // Native Material 3 OutlinedTextField for editing part text
+        OutlinedTextField(
+            value = vm.textAreaText,
+            onValueChange = { if (!vm.runWork) vm.textAreaText = it },
+            readOnly = vm.runWork,
+            placeholder = { Text(vm.tr("KEY_TEXTAREA")) },
+            textStyle = TextStyle(fontSize = taFontSize),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        )
+
+        // Bottom Navigation & Save Controls
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilledTonalIconButton(
+                    onClick = { vm.onEditorPrevPressed() },
+                    enabled = !noNav
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronLeft,
+                        contentDescription = null
                     )
                 }
 
-                IconButton(onClick = { vm.onEditorClosePressed() }) {
+                OutlinedTextField(
+                    value = vm.editorPartFieldText,
+                    onValueChange = { vm.editorPartFieldText = it },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            focusManager.clearFocus()
+                            vm.onEditorPartNumberSubmitted(vm.editorPartFieldText)
+                        }
+                    ),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        textAlign = TextAlign.Center
+                    ),
+                    modifier = Modifier.width(88.dp)
+                )
+
+                FilledTonalIconButton(
+                    onClick = { vm.onEditorNextPressed() },
+                    enabled = !noNav
+                ) {
                     Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = vm.tr("KEY_CANCEL")
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null
                     )
                 }
             }
 
-            // Native Material 3 OutlinedTextField for editing part text
-            OutlinedTextField(
-                value = vm.textAreaText,
-                onValueChange = { if (!vm.runWork) vm.textAreaText = it },
-                readOnly = vm.runWork,
-                placeholder = { Text(vm.tr("KEY_TEXTAREA")) },
-                textStyle = TextStyle(fontSize = taFontSize),
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            )
-
-            // Bottom Navigation & Save Controls
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Button(
+                onClick = { vm.onEditorSavePressed() },
+                enabled = !vm.runWork
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalIconButton(
-                        onClick = { vm.onEditorPrevPressed() },
-                        enabled = !noNav
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ChevronLeft,
-                            contentDescription = null
-                        )
-                    }
-
-                    OutlinedTextField(
-                        value = vm.editorPartFieldText,
-                        onValueChange = { vm.editorPartFieldText = it },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onDone = {
-                                focusManager.clearFocus()
-                                vm.onEditorPartNumberSubmitted(vm.editorPartFieldText)
-                            }
-                        ),
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            textAlign = TextAlign.Center
-                        ),
-                        modifier = Modifier.width(88.dp)
-                    )
-
-                    FilledTonalIconButton(
-                        onClick = { vm.onEditorNextPressed() },
-                        enabled = !noNav
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ChevronRight,
-                            contentDescription = null
-                        )
-                    }
-                }
-
-                Button(
-                    onClick = { vm.onEditorSavePressed() },
-                    enabled = !vm.runWork
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(vm.tr("KEY_OK"))
-                }
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(vm.tr("KEY_OK"))
             }
         }
     }
