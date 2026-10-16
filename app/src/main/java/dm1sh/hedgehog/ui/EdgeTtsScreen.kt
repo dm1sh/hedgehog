@@ -392,7 +392,7 @@ private fun BookTabContent(
     val activeDropdownExpanded = if (useOnline) vm.voicesDropdownOpen else vm.offlineVoicesDropdownOpen
 
     Column(
-        modifier = modifier,
+        modifier = modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Spacer(modifier = Modifier.height(2.dp))
@@ -465,23 +465,18 @@ private fun BookTabContent(
                 BookLoadingCard(
                     vm = vm,
                     modifier = Modifier
-                        .weight(1f)
                         .fillMaxWidth()
+                        .heightIn(min = 220.dp)
                 )
             }
             vm.bookLoaded && vm.partStatuses.isNotEmpty() -> {
                 BookStatusGridCard(
                     vm = vm,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth()
                 )
                 if (vm.bookTitles.isNotEmpty()) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 180.dp)
-                            .verticalScroll(rememberScrollState()),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         val multiBooks = vm.bookTitles.size > 1
@@ -510,9 +505,7 @@ private fun BookTabContent(
                 LoadFolderFilesCard(
                     vm = vm,
                     onRequestNativePicker = onRequestNativePicker,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
@@ -528,7 +521,9 @@ private fun BookLoadingCard(
 ) {
     OutlinedCard(modifier = modifier) {
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 220.dp),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -571,7 +566,7 @@ private fun BookStatusGridCard(
     ) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -656,8 +651,8 @@ private fun BookStatusGridCard(
                 tr = vm::tr,
                 onSpeakTooltip = { vm.ttsSay(it) },
                 modifier = Modifier
-                    .weight(1f)
                     .fillMaxWidth()
+                    .heightIn(min = 160.dp, max = 280.dp)
             )
         }
     }
@@ -673,7 +668,7 @@ private fun LoadFolderFilesCard(
     val files = vm.loadDirFiles
 
     OutlinedCard(modifier = modifier) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             // Card Header: Load Folder Title, Path, Refresh & Change Folder Actions
             Row(
                 modifier = Modifier
@@ -731,8 +726,8 @@ private fun LoadFolderFilesCard(
             if (files.isEmpty()) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
@@ -781,15 +776,8 @@ private fun LoadFolderFilesCard(
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    itemsIndexed(
-                        items = files,
-                        key = { _, file -> file.absolutePath }
-                    ) { idx, file ->
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    files.forEachIndexed { idx, file ->
                         if (idx > 0) {
                             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                         }

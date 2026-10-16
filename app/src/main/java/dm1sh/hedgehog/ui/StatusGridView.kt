@@ -65,12 +65,14 @@ fun StatusGridView(
     val totalRows = (count + boxesPerRow - 1) / boxesPerRow
     val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - gapPx)
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
+    val viewportHeightDp = contentHeightDp.coerceIn(160.dp, 280.dp)
 
     val scrollState = rememberScrollState()
 
     Box(
         modifier = modifier
-            .fillMaxSize()
+            .fillMaxWidth()
+            .height(viewportHeightDp)
             .onSizeChanged {
                 containerWidthPx = it.width
                 containerHeightPx = it.height
