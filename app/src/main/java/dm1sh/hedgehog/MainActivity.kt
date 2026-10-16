@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.Density
 import androidx.core.content.ContextCompat
 import dm1sh.hedgehog.ui.DopModal
 import dm1sh.hedgehog.ui.EdgeTtsScreen
+import dm1sh.hedgehog.ui.MainTab
 import dm1sh.hedgehog.ui.MainViewModel
 import dm1sh.hedgehog.ui.NativePickerType
 import dm1sh.hedgehog.ui.theme.HedgehogTheme
@@ -85,7 +86,14 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
+    ) {
+        viewModel.refreshLoadDirFiles()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshLoadDirFiles()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -102,8 +110,8 @@ class MainActivity : ComponentActivity() {
                     viewModel.voicesDropdownOpen || viewModel.languagesDropdownOpen || viewModel.uiTtsDropdownOpen -> {
                         viewModel.closeAllDropdowns()
                     }
-                    viewModel.settings.showTextAreaPressed -> {
-                        viewModel.onEditorClosePressed()
+                    viewModel.activeMainTab != MainTab.BOOK -> {
+                        viewModel.selectMainTab(MainTab.BOOK)
                     }
                     else -> {
                         val now = System.currentTimeMillis()

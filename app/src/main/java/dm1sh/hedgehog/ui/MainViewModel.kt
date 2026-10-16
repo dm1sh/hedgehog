@@ -40,6 +40,10 @@ import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+enum class MainTab {
+    BOOK, PARTS, SETTINGS
+}
+
 enum class SettingsTab {
     VOICE, BOOK, TOOL, INTERFACE
 }
@@ -76,8 +80,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var uiTtsDropdownOpen by mutableStateOf(false)
 
     // UI navigation states
+    var activeMainTab by mutableStateOf(MainTab.BOOK)
     var activeSettingsTab by mutableStateOf(SettingsTab.VOICE)
     var dopModal by mutableStateOf(DopModal.NONE)
+
+    // Files inside Load directory (shown on Book tab when no book is loaded)
+    val loadDirFiles = mutableStateListOf<File>()
 
     // Chapter modal temp states
     var tempRegexGlava by mutableStateOf("")
@@ -152,12 +160,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         OfflineTtsEngine.setMaxJobs(settings.maxThreads)
         setupInitialLists()
         loadLexx()
+        refreshLoadDirFiles()
         activeSettingsTab = when {
             settings.group8Visible -> SettingsTab.INTERFACE
             settings.group7Visible -> SettingsTab.TOOL
             settings.group6Visible -> SettingsTab.BOOK
             else -> SettingsTab.VOICE
         }
+    }
+
+    fun refreshLoadDirFiles() {
+        val dirPath = settings.loadDir.ifBlank { repo.defaultDownloadsDir }
+        val dirFile = File(dirPath)
+        val found = if (dirFile.exists() && dirFile.isDirectory) {
+            dirFile.listFiles()
+                ?.filter { it.isFile && AppSettings.BOOK_EXTENSIONS.contains(it.extension.lowercase()) }
+                ?.sortedBy { it.name.lowercase() }
+                .orEmpty()
+        } else {
+            emptyList()
+        }
+        loadDirFiles.clear()
+        loadDirFiles.addAll(found)
+    }
+
+    fun selectMainTab(tab: MainTab) {
+        if (activeMainTab == tab) return
+        if (activeMainTab == MainTab.PARTS && tab != MainTab.PARTS) {
+            if (partPreviewActive) voicePreviewStop()
+            if (!runWork) {
+                revertEditorSnapshotIfPossible()
+            } else {
+                clearEditorSnapshot()
+            }
+        }
+        if (tab == MainTab.PARTS && activeMainTab != MainTab.PARTS) {
+            val b = book
+            if (b != null) {
+                editorPartIndex = editorPartIndex.coerceIn(0, (b.allSentences.size - 1).coerceAtLeast(0))
+            }
+            editorLoadCurrentPart()
+            takeEditorSnapshot()
+        }
+        if (tab == MainTab.BOOK) {
+            refreshLoadDirFiles()
+        }
+        activeMainTab = tab
+        updateSettings {
+            it.copy(
+                showTextAreaPressed = (tab == MainTab.PARTS),
+                dopSettingsPressed = (tab == MainTab.SETTINGS)
+            )
+        }
+        val key = when (tab) {
+            MainTab.BOOK -> "KEY_SETTINGS_BOOK"
+            MainTab.PARTS -> "KEY_VIEW_TEXT"
+            MainTab.SETTINGS -> "KEY_SETTINGS"
+        }
+        ttsSay(tr(key))
     }
 
     fun tr(key: String): String {
@@ -207,8 +267,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        val oldLoadDir = settings.loadDir
         settings = transform(settings)
         repo.saveSettings(settings)
+        if (settings.loadDir != oldLoadDir) {
+            refreshLoadDirFiles()
+        }
     }
 
     fun ttsSay(message: String, hard: Boolean = false, stopFirst: Boolean = true) {
@@ -548,6 +612,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             editorPartIndex = 0
             clearEditorSnapshot()
             editorRefreshFields()
+            refreshLoadDirFiles()
             ttsSay(tr("KEY_BOOK_CLEAR"))
         } else {
             val loadDirFile = File(settings.loadDir)
@@ -703,7 +768,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             clearEditorSnapshot()
         }
-        updateSettings { it.copy(showTextAreaPressed = false) }
+        activeMainTab = MainTab.BOOK
+        updateSettings { it.copy(showTextAreaPressed = false, dopSettingsPressed = false) }
+        refreshLoadDirFiles()
         ttsSay(tr("KEY_EDITOR_CLOSE"))
     }
 
@@ -743,13 +810,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val finalCount = book?.allSentences?.size ?: 0
+        bookLoaded = finalCount > 0
         totalPartsCount = finalCount
         statStr = "0 / $finalCount"
         partStatuses.clear()
         repeat(finalCount) { partStatuses.add(PartStatus.OPENED) }
         editorLoadCurrentPart()
+        takeEditorSnapshot()
         ttsSay(tr("KEY_SAVED"))
-        updateSettings { it.copy(showTextAreaPressed = false) }
     }
 
     fun onEditorPrevPressed() {
@@ -1271,6 +1339,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 moveToRecycleBin()
             }
             withContext(Dispatchers.Main) {
+                refreshLoadDirFiles()
                 if (runIdGen.get() == rid && runWork) {
                     runWork = false
                     ForegroundWorkService.setActive(getApplication(), false)

@@ -3,6 +3,7 @@ package dm1sh.hedgehog.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -49,6 +50,7 @@ fun StatusGridView(
     val rowHeightPx = boxSizePx + minGapPx
 
     var containerWidthPx by remember { mutableIntStateOf(0) }
+    var containerHeightPx by remember { mutableIntStateOf(0) }
     var selectedTooltipIndex by remember { mutableIntStateOf(-1) }
     var tooltipOffsetPx by remember { mutableStateOf(Offset.Zero) }
 
@@ -67,22 +69,20 @@ fun StatusGridView(
     val totalRows = (count + boxesPerRow - 1) / boxesPerRow
     val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - minGapPx)
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
-    val containerHeightDp = (contentHeightDp + 16.dp).coerceIn(52.dp, 220.dp)
 
     val scrollState = rememberScrollState()
 
     Box(
         modifier = modifier
-            .fillMaxWidth()
-            .height(containerHeightDp)
+            .fillMaxSize()
             .onSizeChanged {
                 containerWidthPx = it.width
+                containerHeightPx = it.height
             }
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(containerHeightDp)
+                .fillMaxSize()
                 .verticalScroll(scrollState)
         ) {
             Canvas(
@@ -117,7 +117,7 @@ fun StatusGridView(
             ) {
                 val cornerPx = with(density) { 4.dp.toPx() }
                 val scrollY = scrollState.value.toFloat()
-                val viewH = with(density) { containerHeightDp.toPx() }
+                val viewH = if (containerHeightPx > 0) containerHeightPx.toFloat() else size.height
                 val firstRow = max(0, (scrollY / rowHeightPx).toInt() - 1)
                 val lastRow = min(totalRows, ((scrollY + viewH) / rowHeightPx).toInt() + 2)
 
