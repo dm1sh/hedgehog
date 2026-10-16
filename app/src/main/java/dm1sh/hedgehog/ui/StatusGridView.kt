@@ -43,31 +43,24 @@ fun StatusGridView(
     if (count == 0) return
 
     val density = LocalDensity.current
-    val boxSizeDp = 18.dp
+    val boxesPerRow = 10
     val boxGapDp = 6.dp
-    val boxSizePx = with(density) { boxSizeDp.toPx() }
-    val minGapPx = with(density) { boxGapDp.toPx() }
-    val rowHeightPx = boxSizePx + minGapPx
+    val gapPx = with(density) { boxGapDp.toPx() }
 
     var containerWidthPx by remember { mutableIntStateOf(0) }
     var containerHeightPx by remember { mutableIntStateOf(0) }
     var selectedTooltipIndex by remember { mutableIntStateOf(-1) }
     var tooltipOffsetPx by remember { mutableStateOf(Offset.Zero) }
 
-    val cellMinPx = boxSizePx + minGapPx
-    val boxesPerRow = if (containerWidthPx > 0) {
-        max(1, (containerWidthPx / cellMinPx).toInt())
+    val boxSizePx = if (containerWidthPx > 0) {
+        max(8f, (containerWidthPx - (boxesPerRow - 1) * gapPx) / boxesPerRow.toFloat())
     } else {
-        12
+        with(density) { 22.dp.toPx() }
     }
-    val actualGapPx = if (boxesPerRow > 1 && containerWidthPx > 0) {
-        max(minGapPx, (containerWidthPx - boxesPerRow * boxSizePx) / boxesPerRow.toFloat())
-    } else {
-        minGapPx
-    }
-    val cellStepPx = boxSizePx + actualGapPx
+    val cellStepPx = boxSizePx + gapPx
+    val rowHeightPx = boxSizePx + gapPx
     val totalRows = (count + boxesPerRow - 1) / boxesPerRow
-    val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - minGapPx)
+    val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - gapPx)
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
 
     val scrollState = rememberScrollState()
