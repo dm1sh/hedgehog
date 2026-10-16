@@ -147,7 +147,7 @@ fun EdgeTtsScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Hedgehog TTS",
+                            text = "Hedgehog",
                             style = MaterialTheme.typography.titleLarge,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
