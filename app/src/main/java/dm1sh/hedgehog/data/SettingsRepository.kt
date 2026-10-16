@@ -111,6 +111,7 @@ class SettingsRepository(private val context: Context) {
                 lexxRegister = s.optBoolean("lexx_register", true),
                 bookDirCreate = s.optBoolean("book_dir_create", true),
                 lowBitrate = s.optBoolean("low_bitrate", false),
+                opusOutput = s.optBoolean("opus_output", false),
                 voicePreview = s.optBoolean("voice_preview", false),
                 bookChapter = s.optBoolean("book_chapter", false),
                 dopSettingsPressed = s.optBoolean("dop_settings_pressed", false),
@@ -157,6 +158,7 @@ class SettingsRepository(private val context: Context) {
                 put("lexx_register", settings.lexxRegister)
                 put("book_dir_create", settings.bookDirCreate)
                 put("low_bitrate", settings.lowBitrate)
+                put("opus_output", settings.opusOutput)
                 put("voice_preview", settings.voicePreview)
                 put("book_chapter", settings.bookChapter)
                 put("dop_settings_pressed", settings.dopSettingsPressed)

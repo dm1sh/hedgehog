@@ -20,6 +20,7 @@ import dm1sh.hedgehog.model.PartStatus
 import dm1sh.hedgehog.service.ForegroundWorkService
 import dm1sh.hedgehog.tts.OfflineInstaller
 import dm1sh.hedgehog.tts.OfflineTtsEngine
+import dm1sh.hedgehog.tts.OpusConverter
 import dm1sh.hedgehog.tts.SecMsGecGenerator
 import dm1sh.hedgehog.tts.SocketEdgeTtsWorker
 import kotlinx.coroutines.CancellationException
@@ -1119,6 +1120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val runMergeFiles = settings.mergeFiles
         val runBookDirCreate = settings.bookDirCreate
         val runLowBitrate = settings.lowBitrate
+        val runOpusOutput = settings.opusOutput
         val runSaveDir = settings.saveDir.ifEmpty { repo.defaultDownloadsDir }
         val timeoutMsec = if (settings.restartDelay < 0) Long.MAX_VALUE else settings.restartDelay * 1000L
 
@@ -1127,7 +1129,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         progressBarVisible = true
 
         if (total == 0) {
-            finalizeConversion(currentRunId, runBookDirCreate, runMergeFiles, runLowBitrate)
+            finalizeConversion(currentRunId, runBookDirCreate, runMergeFiles, runLowBitrate, runOpusOutput)
             return
         }
 
@@ -1226,13 +1228,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             return@launch
                         }
 
+                        val finalAudioData: ByteArray
+                        val finalExt: String
+                        if (runOpusOutput) {
+                            val opusData = OpusConverter.convertMp3ToOpus(mp3Data)
+                            if (opusData != null && opusData.isNotEmpty()) {
+                                finalAudioData = opusData
+                                finalExt = "opus"
+                            } else {
+                                finalAudioData = mp3Data
+                                finalExt = "mp3"
+                            }
+                        } else {
+                            finalAudioData = mp3Data
+                            finalExt = "mp3"
+                        }
+
                         savePartMp3File(
-                            data = mp3Data,
+                            data = finalAudioData,
                             saveDirBase = runSaveDir,
                             inBookDir = runBookDirCreate,
                             fileName = spec.fileName,
                             glava = spec.glava,
-                            fileNum = spec.fileNum
+                            fileNum = spec.fileNum,
+                            ext = finalExt
                         )
                         updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
 
@@ -1245,7 +1264,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         if (doneCount >= total && runIdGen.get() == currentRunId) {
-                            finalizeConversion(currentRunId, runBookDirCreate, runMergeFiles, runLowBitrate)
+                            finalizeConversion(currentRunId, runBookDirCreate, runMergeFiles, runLowBitrate, runOpusOutput)
                         }
                     }
                     childJobs.add(job)
@@ -1275,7 +1294,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         inBookDir: Boolean,
         fileName: String,
         glava: String,
-        fileNum: String
+        fileNum: String,
+        ext: String = "mp3"
     ) {
         val targetDir = if (inBookDir) {
             "$saveDirBase/${bookStem(fileName)}"
@@ -1285,9 +1305,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val stripName = stripBookName(inBookDir, targetDir, fileName, glava)
         val dirObj = File(targetDir)
         if (dirObj.exists() || dirObj.mkdirs()) {
-            val mp3File = File(dirObj, "${mp3BaseName(stripName, fileName, glava, fileNum)}.mp3")
+            val outFile = File(dirObj, "${mp3BaseName(stripName, fileName, glava, fileNum)}.$ext")
             try {
-                FileOutputStream(mp3File).use { it.write(data) }
+                FileOutputStream(outFile).use { it.write(data) }
                 mergeMutex.withLock {
                     val byName = mergeList.getOrPut(targetDir) { mutableMapOf() }
                     val byGlava = byName.getOrPut(fileName) { mutableMapOf() }
@@ -1304,7 +1324,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         rid: Int,
         inBookDir: Boolean,
         perFile: Int,
-        lowBitrate: Boolean
+        lowBitrate: Boolean,
+        opusOutput: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val snapshot = mergeMutex.withLock {
@@ -1318,9 +1339,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             if (perFile != 1) {
-                doMerge(snapshot, inBookDir, perFile, lowBitrate, rid)
+                doMerge(snapshot, inBookDir, perFile, lowBitrate, opusOutput, rid)
             }
-            fixNames(snapshot, inBookDir, rid)
+            fixNames(snapshot, inBookDir, opusOutput, rid)
             if (runIdGen.get() == rid) {
                 moveToRecycleBin()
             }
@@ -1352,10 +1373,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         inBookDir: Boolean,
         perFile: Int,
         lowBitrate: Boolean,
+        opusOutput: Boolean,
         rid: Int
     ) {
+        val ext = if (opusOutput) "opus" else "mp3"
         val addGlavMp3 = settings.bookChapter && settings.glavMp3Use
         var soundGlavaBytes = ByteArray(0)
+        var glavaTempOpusFile: File? = null
         if (addGlavMp3) {
             soundGlavaBytes = try {
                 if (settings.glavMp3Path.isBlank()) {
@@ -1368,62 +1392,119 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Exception) {
                 ByteArray(0)
             }
+            if (opusOutput && soundGlavaBytes.isNotEmpty()) {
+                val glavaOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
+                if (glavaOpus != null && glavaOpus.isNotEmpty()) {
+                    try {
+                        val tmp = File.createTempFile("glava_intro_", ".opus", getApplication<Application>().cacheDir)
+                        tmp.writeBytes(glavaOpus)
+                        glavaTempOpusFile = tmp
+                    } catch (_: Exception) {
+                    }
+                }
+            }
         }
 
-        for ((dir, byName) in ml) {
-            for ((name, byGlava) in byName) {
-                for ((glava, nums) in byGlava) {
-                    nums.sort()
-                    if (nums.size > 1 || addGlavMp3) {
-                        val stripName = stripBookName(inBookDir, dir, name, glava)
-                        var mergeNum = 0
-                        var mergeStep = 0
-                        val mergeBuffer = ByteArrayOutputStream()
-                        if (soundGlavaBytes.isNotEmpty()) {
-                            mergeBuffer.write(soundGlavaBytes)
-                        }
-                        for (num in nums) {
-                            if (runIdGen.get() != rid) return
-                            mergeStep++
-                            val fullFile = File(dir, "${mp3BaseName(stripName, name, glava, num)}.mp3")
-                            if (fullFile.exists()) {
-                                try {
-                                    mergeBuffer.write(fullFile.readBytes())
-                                } catch (_: Exception) {
+        try {
+            for ((dir, byName) in ml) {
+                for ((name, byGlava) in byName) {
+                    for ((glava, nums) in byGlava) {
+                        nums.sort()
+                        if (nums.size > 1 || addGlavMp3) {
+                            val stripName = stripBookName(inBookDir, dir, name, glava)
+                            var mergeNum = 0
+                            var mergeStep = 0
+                            if (!opusOutput) {
+                                val mergeBuffer = ByteArrayOutputStream()
+                                if (soundGlavaBytes.isNotEmpty()) {
+                                    mergeBuffer.write(soundGlavaBytes)
                                 }
-                                fullFile.delete()
-                            }
-                            if ((perFile < 100 && mergeStep >= perFile) || num >= nums.last()) {
-                                mergeNum++
-                                mergeStep = 0
-                                val dirObj = File(dir)
-                                if (dirObj.exists()) {
-                                    val outFile = when {
-                                        nums.size <= 1 -> fullFile
-                                        perFile < 100 && perFile < nums.size ->
-                                            File(dir, "${mp3BaseName(stripName, name, glava, "%04d".format(mergeNum), merged = true)}.mp3")
-                                        else ->
-                                            File(dir, "${mp3BaseName(stripName, name, glava)}.mp3")
+                                for (num in nums) {
+                                    if (runIdGen.get() != rid) return
+                                    mergeStep++
+                                    val fullFile = File(dir, "${mp3BaseName(stripName, name, glava, num)}.mp3")
+                                    if (fullFile.exists()) {
+                                        try {
+                                            mergeBuffer.write(fullFile.readBytes())
+                                        } catch (_: Exception) {
+                                        }
+                                        fullFile.delete()
                                     }
-                                    try {
-                                        FileOutputStream(outFile).use { it.write(mergeBuffer.toByteArray()) }
-                                    } catch (_: Exception) {
+                                    if ((perFile < 100 && mergeStep >= perFile) || num >= nums.last()) {
+                                        mergeNum++
+                                        mergeStep = 0
+                                        val dirObj = File(dir)
+                                        if (dirObj.exists()) {
+                                            val outFile = when {
+                                                nums.size <= 1 -> fullFile
+                                                perFile < 100 && perFile < nums.size ->
+                                                    File(dir, "${mp3BaseName(stripName, name, glava, "%04d".format(mergeNum), merged = true)}.mp3")
+                                                else ->
+                                                    File(dir, "${mp3BaseName(stripName, name, glava)}.mp3")
+                                            }
+                                            try {
+                                                FileOutputStream(outFile).use { it.write(mergeBuffer.toByteArray()) }
+                                            } catch (_: Exception) {
+                                            }
+                                            mergeBuffer.reset()
+                                        }
                                     }
-                                    mergeBuffer.reset()
+                                }
+                            } else {
+                                val batchFiles = mutableListOf<File>()
+                                val batchInputPaths = mutableListOf<String>()
+                                glavaTempOpusFile?.let { batchInputPaths.add(it.absolutePath) }
+                                for (num in nums) {
+                                    if (runIdGen.get() != rid) return
+                                    mergeStep++
+                                    val fullFile = File(dir, "${mp3BaseName(stripName, name, glava, num)}.opus")
+                                    if (fullFile.exists()) {
+                                        batchFiles.add(fullFile)
+                                        batchInputPaths.add(fullFile.absolutePath)
+                                    }
+                                    if ((perFile < 100 && mergeStep >= perFile) || num >= nums.last()) {
+                                        mergeNum++
+                                        mergeStep = 0
+                                        val dirObj = File(dir)
+                                        if (dirObj.exists() && batchInputPaths.isNotEmpty()) {
+                                            val outFile = when {
+                                                nums.size <= 1 -> fullFile
+                                                perFile < 100 && perFile < nums.size ->
+                                                    File(dir, "${mp3BaseName(stripName, name, glava, "%04d".format(mergeNum), merged = true)}.opus")
+                                                else ->
+                                                    File(dir, "${mp3BaseName(stripName, name, glava)}.opus")
+                                            }
+                                            val tmpOutFile = File(dir, "${outFile.name}.merging.opus")
+                                            val mergedOk = OpusConverter.mergeOpusFiles(batchInputPaths, tmpOutFile.absolutePath)
+                                            batchFiles.forEach { it.delete() }
+                                            if (mergedOk && tmpOutFile.exists()) {
+                                                if (outFile.exists()) outFile.delete()
+                                                tmpOutFile.renameTo(outFile)
+                                            } else {
+                                                tmpOutFile.delete()
+                                            }
+                                        }
+                                        batchFiles.clear()
+                                        batchInputPaths.clear()
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+        } finally {
+            glavaTempOpusFile?.delete()
         }
     }
 
     private fun fixNames(
         ml: Map<String, Map<String, Map<String, MutableList<String>>>>,
         inBookDir: Boolean,
+        opusOutput: Boolean,
         rid: Int
     ) {
+        val ext = if (opusOutput) "opus" else "mp3"
         for ((dir, byName) in ml) {
             for ((name, byGlava) in byName) {
                 for ((glava, nums) in byGlava) {
@@ -1431,8 +1512,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     nums.sort()
                     if (nums.size == 1) {
                         val stripName = stripBookName(inBookDir, dir, name, glava)
-                        val src = File(dir, "${mp3BaseName(stripName, name, glava, nums[0])}.mp3")
-                        val dst = File(dir, "${mp3BaseName(stripName, name, glava)}.mp3")
+                        val src = File(dir, "${mp3BaseName(stripName, name, glava, nums[0])}.$ext")
+                        val dst = File(dir, "${mp3BaseName(stripName, name, glava)}.$ext")
                         if (src.exists()) {
                             src.renameTo(dst)
                         }

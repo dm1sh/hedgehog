@@ -18,6 +18,7 @@ data class AppSettings(
     val lexxRegister: Boolean = true,
     val bookDirCreate: Boolean = true,
     val lowBitrate: Boolean = false,
+    val opusOutput: Boolean = false,
     val voicePreview: Boolean = false,
     val bookChapter: Boolean = false,
     val dopSettingsPressed: Boolean = false,

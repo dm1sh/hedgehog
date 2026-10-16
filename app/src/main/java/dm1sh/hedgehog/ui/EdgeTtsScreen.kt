@@ -851,6 +851,17 @@ private fun VoiceSettingsGroupContent(vm: MainViewModel) {
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
         M3SwitchListItem(
+            headline = vm.tr("KEY_OPUS_OUTPUT"),
+            checked = settings.opusOutput,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(opusOutput = checked) }
+                vm.ttsSay("${vm.tr("KEY_OPUS_OUTPUT")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+        M3SwitchListItem(
             headline = vm.tr("KEY_VOICE_PREVIEW"),
             checked = settings.voicePreview,
             onCheckedChange = { checked ->
