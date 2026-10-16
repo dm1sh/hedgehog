@@ -1113,6 +1113,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onPauseOrResumeButtonPressed() {
         if (!runWork) return
         workPaused = !workPaused
+        val doneCount = (progressBarValue - 1).coerceAtLeast(0)
+        val pct = if (totalPartsCount > 0) (doneCount * 100) / totalPartsCount else 0
+        val notifTitle = book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
         if (workPaused) {
             pauseIdleSince = System.currentTimeMillis()
             statInfoDoneHighlight = false
@@ -1127,6 +1130,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             statInfo = tr("KEY_PROCESSED")
             ttsSay(tr("KEY_WORK_ON"))
         }
+        ForegroundWorkService.updateProgress(
+            context = getApplication(),
+            text = "$statInfo $doneCount / $totalPartsCount ($pct%)",
+            progress = doneCount,
+            max = totalPartsCount,
+            title = notifTitle
+        )
         updateElapsedLabel()
     }
 
@@ -1198,7 +1208,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pauseIdleSince = 0L
         runWork = true
         val currentRunId = runIdGen.incrementAndGet()
-        ForegroundWorkService.setActive(getApplication(), true, tr("KEY_WORK_RUNNING"))
+        val notifTitle = activeBook.fileNames.joinToString(", ") { it.fileName }
+        ForegroundWorkService.setActive(
+            context = getApplication(),
+            active = true,
+            text = "${tr("KEY_PROCESSED")} 0 / $total (0%)",
+            progress = 0,
+            max = total,
+            title = notifTitle
+        )
 
         statInfoDoneHighlight = false
         statInfo = tr("KEY_PROCESSED")
@@ -1354,6 +1372,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             if (runIdGen.get() == currentRunId && runWork) {
                                 progressBarValue = doneCount + 1
                                 statStr = "$doneCount / $totalPartsCount"
+                                val pct = if (totalPartsCount > 0) (doneCount * 100) / totalPartsCount else 0
+                                val statusLabel = tr(if (workPaused) "KEY_PAUSE" else "KEY_PROCESSED")
+                                ForegroundWorkService.updateProgress(
+                                    context = getApplication(),
+                                    text = "$statusLabel $doneCount / $totalPartsCount ($pct%)",
+                                    progress = doneCount,
+                                    max = totalPartsCount,
+                                    title = notifTitle
+                                )
                             }
                         }
 

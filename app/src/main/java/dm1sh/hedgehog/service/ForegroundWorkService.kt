@@ -37,12 +37,20 @@ class ForegroundWorkService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: ""
-        startForeground(NOTIFICATION_ID, buildNotification(text))
+        val title = intent?.getStringExtra(EXTRA_TITLE).orEmpty()
+        val text = intent?.getStringExtra(EXTRA_TEXT).orEmpty()
+        val progress = intent?.getIntExtra(EXTRA_PROGRESS, 0) ?: 0
+        val max = intent?.getIntExtra(EXTRA_MAX, 0) ?: 0
+        startForeground(NOTIFICATION_ID, buildNotification(title, text, progress, max))
         return START_NOT_STICKY
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(
+        title: String,
+        text: String,
+        progress: Int,
+        max: Int
+    ): Notification {
         val label = applicationInfo.loadLabel(packageManager)
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
@@ -65,24 +73,44 @@ class ForegroundWorkService : Service() {
             )
         } else null
 
-        return builder
+        val contentTitle = if (title.isNotBlank()) title else label
+        builder
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(label)
+            .setContentTitle(contentTitle)
             .setContentText(text)
             .setContentIntent(pendingIntent)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .build()
+
+        if (max > 0) {
+            builder.setProgress(max, progress.coerceIn(0, max), false)
+        }
+
+        return builder.build()
     }
 
     companion object {
         private const val CHANNEL_ID = "work"
+        const val EXTRA_TITLE = "title"
         const val EXTRA_TEXT = "text"
+        const val EXTRA_PROGRESS = "progress"
+        const val EXTRA_MAX = "max"
         private const val NOTIFICATION_ID = 1
 
-        fun setActive(context: Context, active: Boolean, text: String = "") {
+        fun setActive(
+            context: Context,
+            active: Boolean,
+            text: String = "",
+            progress: Int = 0,
+            max: Int = 0,
+            title: String = ""
+        ) {
             try {
                 val intent = Intent(context, ForegroundWorkService::class.java).apply {
+                    putExtra(EXTRA_TITLE, title)
                     putExtra(EXTRA_TEXT, text)
+                    putExtra(EXTRA_PROGRESS, progress)
+                    putExtra(EXTRA_MAX, max)
                 }
                 if (active) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -95,6 +123,23 @@ class ForegroundWorkService : Service() {
                 }
             } catch (_: Exception) {
             }
+        }
+
+        fun updateProgress(
+            context: Context,
+            text: String,
+            progress: Int,
+            max: Int,
+            title: String = ""
+        ) {
+            setActive(
+                context = context,
+                active = true,
+                text = text,
+                progress = progress,
+                max = max,
+                title = title
+            )
         }
     }
 }
