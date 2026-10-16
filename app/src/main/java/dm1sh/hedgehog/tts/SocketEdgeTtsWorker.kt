@@ -13,6 +13,9 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -27,7 +30,47 @@ import kotlin.coroutines.coroutineContext
 object SocketEdgeTtsWorker {
     private const val PREVIEW_TIMEOUT_MSEC = 30_000L
     private const val DEFAULT_STALL_TIMEOUT_MSEC = 60_000L
+    private const val BING_HOST = "speech.platform.bing.com"
+    private const val BING_PORT = 443
     private val AUDIO_SEP_BYTES = "Path:audio\r\n".toByteArray(Charsets.UTF_8)
+
+    private val probeExecutor = Executors.newCachedThreadPool()
+    private val lastReachableCheckMsec = AtomicLong(0L)
+    private val lastReachableResult = AtomicBoolean(true)
+
+    /**
+     * Verifies real TCP/DNS reachability to speech.platform.bing.com:443 with a hard timeout.
+     * Handles the case where Internet is off while a VPN TUN interface is active and
+     * Android's ConnectivityManager still reports NET_CAPABILITY_INTERNET = true.
+     */
+    fun isOnlineReachable(timeoutMs: Long = 2500L, forceRefresh: Boolean = false): Boolean {
+        val now = System.currentTimeMillis()
+        val elapsed = now - lastReachableCheckMsec.get()
+        val cached = lastReachableResult.get()
+        val ttl = if (cached) 8_000L else 4_000L
+        if (!forceRefresh && lastReachableCheckMsec.get() > 0L && elapsed in 0..ttl) {
+            return cached
+        }
+        val future = probeExecutor.submit<Boolean> {
+            try {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(BING_HOST, BING_PORT), timeoutMs.toInt())
+                    true
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
+        val ok = try {
+            future.get(timeoutMs + 200L, TimeUnit.MILLISECONDS)
+        } catch (_: Throwable) {
+            future.cancel(true)
+            false
+        }
+        lastReachableResult.set(ok)
+        lastReachableCheckMsec.set(System.currentTimeMillis())
+        return ok
+    }
 
     private val wsClient: OkHttpClient by lazy {
         val tls12Spec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
@@ -44,7 +87,7 @@ object SocketEdgeTtsWorker {
                 SecMsGecGenerator.systemTrustManager
             )
             .connectionSpecs(listOf(tls12Spec))
-            .connectTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .build()
     }
@@ -78,6 +121,7 @@ object SocketEdgeTtsWorker {
         lowBitrate: Boolean,
         timeoutMsec: Long,
         isPreview: Boolean = false,
+        fallbackToOfflineOnError: Boolean = false,
         isPaused: () -> Boolean,
         isCancelled: () -> Boolean,
         onStatusUpdate: (String) -> Unit
@@ -101,12 +145,17 @@ object SocketEdgeTtsWorker {
                 continue
             }
 
+            if (fallbackToOfflineOnError && !isOnlineReachable()) {
+                return null
+            }
+
             val effectiveTimeout = when {
                 isPreview -> PREVIEW_TIMEOUT_MSEC
                 timeoutMsec <= 0L || timeoutMsec >= 10_000_000L -> DEFAULT_STALL_TIMEOUT_MSEC
                 else -> timeoutMsec
             }
 
+            val wsOpened = AtomicBoolean(false)
             val result = attemptSingleWebSocketSynthesis(
                 voice = voice,
                 pitch = pitch,
@@ -115,12 +164,15 @@ object SocketEdgeTtsWorker {
                 audioFormat = audioFormat,
                 effectiveTimeout = effectiveTimeout,
                 isPreview = isPreview,
+                wsOpened = wsOpened,
                 isPaused = isPaused,
                 isCancelled = isCancelled,
                 onStatusUpdate = onStatusUpdate
             )
 
             if (result != null && result.isNotEmpty()) {
+                lastReachableResult.set(true)
+                lastReachableCheckMsec.set(System.currentTimeMillis())
                 SecMsGecGenerator.reportSuccess()
                 return result
             }
@@ -136,6 +188,12 @@ object SocketEdgeTtsWorker {
             SecMsGecGenerator.reportError()
 
             if (isPreview) {
+                return null
+            }
+
+            // If an offline fallback voice is available and the WebSocket could not connect
+            // (e.g. internet is off while VPN is on), return null so caller falls back to offline TTS.
+            if (fallbackToOfflineOnError && (!wsOpened.get() || !isOnlineReachable(forceRefresh = true))) {
                 return null
             }
 
@@ -161,6 +219,7 @@ object SocketEdgeTtsWorker {
         audioFormat: String,
         effectiveTimeout: Long,
         isPreview: Boolean,
+        wsOpened: AtomicBoolean,
         isPaused: () -> Boolean,
         isCancelled: () -> Boolean,
         onStatusUpdate: (String) -> Unit
@@ -174,7 +233,7 @@ object SocketEdgeTtsWorker {
         val muid = SecMsGecGenerator.generateMuid()
         val connectId = SecMsGecGenerator.generateConnectId()
 
-        val url = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?" +
+        val url = "wss://$BING_HOST/consumer/speech/synthesize/readaloud/edge/v1?" +
             "TrustedClientToken=${SecMsGecGenerator.TRUSTED_CLIENT_TOKEN}" +
             "&Sec-MS-GEC=$secMsGec" +
             "&Sec-MS-GEC-Version=${SecMsGecGenerator.SEC_MS_GEC_VERSION}" +
@@ -196,6 +255,7 @@ object SocketEdgeTtsWorker {
 
         val ws = wsClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                wsOpened.set(true)
                 lastActivityTime.set(System.currentTimeMillis())
                 if (isCancelled() || (!isPreview && isPaused())) {
                     webSocket.cancel()
