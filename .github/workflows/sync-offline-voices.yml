@@ -1,0 +1,95 @@
+name: Sync Offline Voices Release
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  push:
+    branches: [ "main" ]
+    paths:
+      - '.github/workflows/sync-offline-voices.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-offline-voices:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_BASE: "https://edgetts.github.io/assets/offline"
+      RELEASE_TAG: "offline-voices"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Voices.json and sync offline-voices release
+        run: |
+          set -euo pipefail
+
+          WORK_DIR="/tmp/offline_voices_sync"
+          EXISTING_DIR="/tmp/offline_voices_existing"
+          rm -rf "$WORK_DIR" "$EXISTING_DIR"
+          mkdir -p "$WORK_DIR" "$EXISTING_DIR"
+
+          echo "Fetching upstream Voices.json from $UPSTREAM_BASE/Voices.json..."
+          curl -fSL --retry 3 "$UPSTREAM_BASE/Voices.json" -o "$WORK_DIR/Voices.json"
+          jq -e 'type == "object" and (keys | length > 0)' "$WORK_DIR/Voices.json" > /dev/null
+
+          NEEDS_UPDATE="true"
+          RELEASE_EXISTS="false"
+
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            RELEASE_EXISTS="true"
+            echo "Release '$RELEASE_TAG' exists. Checking existing Voices.json..."
+            if gh release download "$RELEASE_TAG" --pattern "Voices.json" --dir "$EXISTING_DIR" --clobber > /dev/null 2>&1; then
+              if cmp -s "$WORK_DIR/Voices.json" "$EXISTING_DIR/Voices.json"; then
+                # Also verify all expected <voice>.zip assets exist in the release
+                EXISTING_ASSETS="$(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name')"
+                ALL_ZIPS_PRESENT="true"
+                for VOICE in $(jq -r 'keys[]' "$WORK_DIR/Voices.json"); do
+                  if ! echo "$EXISTING_ASSETS" | grep -Fxq "${VOICE}.zip"; then
+                    echo "Missing asset ${VOICE}.zip in release '$RELEASE_TAG'"
+                    ALL_ZIPS_PRESENT="false"
+                    break
+                  fi
+                done
+                if [[ "$ALL_ZIPS_PRESENT" == "true" ]]; then
+                  NEEDS_UPDATE="false"
+                fi
+              else
+                echo "Voices.json differs from release '$RELEASE_TAG'."
+              fi
+            else
+              echo "Voices.json not found in release '$RELEASE_TAG'."
+            fi
+          else
+            echo "Release '$RELEASE_TAG' does not exist yet."
+          fi
+
+          if [[ "$NEEDS_UPDATE" == "false" ]]; then
+            echo "Release '$RELEASE_TAG' is already up to date with upstream Voices.json."
+            exit 0
+          fi
+
+          echo "Downloading all voice zip archives listed in Voices.json..."
+          for VOICE in $(jq -r 'keys[]' "$WORK_DIR/Voices.json"); do
+            if [[ -z "$VOICE" || "$VOICE" == .* || "$VOICE" == */* ]]; then
+              continue
+            fi
+            ZIP_NAME="${VOICE}.zip"
+            echo "  Downloading $ZIP_NAME..."
+            curl -fSL --retry 3 "$UPSTREAM_BASE/$ZIP_NAME" -o "$WORK_DIR/$ZIP_NAME"
+            unzip -t -qq "$WORK_DIR/$ZIP_NAME"
+          done
+
+          if [[ "$RELEASE_EXISTS" == "false" ]]; then
+            echo "Creating release '$RELEASE_TAG'..."
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes "Offline TTS voices catalog (Voices.json) and model archives."
+          fi
+
+          echo "Uploading Voices.json and voice zip archives to release '$RELEASE_TAG'..."
+          gh release upload "$RELEASE_TAG" "$WORK_DIR/Voices.json" "$WORK_DIR"/*.zip --clobber
+          echo "Successfully updated release '$RELEASE_TAG'!"

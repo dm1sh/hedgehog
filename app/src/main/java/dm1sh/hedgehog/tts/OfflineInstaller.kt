@@ -13,7 +13,7 @@ import java.util.zip.ZipFile
 
 object OfflineInstaller {
 
-    private const val SITE = "https://edgetts.github.io/assets/offline/"
+    private const val SITE = "https://github.com/dm1sh/hedgehog/releases/download/offline-voices/"
     private val DEFAULT_VOICES = mapOf(
         "Dmitry" to listOf("ru"),
         "Svetlana" to listOf("ru"),
