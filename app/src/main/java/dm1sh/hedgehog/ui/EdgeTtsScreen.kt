@@ -1139,6 +1139,18 @@ private fun BookSettingsGroupContent(
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
+        // Inline footnotes (FB2 / EPUB)
+        M3SwitchListItem(
+            headline = vm.tr("KEY_INLINE_NOTES"),
+            checked = settings.inlineNotes,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(inlineNotes = checked) }
+                vm.ttsSay("${vm.tr("KEY_INLINE_NOTES")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         // Cut by chapters + Chapter Regex Modal Button
         ListItem(
             headlineContent = { Text(vm.tr("KEY_BOOK_CHAPTER")) },

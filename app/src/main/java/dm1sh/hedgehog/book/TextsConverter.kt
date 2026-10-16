@@ -1,14 +1,27 @@
 package dm1sh.hedgehog.book
 
 import dm1sh.hedgehog.model.DefaultVoices
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
+import org.jsoup.parser.Parser
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.StringReader
 import java.net.URLDecoder
+import java.util.Locale
 import java.util.zip.ZipFile
 
 object TextsConverter {
+
+    private val XHTML_EXTS = listOf(".xhtml", ".html", ".htm", ".xml")
+    private val NOTE_TYPE_ATTRS = listOf("noteref", "footnote", "endnote", "rearnote", "note")
+    private val BLOCK_TAGS = setOf("aside", "li", "div", "section", "p", "td", "dd")
+    private val BACKLINK_TEXTS = setOf("↑", "⤴", "↩", "←", "back", "return", "")
+    private val NOTEREF_MARKER_REGEX = Regex("^[(\\[{]?[\\d*†‡§¶]+[)\\]}]?$")
+    private val LEADING_NOTE_NUM_REGEX = Regex("^\\[?\\(?\\s*\\d+\\s*[.\\)\\]]?\\s*")
 
     fun ansiToUtf8(bytes: ByteArray): String {
         val sb = StringBuilder(bytes.size)
@@ -28,15 +41,76 @@ object TextsConverter {
         return if (utf8.contains('\uFFFD')) ansiToUtf8(bytes) else utf8
     }
 
-    fun convertFb2ToTxt(fb2String: String): String {
+    /**
+     * Port of fb2_tools/fb2_inline.py:
+     * Inlines FB2 footnote links (<a l:href="#note_id">) as " [[ note_text ]] "
+     * and removes the inlined note <section> elements and empty notes/comments bodies.
+     */
+    fun inlineFb2Notes(fb2String: String): String {
+        return try {
+            val doc: Document = Jsoup.parse(fb2String, "", Parser.xmlParser())
+            doc.outputSettings().prettyPrint(false)
+
+            var hrefAttr = "l:href"
+            val fictionBook = doc.selectFirst("FictionBook")
+            if (fictionBook != null) {
+                for (attr in fictionBook.attributes()) {
+                    if (attr.key.startsWith("xmlns:") && attr.value.endsWith("xlink")) {
+                        val xlinkNs = attr.key.removePrefix("xmlns:")
+                        hrefAttr = "$xlinkNs:href"
+                    }
+                }
+            }
+
+            val toRemove = LinkedHashSet<Element>()
+            val links = doc.select("a")
+            for (link in links) {
+                try {
+                    val href = link.attr(hrefAttr)
+                        .ifEmpty { link.attr("l:href") }
+                        .ifEmpty { link.attr("xlink:href") }
+                        .ifEmpty { link.attr("href") }
+                    if (href.isEmpty()) continue
+                    val id = href.removePrefix("#")
+                    if (id.isEmpty()) continue
+                    val target = doc.select("section").firstOrNull { it.attr("id") == id }
+                        ?: doc.getElementById(id)
+                        ?: continue
+                    link.replaceWith(TextNode(" [[ " + target.text() + " ]] "))
+                    toRemove.add(target)
+                } catch (_: Exception) {
+                }
+            }
+
+            for (section in toRemove) {
+                section.remove()
+            }
+
+            for (body in doc.select("body")) {
+                val nameAttr = body.attr("name")
+                if (nameAttr == "notes" || nameAttr == "comments") {
+                    if (body.selectFirst("section") == null) {
+                        body.remove()
+                    }
+                }
+            }
+
+            doc.outerHtml()
+        } catch (_: Exception) {
+            fb2String
+        }
+    }
+
+    fun convertFb2ToTxt(fb2String: String, inlineNotes: Boolean = false): String {
+        val sourceFb2 = if (inlineNotes) inlineFb2Notes(fb2String) else fb2String
         val result = StringBuilder()
         val tiRegex = Regex("(?si)<title-info>(.*?)</title-info>")
-        val tiMatch = tiRegex.find(fb2String)
+        val tiMatch = tiRegex.find(sourceFb2)
         if (tiMatch != null) {
             result.append(fb2ExtractMeta(tiMatch.groupValues[1]))
         }
         val bodyRegex = Regex("(?si)<body[^>]*>(.*?)</body>")
-        for (m in bodyRegex.findAll(fb2String)) {
+        for (m in bodyRegex.findAll(sourceFb2)) {
             val body = fb2FormatBody(m.groupValues[1])
             if (body.isNotEmpty()) {
                 if (result.isNotEmpty() && !result.endsWith("\n")) {
@@ -112,10 +186,13 @@ object TextsConverter {
         return content.trim()
     }
 
-    fun convertEpubToTxt(epubPath: String): String {
+    fun convertEpubToTxt(epubPath: String, inlineNotes: Boolean = false): String {
         val textContent = StringBuilder()
         try {
             ZipFile(epubPath).use { zip ->
+                if (inlineNotes) {
+                    return convertEpubWithInlinedNotes(zip)
+                }
                 var htmlFiles = getEpubSpine(zip)
                 if (htmlFiles.isEmpty()) {
                     htmlFiles = getEpubNcx(zip)
@@ -133,6 +210,250 @@ object TextsConverter {
         } catch (_: Exception) {
         }
         return textContent.toString()
+    }
+
+    /**
+     * Port of fb2_tools/epub_inline.py:
+     * Resolves footnote links across EPUB XHTML documents, replaces references inline
+     * with " (note_text)", removes inlined note source blocks, and extracts chapter text.
+     */
+    private fun convertEpubWithInlinedNotes(zip: ZipFile): String {
+        val names = mutableListOf<String>()
+        val files = mutableMapOf<String, String>()
+        for (entry in zip.entries().asSequence()) {
+            if (entry.isDirectory) continue
+            val name = simplifyPath(entry.name)
+            names.add(name)
+            val lower = name.lowercase(Locale.ROOT)
+            if (lower.endsWith(".opf") || lower.endsWith(".ncx") || XHTML_EXTS.any { lower.endsWith(it) }) {
+                try {
+                    val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                    files[name] = String(bytes, Charsets.UTF_8)
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        val docs = getEpubContentDocuments(names, files)
+        val parsedCache = mutableMapOf<String, Document?>()
+
+        fun soupFor(docName: String): Document? {
+            if (!parsedCache.containsKey(docName)) {
+                val content = files[docName]
+                parsedCache[docName] = if (content != null) Jsoup.parse(content, "", Parser.htmlParser()) else null
+            }
+            return parsedCache[docName]
+        }
+
+        fun findNoteElement(docName: String, anchor: String): Element? {
+            val soup = soupFor(docName) ?: return null
+            return soup.getElementById(anchor)
+                ?: soup.selectFirst("[id=\"${anchor.replace("\"", "\\\"")}\"]")
+                ?: soup.selectFirst("[name=\"${anchor.replace("\"", "\\\"")}\"]")
+        }
+
+        fun extractNoteText(docName: String, anchor: String): String? {
+            val el = findNoteElement(docName, anchor) ?: return null
+            val container = epubNoteContainer(el) ?: return null
+            val text = epubCleanNoteText(container)
+            return text.ifEmpty { null }
+        }
+
+        val noteTargets = mutableMapOf<String, MutableSet<String>>()
+
+        for (docName in docs) {
+            val rawHtml = files[docName] ?: continue
+            val docDir = if (docName.contains("/")) docName.substringBeforeLast("/") else ""
+            val soup = Jsoup.parse(rawHtml, "", Parser.htmlParser())
+            var count = 0
+
+            for (a in soup.select("a").toList()) {
+                val href = a.attr("href")
+                if (href.isEmpty()) continue
+                if (!epubLooksLikeNoteref(a)) continue
+
+                val (path, anchor) = splitHref(href)
+                val targetDoc = if (path.isEmpty()) {
+                    docName
+                } else {
+                    resolveHref(docDir, path)
+                }
+                if (anchor.isEmpty() || targetDoc.isNullOrEmpty()) continue
+
+                val noteText = extractNoteText(targetDoc, anchor) ?: continue
+                noteTargets.getOrPut(targetDoc) { mutableSetOf() }.add(anchor)
+
+                val inlineSpan = soup.createElement("span")
+                    .attr("class", "inlined-footnote")
+                    .text(" ($noteText)")
+
+                var target: Element = a
+                val parent = a.parent()
+                if (parent != null && parent.tagName().lowercase(Locale.ROOT) == "sup") {
+                    if (parent.text().trim() == a.text().trim()) {
+                        target = parent
+                    }
+                }
+                target.replaceWith(inlineSpan)
+                count++
+            }
+
+            if (count > 0) {
+                files[docName] = soup.outerHtml()
+            }
+        }
+
+        // Remove inlined note containers so footnotes are not read a second time at the end
+        for ((docName, anchors) in noteTargets) {
+            val rawHtml = files[docName] ?: continue
+            val soup = Jsoup.parse(rawHtml, "", Parser.htmlParser())
+            var changed = false
+            for (anchor in anchors) {
+                val el = soup.getElementById(anchor)
+                    ?: soup.selectFirst("[id=\"${anchor.replace("\"", "\\\"")}\"]")
+                    ?: soup.selectFirst("[name=\"${anchor.replace("\"", "\\\"")}\"]")
+                    ?: continue
+                val container = epubNoteContainer(el)
+                if (container != null) {
+                    container.remove()
+                    changed = true
+                }
+            }
+            if (changed) {
+                files[docName] = soup.outerHtml()
+            }
+        }
+
+        val textContent = StringBuilder()
+        for (docName in docs) {
+            val html = files[docName] ?: continue
+            val page = htmlToText(html)
+            if (page.isNotEmpty()) {
+                if (textContent.isNotEmpty()) textContent.append("\n")
+                textContent.append(page)
+            }
+        }
+        return textContent.toString()
+    }
+
+    private fun getEpubContentDocuments(names: List<String>, files: Map<String, String>): List<String> {
+        var opfPath: String? = null
+        val containerXml = files["META-INF/container.xml"]
+        if (containerXml != null) {
+            val soup = Jsoup.parse(containerXml, "", Parser.xmlParser())
+            val rootfile = soup.selectFirst("rootfile")
+            val fullPath = rootfile?.attr("full-path").orEmpty()
+            if (fullPath.isNotEmpty()) {
+                opfPath = simplifyPath(fullPath)
+            }
+        }
+        if (opfPath == null) {
+            opfPath = names.firstOrNull { it.lowercase(Locale.ROOT).endsWith(".opf") }
+        }
+
+        val docs = mutableListOf<String>()
+        if (opfPath != null && files.containsKey(opfPath)) {
+            val opfDir = if (opfPath.contains("/")) opfPath.substringBeforeLast("/") else ""
+            val soup = Jsoup.parse(files[opfPath]!!, "", Parser.xmlParser())
+            val manifest = LinkedHashMap<String, String>()
+            for (item in soup.select("item")) {
+                val id = item.attr("id")
+                val href = item.attr("href")
+                if (id.isNotEmpty() && href.isNotEmpty()) {
+                    val resolved = resolveHref(opfDir, href)
+                    if (!resolved.isNullOrEmpty()) {
+                        manifest[id] = resolved
+                    }
+                }
+            }
+            val spine = soup.selectFirst("spine")
+            if (spine != null) {
+                for (itemref in spine.select("itemref")) {
+                    val idref = itemref.attr("idref")
+                    val name = manifest[idref]
+                    if (name != null && name !in docs && files.containsKey(name)) {
+                        docs.add(name)
+                    }
+                }
+            }
+            for (name in manifest.values) {
+                val lower = name.lowercase(Locale.ROOT)
+                if (name !in docs && files.containsKey(name) && XHTML_EXTS.any { lower.endsWith(it) }) {
+                    docs.add(name)
+                }
+            }
+        }
+
+        if (docs.isEmpty()) {
+            for (name in names) {
+                val lower = name.lowercase(Locale.ROOT)
+                if (XHTML_EXTS.any { lower.endsWith(it) } && !name.contains("META-INF")) {
+                    docs.add(name)
+                }
+            }
+        }
+        return docs
+    }
+
+    private fun resolveHref(baseDir: String, rawHref: String): String? {
+        val withoutFrag = rawHref.substringBefore("#")
+        val decoded = try { URLDecoder.decode(withoutFrag, "UTF-8") } catch (_: Exception) { withoutFrag }
+        if (decoded.isEmpty()) return null
+        val joined = if (baseDir.isNotEmpty()) "$baseDir/$decoded" else decoded
+        return simplifyPath(joined)
+    }
+
+    private fun splitHref(rawHref: String): Pair<String, String> {
+        val pathPart = rawHref.substringBefore("#")
+        val fragPart = if (rawHref.contains("#")) rawHref.substringAfter("#") else ""
+        val decodedPath = try { URLDecoder.decode(pathPart, "UTF-8") } catch (_: Exception) { pathPart }
+        return decodedPath to fragPart
+    }
+
+    private fun epubNoteContainer(el: Element): Element? {
+        var node: Element? = el
+        while (node != null && node.tagName().lowercase(Locale.ROOT) !in BLOCK_TAGS) {
+            val parent = node.parent()
+            val parentName = parent?.tagName()?.lowercase(Locale.ROOT)
+            if (parent == null || parentName == "body" || parentName == "html" || parentName == "#root") {
+                break
+            }
+            node = parent
+        }
+        return node ?: el
+    }
+
+    private fun epubCleanNoteText(container: Element): String {
+        val clone = container.clone()
+        for (a in clone.select("a").toList()) {
+            val etype = (a.attr("epub:type").ifEmpty { a.attr("type") }).lowercase(Locale.ROOT)
+            val txt = a.text().trim()
+            if ("backlink" in etype || txt.lowercase(Locale.ROOT) in BACKLINK_TEXTS) {
+                if (txt.isNotEmpty() && "backlink" !in etype) {
+                    a.unwrap()
+                } else {
+                    a.remove()
+                }
+            }
+        }
+        var text = clone.text().replace(Regex("\\s+"), " ").trim()
+        text = LEADING_NOTE_NUM_REGEX.replace(text, "")
+        return text
+    }
+
+    private fun epubLooksLikeNoteref(a: Element): Boolean {
+        for (attr in listOf("epub:type", "type", "role")) {
+            val v = a.attr(attr).lowercase(Locale.ROOT)
+            if (NOTE_TYPE_ATTRS.any { it in v }) return true
+        }
+        val classes = a.className().lowercase(Locale.ROOT)
+        if (NOTE_TYPE_ATTRS.any { it in classes } || "fn" in classes) return true
+        if (a.parent()?.tagName()?.lowercase(Locale.ROOT) == "sup") return true
+        val txt = a.text().trim()
+        if (txt.isNotEmpty() && txt.length <= 4 && NOTEREF_MARKER_REGEX.matches(txt)) {
+            return true
+        }
+        return false
     }
 
     private fun htmlToText(rawHtml: String): String {
@@ -289,6 +610,7 @@ object TextsConverter {
 
     fun extractZipEntries(
         zipPath: String,
+        inlineNotes: Boolean = false,
         onTextEntry: (saveName: String, text: String, voice: String, rate: String, pitch: String) -> Unit
     ) {
         try {
@@ -309,7 +631,7 @@ object TextsConverter {
                         }
                         lower.endsWith("fb2") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                            onTextEntry(saveName, convertFb2ToTxt(readTextWithFallback(bytes)), "", "", "")
+                            onTextEntry(saveName, convertFb2ToTxt(readTextWithFallback(bytes), inlineNotes = inlineNotes), "", "", "")
                         }
                         lower.endsWith(".csv") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }

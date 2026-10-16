@@ -80,5 +80,8 @@ dependencies {
     implementation("com.microsoft.cognitiveservices.speech:client-sdk-embedded:1.40.0")
     implementation("de.sciss:jump3r:1.0.5")
 
+    // XML / XHTML DOM parser for FB2 & EPUB footnote inlining
+    implementation("org.jsoup:jsoup:1.18.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

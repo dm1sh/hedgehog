@@ -713,14 +713,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         "fb2" -> {
                             val raw = TextsConverter.readTextWithFallback(file.readBytes())
-                            appendTextEntry(baseName, TextsConverter.convertFb2ToTxt(raw), "", "", "")
+                            appendTextEntry(
+                                baseName,
+                                TextsConverter.convertFb2ToTxt(raw, inlineNotes = settings.inlineNotes),
+                                "",
+                                "",
+                                ""
+                            )
                         }
                         "epub" -> {
-                            val text = TextsConverter.convertEpubToTxt(file.absolutePath)
+                            val text = TextsConverter.convertEpubToTxt(
+                                file.absolutePath,
+                                inlineNotes = settings.inlineNotes
+                            )
                             appendTextEntry(baseName, text, "", "", "")
                         }
                         "zip" -> {
-                            TextsConverter.extractZipEntries(file.absolutePath) { saveName, text, v, r, p ->
+                            TextsConverter.extractZipEntries(
+                                file.absolutePath,
+                                inlineNotes = settings.inlineNotes
+                            ) { saveName, text, v, r, p ->
                                 appendTextEntry(saveName, text, v, r, p)
                             }
                         }
