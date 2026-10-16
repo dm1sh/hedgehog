@@ -313,6 +313,107 @@ object TextsConverter {
         return nameParts.joinToString(" ")
     }
 
+    private fun sanitizeBookDisplayName(name: String): String {
+        val sb = StringBuilder(name.length)
+        var lastWasSpace = false
+        for (c in name) {
+            val mapped = when {
+                c.code < 32 -> ' '
+                c in "/\\?%*:|\"<>" -> ' '
+                c.isWhitespace() -> ' '
+                else -> c
+            }
+            if (mapped == ' ') {
+                if (!lastWasSpace && sb.isNotEmpty()) {
+                    sb.append(' ')
+                    lastWasSpace = true
+                }
+            } else {
+                sb.append(mapped)
+                lastWasSpace = false
+            }
+        }
+        return sb.toString().trim().trimEnd('.')
+    }
+
+    fun extractFb2BookName(fb2String: String, fallbackName: String): String {
+        try {
+            val tiStart = fb2String.indexOf("<title-info>", ignoreCase = true)
+            if (tiStart != -1) {
+                val tiEnd = fb2String.indexOf("</title-info>", tiStart, ignoreCase = true)
+                if (tiEnd != -1) {
+                    val ti = fb2String.substring(tiStart + "<title-info>".length, tiEnd)
+                    val authors = mutableListOf<String>()
+                    for (m in Regex("(?si)<author>(.*?)</author>").findAll(ti)) {
+                        val name = fb2AuthorName(m.groupValues[1]).trim()
+                        if (name.isNotEmpty()) authors.add(name)
+                    }
+                    val authorStr = authors.joinToString(", ")
+                    val titleStr = Regex("(?si)<book-title>(.*?)</book-title>")
+                        .find(ti)
+                        ?.let { fb2StripTags(it.groupValues[1]).trim() }
+                        .orEmpty()
+
+                    val combined = when {
+                        authorStr.isNotEmpty() && titleStr.isNotEmpty() -> "$authorStr - $titleStr"
+                        titleStr.isNotEmpty() -> titleStr
+                        authorStr.isNotEmpty() -> authorStr
+                        else -> ""
+                    }
+                    val clean = sanitizeBookDisplayName(combined)
+                    if (clean.isNotEmpty()) return clean
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return fallbackName
+    }
+
+    fun extractEpubBookName(epubPath: String, fallbackName: String): String {
+        try {
+            ZipFile(epubPath).use { zip ->
+                var opfEntryName: String? = null
+                val containerEntry = zip.getEntry("META-INF/container.xml")
+                if (containerEntry != null) {
+                    val containerXml = zip.getInputStream(containerEntry).use { String(it.readBytes(), Charsets.UTF_8) }
+                    val soup = Jsoup.parse(containerXml, "", Parser.xmlParser())
+                    val fullPath = soup.selectFirst("rootfile")?.attr("full-path").orEmpty()
+                    if (fullPath.isNotEmpty()) {
+                        opfEntryName = simplifyPath(fullPath)
+                    }
+                }
+                if (opfEntryName == null) {
+                    opfEntryName = zip.entries().asSequence()
+                        .firstOrNull { !it.isDirectory && it.name.lowercase(Locale.ROOT).endsWith(".opf") }
+                        ?.name
+                }
+                if (opfEntryName != null) {
+                    val opfEntry = zip.getEntry(opfEntryName)
+                        ?: zip.entries().asSequence().firstOrNull { simplifyPath(it.name) == opfEntryName }
+                    if (opfEntry != null) {
+                        val opfXml = zip.getInputStream(opfEntry).use { String(it.readBytes(), Charsets.UTF_8) }
+                        val soup = Jsoup.parse(opfXml, "", Parser.xmlParser())
+                        val creators = soup.select("dc|creator, creator")
+                            .map { it.text().trim() }
+                            .filter { it.isNotEmpty() }
+                        val authorStr = creators.joinToString(", ")
+                        val titleStr = soup.selectFirst("dc|title, title")?.text()?.trim().orEmpty()
+                        val combined = when {
+                            authorStr.isNotEmpty() && titleStr.isNotEmpty() -> "$authorStr - $titleStr"
+                            titleStr.isNotEmpty() -> titleStr
+                            authorStr.isNotEmpty() -> authorStr
+                            else -> ""
+                        }
+                        val clean = sanitizeBookDisplayName(combined)
+                        if (clean.isNotEmpty()) return clean
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return fallbackName
+    }
+
     private fun fb2StripTags(text: String): String {
         return decodeEntities(stripXmlTagsSinglePass(text))
     }
@@ -979,7 +1080,9 @@ object TextsConverter {
                         }
                         lower.endsWith("fb2") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                            onTextEntry(saveName, convertFb2ToTxt(readTextWithFallback(bytes), inlineNotes = inlineNotes), "", "", "")
+                            val fb2Text = readTextWithFallback(bytes)
+                            val bookName = extractFb2BookName(fb2Text, saveName)
+                            onTextEntry(bookName, convertFb2ToTxt(fb2Text, inlineNotes = inlineNotes), "", "", "")
                         }
                         lower.endsWith(".csv") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
