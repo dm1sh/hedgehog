@@ -32,9 +32,8 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            val paths = uris.map { viewModel.repo.resolveAndroidUriToPath(it) }
             viewModel.ttsSay(viewModel.tr("KEY_FD_CONFIRMED"))
-            viewModel.onOpenBooks(paths)
+            viewModel.onOpenBookUris(uris)
         } else {
             viewModel.ttsSay(viewModel.tr("KEY_FD_CANCELLED"))
         }

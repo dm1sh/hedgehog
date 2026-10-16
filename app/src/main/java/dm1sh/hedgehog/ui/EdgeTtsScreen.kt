@@ -376,25 +376,63 @@ private fun BookTabContent(
             }
         }
 
-        // Dynamic Area: If a book is loaded, show StatusGrid; otherwise show list of files in Load folder
-        if (vm.bookLoaded && vm.partStatuses.isNotEmpty()) {
-            BookStatusGridCard(
-                vm = vm,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            )
-        } else {
-            LoadFolderFilesCard(
-                vm = vm,
-                onRequestNativePicker = onRequestNativePicker,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            )
+        // Dynamic Area: If a book is loading, show loading indicator; if loaded, show StatusGrid; otherwise show list of files in Load folder
+        when {
+            vm.isBookLoading -> {
+                BookLoadingCard(
+                    vm = vm,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                )
+            }
+            vm.bookLoaded && vm.partStatuses.isNotEmpty() -> {
+                BookStatusGridCard(
+                    vm = vm,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                )
+            }
+            else -> {
+                LoadFolderFilesCard(
+                    vm = vm,
+                    onRequestNativePicker = onRequestNativePicker,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun BookLoadingCard(
+    vm: MainViewModel,
+    modifier: Modifier = Modifier
+) {
+    OutlinedCard(modifier = modifier) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.padding(24.dp)
+            ) {
+                CircularProgressIndicator()
+                Text(
+                    text = vm.tr("KEY_LOAD"),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 }
 

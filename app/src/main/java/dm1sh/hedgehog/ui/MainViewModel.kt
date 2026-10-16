@@ -2,6 +2,7 @@ package dm1sh.hedgehog.ui
 
 import android.app.Application
 import android.media.MediaPlayer
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -123,6 +124,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Book & Part Editor state
     private var book: ProcessingFile? = null
     var bookLoaded by mutableStateOf(false)
+        private set
+    var isBookLoading by mutableStateOf(false)
         private set
     private val filesList = mutableListOf<String>()
     private var lexxRules: List<String> = emptyList()
@@ -603,6 +606,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Book Open / Clear
     fun clearBook() {
         stopConversion(announce = false)
+        isBookLoading = false
         bookLoaded = false
         partStatuses.clear()
         textAreaText = ""
@@ -620,10 +624,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onLaunchSystemPicker()
     }
 
+    fun onOpenBookUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        isBookLoading = true
+        statInfoDoneHighlight = false
+        statInfo = tr("KEY_LOAD")
+        viewModelScope.launch(Dispatchers.IO) {
+            val paths = uris.map { repo.resolveAndroidUriToPath(it) }.filter { it.isNotBlank() }
+            withContext(Dispatchers.Main) {
+                if (paths.isEmpty()) {
+                    isBookLoading = false
+                    statInfo = ""
+                } else {
+                    onOpenBooks(paths)
+                }
+            }
+        }
+    }
+
     fun onOpenBooks(paths: List<String>) {
-        if (paths.isEmpty()) return
+        if (paths.isEmpty()) {
+            isBookLoading = false
+            return
+        }
         stopConversion(announce = false)
         clearEditorSnapshot()
+        isBookLoading = true
         bookLoaded = false
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
@@ -708,6 +734,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             withContext(Dispatchers.Main) {
+                isBookLoading = false
                 book = currentBook
                 val count = currentBook?.allSentences?.size ?: 0
                 bookLoaded = count > 0
