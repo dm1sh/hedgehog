@@ -600,37 +600,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Book Open / Clear
+    fun clearBook() {
+        stopConversion(announce = false)
+        bookLoaded = false
+        partStatuses.clear()
+        textAreaText = ""
+        statStr = "0 / 0"
+        totalPartsCount = 0
+        book = null
+        editorPartIndex = 0
+        clearEditorSnapshot()
+        editorRefreshFields()
+        refreshLoadDirFiles()
+        ttsSay(tr("KEY_BOOK_CLEAR"))
+    }
+
     fun onFileButtonClicked(onLaunchSystemPicker: () -> Unit) {
-        if (book != null) {
-            stopConversion(announce = false)
-            bookLoaded = false
-            partStatuses.clear()
-            textAreaText = ""
-            statStr = "0 / 0"
-            totalPartsCount = 0
-            book = null
-            editorPartIndex = 0
-            clearEditorSnapshot()
-            editorRefreshFields()
-            refreshLoadDirFiles()
-            ttsSay(tr("KEY_BOOK_CLEAR"))
-        } else {
-            val loadDirFile = File(settings.loadDir)
-            if (settings.loadDirUse && settings.loadDir.isNotBlank() && loadDirFile.isDirectory) {
-                val files = loadDirFile.listFiles()
-                    ?.filter { it.isFile && AppSettings.BOOK_EXTENSIONS.contains(it.extension.lowercase()) }
-                    ?.sortedBy { it.name }
-                    ?.map { it.absolutePath }
-                    .orEmpty()
-                if (files.isNotEmpty()) {
-                    onOpenBooks(files)
-                } else {
-                    onLaunchSystemPicker()
-                }
-            } else {
-                onLaunchSystemPicker()
-            }
-        }
+        onLaunchSystemPicker()
     }
 
     fun onOpenBooks(paths: List<String>) {

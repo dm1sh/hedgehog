@@ -1344,46 +1344,35 @@ private fun ConversionActionDock(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (vm.bookLoaded) {
-                OutlinedButton(
-                    onClick = {
-                        vm.onFileButtonClicked {
-                            onRequestNativePicker(NativePickerType.OPEN_BOOKS)
-                        }
-                    },
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+            FilledTonalButton(
+                onClick = {
+                    vm.onFileButtonClicked {
+                        onRequestNativePicker(NativePickerType.OPEN_BOOKS)
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.FolderOpen,
+                    contentDescription = vm.tr("KEY_OPEN_BOOKS"),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = vm.tr("KEY_OPEN_BOOKS"),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (vm.bookLoaded && !vm.runWork) {
+                OutlinedIconButton(
+                    onClick = { vm.clearBook() },
+                    modifier = Modifier.size(44.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = vm.tr("KEY_BOOK_CLEAR"),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = vm.tr("KEY_OPEN_BOOKS"),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            } else {
-                FilledTonalButton(
-                    onClick = {
-                        vm.onFileButtonClicked {
-                            onRequestNativePicker(NativePickerType.OPEN_BOOKS)
-                        }
-                    },
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.FolderOpen,
-                        contentDescription = vm.tr("KEY_OPEN_BOOKS"),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = vm.tr("KEY_OPEN_BOOKS"),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        contentDescription = vm.tr("KEY_BOOK_CLEAR")
                     )
                 }
             }
