@@ -784,7 +784,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 bookLoaded = count > 0
                 totalPartsCount = count
                 partStatuses.clear()
-                repeat(count) { partStatuses.add(PartStatus.OPENED) }
+                if (count > 0) {
+                    partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
+                }
                 statStr = "0 / $count"
                 statInfo = ""
                 editorPartIndex = 0
@@ -876,7 +878,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         totalPartsCount = finalCount
         statStr = "0 / $finalCount"
         partStatuses.clear()
-        repeat(finalCount) { partStatuses.add(PartStatus.OPENED) }
+        if (finalCount > 0) {
+            partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
+        }
         editorLoadCurrentPart()
         takeEditorSnapshot()
         ttsSay(tr("KEY_SAVED"))
@@ -1186,7 +1190,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val total = activeBook.allSentences.size
         totalPartsCount = total
         partStatuses.clear()
-        repeat(total) { partStatuses.add(PartStatus.OPENED) }
+        if (total > 0) {
+            partStatuses.addAll(java.util.Collections.nCopies(total, PartStatus.OPENED))
+        }
 
         workPaused = false
         pauseIdleSince = 0L

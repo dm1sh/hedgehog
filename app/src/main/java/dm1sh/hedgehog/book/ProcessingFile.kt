@@ -24,8 +24,6 @@ class ProcessingFile(
     rate: String,
     pitch: String
 ) {
-    private val regexChar = Regex("[\\p{L}\\p{N}]")
-    private val regexPunct = Regex("\\p{P}")
     private val regexGlava: Regex = try {
         Regex(regexGlavaPattern.ifEmpty { "глава |раздел |эпизод |рассказ |chapter " })
     } catch (_: Exception) {
@@ -54,28 +52,44 @@ class ProcessingFile(
         allGlavs.addAll(glavs)
     }
 
+    /**
+     * Single-pass character normalization replacing 13 full-book String.replace() passes.
+     */
+    private fun normalizeBaseCharacters(text: String): String {
+        val len = text.length
+        val sb = StringBuilder(len + 64)
+        var i = 0
+        while (i < len) {
+            when (val c = text[i]) {
+                '~', '^', '*', '|' -> sb.append('-')
+                '\\' -> sb.append('/')
+                '[', '<' -> sb.append('(')
+                ']', '>' -> sb.append(')')
+                '&' -> sb.append(" and ")
+                '•' -> {}
+                '\n' -> {
+                    sb.append('\n')
+                    var skippedSpaces = 0
+                    while (skippedSpaces < 3 && i + 1 < len && text[i + 1] == ' ') {
+                        i++
+                        skippedSpaces++
+                    }
+                }
+                else -> sb.append(c)
+            }
+            i++
+        }
+        return sb.toString()
+    }
+
     fun getFixPoints(text: String): List<String> {
-        var fixText = text
-            .replace("~", "-")
-            .replace("\\", "/")
-            .replace("^", "-")
-            .replace("*", "-")
-            .replace("|", "-")
-            .replace("[", "(")
-            .replace("]", ")")
-            .replace("<", "(")
-            .replace(">", ")")
-            .replace("&", " and ")
-            .replace("•", "")
-            .replace("\n ", "\n")
-            .replace("\n ", "\n")
-            .replace("\n ", "\n")
+        var fixText = normalizeBaseCharacters(text)
 
         if (langLexx.isNotEmpty()) {
             for (rawRule in langLexx) {
                 val rule = rawRule.trimEnd('\r')
                 if (rule.isEmpty()) continue
-                if (Regex("^regex\".*\"=\".*").matches(rule)) {
+                if (rule.startsWith("regex\"") && rule.contains("\"=")) {
                     val matchArr = rule.replaceFirst("regex\"", "\"").split("=", limit = 2)
                     if (matchArr.size == 2) {
                         try {
@@ -90,11 +104,12 @@ class ProcessingFile(
                 } else if (rule.startsWith("\"")) {
                     val matchArr = rule.replace("\"", "").split("=", limit = 2)
                     if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
+                        val key = matchArr[0]
                         if (lexxRegister) {
-                            fixText = fixText.replace(matchArr[0], matchArr[1])
-                        } else {
+                            fixText = fixText.replace(key, matchArr[1])
+                        } else if (fixText.contains(key, ignoreCase = true)) {
                             try {
-                                val escaped = getEscaped(matchArr[0])
+                                val escaped = getEscaped(key)
                                 fixText = Regex("(?i)$escaped").replace(fixText, matchArr[1])
                             } catch (_: Exception) {
                             }
@@ -103,12 +118,13 @@ class ProcessingFile(
                 } else {
                     val matchArr = rule.split("=", limit = 2)
                     if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
+                        val key = matchArr[0]
                         if (lexxRegister) {
-                            fixText = fixText.replace(matchArr[0], matchArr[1])
-                        } else {
+                            fixText = fixText.replace(key, matchArr[1])
+                        } else if (fixText.contains(key, ignoreCase = true)) {
                             try {
-                                val escaped = getEscaped(matchArr[0])
-                                fixText = if (escaped.length == 2 && escaped[0] == '\\' && regexPunct.containsMatchIn(escaped[1].toString())) {
+                                val escaped = getEscaped(key)
+                                fixText = if (escaped.length == 2 && escaped[0] == '\\' && isPunctChar(escaped[1])) {
                                     Regex("(?i)$escaped").replace(fixText, matchArr[1])
                                 } else {
                                     Regex("(?i)(^|\\s|[\\p{P}\\p{S}])$escaped(?=[\\p{P}\\p{S}]|\\s|$)")
@@ -125,22 +141,33 @@ class ProcessingFile(
         return fixText.split("\n")
     }
 
+    private fun isPunctChar(c: Char): Boolean {
+        val t = Character.getType(c)
+        return t == Character.CONNECTOR_PUNCTUATION.toInt() ||
+            t == Character.DASH_PUNCTUATION.toInt() ||
+            t == Character.START_PUNCTUATION.toInt() ||
+            t == Character.END_PUNCTUATION.toInt() ||
+            t == Character.INITIAL_QUOTE_PUNCTUATION.toInt() ||
+            t == Character.FINAL_QUOTE_PUNCTUATION.toInt() ||
+            t == Character.OTHER_PUNCTUATION.toInt()
+    }
+
+    private fun containsLetterOrDigit(cs: CharSequence): Boolean {
+        for (i in 0 until cs.length) {
+            if (Character.isLetterOrDigit(cs[i])) return true
+        }
+        return false
+    }
+
     private fun getEscaped(text: String): String {
-        return text
-            .replace("\\", "\\\\")
-            .replace("?", "\\?")
-            .replace("^", "\\^")
-            .replace("*", "\\*")
-            .replace("|", "\\|")
-            .replace("[", "\\[")
-            .replace("]", "\\]")
-            .replace("{", "\\{")
-            .replace("}", "\\}")
-            .replace("+", "\\+")
-            .replace("$", "\\$")
-            .replace("(", "\\(")
-            .replace(")", "\\)")
-            .replace(".", "\\.")
+        val sb = StringBuilder(text.length + 8)
+        for (c in text) {
+            if (c in "\\?^*|[]{}+$().") {
+                sb.append('\\')
+            }
+            sb.append(c)
+        }
+        return sb.toString()
     }
 
     private fun getGlavText(text: String): String {
@@ -171,10 +198,10 @@ class ProcessingFile(
     private fun getFixSection(sentences: List<String>): Pair<List<String>, List<String>> {
         val outSentences = mutableListOf<String>()
         val outGlavs = mutableListOf<String>()
-        val splitter = " "
         val currentText = StringBuilder()
         var glavText = ""
         var glavaNum = 0
+        val hardLimit = (lastStringsLength * 1.2).toInt()
 
         for (i in sentences.indices) {
             val line = sentences[i]
@@ -185,7 +212,7 @@ class ProcessingFile(
             ) {
                 currentText.append("\n")
                 val str = currentText.toString()
-                if (str.trim().isNotEmpty() && regexChar.containsMatchIn(str)) {
+                if (str.trim().isNotEmpty() && containsLetterOrDigit(str)) {
                     outSentences.add(str)
                     outGlavs.add(glavaNumFormat(glavaNum, glavText))
                     glavText = getGlavText(line)
@@ -198,7 +225,7 @@ class ProcessingFile(
                 sentences[i - 1].trim().isEmpty() &&
                 sentences[i - 2].trim().isEmpty() &&
                 sentences[i - 3].trim().isEmpty() &&
-                regexChar.containsMatchIn(currentText)
+                containsLetterOrDigit(currentText)
             ) {
                 currentText.append("\n")
                 val str = currentText.toString()
@@ -212,34 +239,45 @@ class ProcessingFile(
                 glavaNum++
             }
 
-            val words = line.split(splitter)
-            for (word in words) {
-                val lastChar = if (word.isNotEmpty()) word[word.length - 1] else ' '
+            // Index-based word scan avoiding per-line split(" ") list/string allocations
+            var wordStart = 0
+            val lineLen = line.length
+            while (wordStart <= lineLen) {
+                val spaceIdx = line.indexOf(' ', wordStart)
+                val wordEnd = if (spaceIdx == -1) lineLen else spaceIdx
+                val wordLen = wordEnd - wordStart
+                val lastChar = if (wordLen > 0) line[wordEnd - 1] else ' '
                 val isBreakPunct = lastChar == '.' || lastChar == ',' || lastChar == '!' ||
                     lastChar == '?' || lastChar == ':' || lastChar == ';' || lastChar == '-'
-                if (currentText.length + word.length > lastStringsLength &&
-                    word.isNotEmpty() &&
-                    (isBreakPunct || currentText.length > lastStringsLength * 1.2)
+                if (currentText.length + wordLen > lastStringsLength &&
+                    wordLen > 0 &&
+                    (isBreakPunct || currentText.length > hardLimit)
                 ) {
-                    val textToAdd = currentText.toString() + splitter + word
-                    if (regexChar.containsMatchIn(textToAdd)) {
+                    currentText.append(' ')
+                    currentText.append(line, wordStart, wordEnd)
+                    val textToAdd = currentText.toString()
+                    if (containsLetterOrDigit(textToAdd)) {
                         outSentences.add(textToAdd)
                         outGlavs.add(glavaNumFormat(glavaNum, glavText))
                     }
                     currentText.setLength(0)
                 } else {
                     if (currentText.isNotEmpty() && currentText[currentText.length - 1] != '\n') {
-                        currentText.append(splitter)
+                        currentText.append(' ')
                     }
-                    currentText.append(word)
+                    if (wordLen > 0) {
+                        currentText.append(line, wordStart, wordEnd)
+                    }
                 }
+                if (spaceIdx == -1) break
+                wordStart = spaceIdx + 1
             }
             if (currentText.isNotEmpty()) {
                 currentText.append("\n")
             }
         }
 
-        if (currentText.isNotEmpty() && regexChar.containsMatchIn(currentText)) {
+        if (currentText.isNotEmpty() && containsLetterOrDigit(currentText)) {
             outSentences.add(currentText.toString())
             outGlavs.add(glavaNumFormat(glavaNum, glavText))
         }
@@ -250,35 +288,46 @@ class ProcessingFile(
     fun splitPartText(text: String): List<String> {
         val sentences = getFixPoints(text)
         val result = mutableListOf<String>()
-        val splitter = " "
         val currentText = StringBuilder()
+        val hardLimit = (lastStringsLength * 1.2).toInt()
+
         for (line in sentences) {
-            val words = line.split(splitter)
-            for (word in words) {
-                val lastChar = if (word.isNotEmpty()) word[word.length - 1] else ' '
+            var wordStart = 0
+            val lineLen = line.length
+            while (wordStart <= lineLen) {
+                val spaceIdx = line.indexOf(' ', wordStart)
+                val wordEnd = if (spaceIdx == -1) lineLen else spaceIdx
+                val wordLen = wordEnd - wordStart
+                val lastChar = if (wordLen > 0) line[wordEnd - 1] else ' '
                 val isBreakPunct = lastChar == '.' || lastChar == ',' || lastChar == '!' ||
                     lastChar == '?' || lastChar == ':' || lastChar == ';' || lastChar == '-'
-                if (currentText.length + word.length > lastStringsLength &&
-                    word.isNotEmpty() &&
-                    (isBreakPunct || currentText.length > lastStringsLength * 1.2)
+                if (currentText.length + wordLen > lastStringsLength &&
+                    wordLen > 0 &&
+                    (isBreakPunct || currentText.length > hardLimit)
                 ) {
-                    val textToAdd = currentText.toString() + splitter + word
-                    if (regexChar.containsMatchIn(textToAdd)) {
+                    currentText.append(' ')
+                    currentText.append(line, wordStart, wordEnd)
+                    val textToAdd = currentText.toString()
+                    if (containsLetterOrDigit(textToAdd)) {
                         result.add(textToAdd)
                     }
                     currentText.setLength(0)
                 } else {
                     if (currentText.isNotEmpty() && currentText[currentText.length - 1] != '\n') {
-                        currentText.append(splitter)
+                        currentText.append(' ')
                     }
-                    currentText.append(word)
+                    if (wordLen > 0) {
+                        currentText.append(line, wordStart, wordEnd)
+                    }
                 }
+                if (spaceIdx == -1) break
+                wordStart = spaceIdx + 1
             }
             if (currentText.isNotEmpty()) {
                 currentText.append("\n")
             }
         }
-        if (currentText.isNotEmpty() && regexChar.containsMatchIn(currentText)) {
+        if (currentText.isNotEmpty() && containsLetterOrDigit(currentText)) {
             result.add(currentText.toString())
         }
         return result
