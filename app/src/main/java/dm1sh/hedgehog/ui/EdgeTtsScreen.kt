@@ -292,11 +292,29 @@ fun EdgeTtsScreen(
         }
     }
 
-    // Voices Selection ModalBottomSheet
+    // Online & Offline Voices Selection ModalBottomSheets
     if (vm.voicesDropdownOpen) {
         VoicesPickerBottomSheet(
-            vm = vm,
+            title = vm.tr("KEY_ONLINE_VOICE"),
+            voices = vm.voicesList,
+            selectedIndex = vm.settings.voicesSelect,
+            isOfflinePicker = false,
+            offlineStatusText = vm.tr("KEY_VOICE_OFFLINE"),
+            emptyText = vm.tr("KEY_GET_VOICES"),
+            onSelectVoice = { vm.selectVoice(it) },
             onDismiss = { vm.voicesDropdownOpen = false }
+        )
+    }
+    if (vm.offlineVoicesDropdownOpen) {
+        VoicesPickerBottomSheet(
+            title = vm.tr("KEY_OFFLINE_VOICE"),
+            voices = vm.offlineVoicesList,
+            selectedIndex = vm.settings.offlineVoicesSelect,
+            isOfflinePicker = true,
+            offlineStatusText = vm.tr("KEY_VOICE_OFFLINE"),
+            emptyText = vm.tr("KEY_OFFLINE_UNAVAILABLE"),
+            onSelectVoice = { vm.selectOfflineVoice(it) },
+            onDismiss = { vm.offlineVoicesDropdownOpen = false }
         )
     }
 
@@ -319,7 +337,13 @@ private fun BookTabContent(
     modifier: Modifier = Modifier
 ) {
     val settings = vm.settings
-    val isOffline = vm.repo.isVoiceOffline(settings.voicesName)
+    val useOnline = settings.useOnlineVoices
+    val activeVoiceDisplay = if (useOnline) {
+        settings.voicesName
+    } else {
+        settings.offlineVoicesName.ifBlank { vm.tr("KEY_OFFLINE_UNAVAILABLE") }
+    }
+    val activeDropdownExpanded = if (useOnline) vm.voicesDropdownOpen else vm.offlineVoicesDropdownOpen
 
     Column(
         modifier = modifier,
@@ -336,20 +360,29 @@ private fun BookTabContent(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 ExposedDropdownMenuBox(
-                    expanded = vm.voicesDropdownOpen,
+                    expanded = activeDropdownExpanded,
                     onExpandedChange = {
                         vm.languagesDropdownOpen = false
                         vm.uiTtsDropdownOpen = false
-                        vm.voicesDropdownOpen = !vm.voicesDropdownOpen
-                        vm.ttsSay(vm.voiceSayText(settings.voicesName))
+                        if (useOnline) {
+                            vm.offlineVoicesDropdownOpen = false
+                            vm.voicesDropdownOpen = !vm.voicesDropdownOpen
+                            vm.ttsSay(settings.voicesName)
+                        } else {
+                            vm.voicesDropdownOpen = false
+                            vm.offlineVoicesDropdownOpen = !vm.offlineVoicesDropdownOpen
+                            vm.ttsSay(vm.voiceSayText(activeVoiceDisplay))
+                        }
                     }
                 ) {
                     OutlinedTextField(
-                        value = settings.voicesName,
+                        value = activeVoiceDisplay,
                         onValueChange = {},
                         readOnly = true,
                         singleLine = true,
-                        label = { Text(vm.tr("KEY_SETTINGS_VOICE")) },
+                        label = {
+                            Text(vm.tr(if (useOnline) "KEY_ONLINE_VOICE" else "KEY_OFFLINE_VOICE"))
+                        },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Outlined.RecordVoiceOver,
@@ -357,9 +390,9 @@ private fun BookTabContent(
                             )
                         },
                         trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = vm.voicesDropdownOpen)
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = activeDropdownExpanded)
                         },
-                        supportingText = if (isOffline) {
+                        supportingText = if (!useOnline) {
                             { Text(vm.tr("KEY_VOICE_OFFLINE")) }
                         } else null,
                         colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
@@ -846,22 +879,35 @@ private fun SettingsGroupCard(
 @Composable
 private fun VoiceSettingsGroupContent(vm: MainViewModel) {
     val settings = vm.settings
-    val isOffline = vm.repo.isVoiceOffline(settings.voicesName)
+    val offlineDisplay = settings.offlineVoicesName.ifBlank { vm.tr("KEY_OFFLINE_UNAVAILABLE") }
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        M3SwitchListItem(
+            headline = vm.tr("KEY_USE_ONLINE_VOICES"),
+            checked = settings.useOnlineVoices,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(useOnlineVoices = checked) }
+                vm.ttsSay("${vm.tr("KEY_USE_ONLINE_VOICES")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
+            // Online Voice Selector
             ExposedDropdownMenuBox(
                 expanded = vm.voicesDropdownOpen,
                 onExpandedChange = {
                     vm.languagesDropdownOpen = false
                     vm.uiTtsDropdownOpen = false
+                    vm.offlineVoicesDropdownOpen = false
                     vm.voicesDropdownOpen = !vm.voicesDropdownOpen
-                    vm.ttsSay(vm.voiceSayText(settings.voicesName))
+                    vm.ttsSay(settings.voicesName)
                 }
             ) {
                 OutlinedTextField(
@@ -869,7 +915,7 @@ private fun VoiceSettingsGroupContent(vm: MainViewModel) {
                     onValueChange = {},
                     readOnly = true,
                     singleLine = true,
-                    label = { Text(vm.tr("KEY_SETTINGS_VOICE")) },
+                    label = { Text(vm.tr("KEY_ONLINE_VOICE")) },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Outlined.RecordVoiceOver,
@@ -879,7 +925,40 @@ private fun VoiceSettingsGroupContent(vm: MainViewModel) {
                     trailingIcon = {
                         ExposedDropdownMenuDefaults.TrailingIcon(expanded = vm.voicesDropdownOpen)
                     },
-                    supportingText = if (isOffline) {
+                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+                    modifier = Modifier
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        .fillMaxWidth()
+                )
+            }
+
+            // Offline Voice Selector
+            ExposedDropdownMenuBox(
+                expanded = vm.offlineVoicesDropdownOpen,
+                onExpandedChange = {
+                    vm.languagesDropdownOpen = false
+                    vm.uiTtsDropdownOpen = false
+                    vm.voicesDropdownOpen = false
+                    vm.offlineVoicesDropdownOpen = !vm.offlineVoicesDropdownOpen
+                    vm.ttsSay(vm.voiceSayText(offlineDisplay))
+                }
+            ) {
+                OutlinedTextField(
+                    value = offlineDisplay,
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    label = { Text(vm.tr("KEY_OFFLINE_VOICE")) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.DownloadForOffline,
+                            contentDescription = null
+                        )
+                    },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = vm.offlineVoicesDropdownOpen)
+                    },
+                    supportingText = if (settings.offlineVoicesName.isNotBlank()) {
                         { Text(vm.tr("KEY_VOICE_OFFLINE")) }
                     } else null,
                     colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
@@ -1679,18 +1758,24 @@ private fun RepeatingFilledTonalIconButton(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun VoicesPickerBottomSheet(
-    vm: MainViewModel,
+    title: String,
+    voices: List<String>,
+    selectedIndex: Int,
+    isOfflinePicker: Boolean,
+    offlineStatusText: String,
+    emptyText: String,
+    onSelectVoice: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var searchQuery by remember { mutableStateOf("") }
 
-    val filteredVoices = remember(vm.voicesList.size, searchQuery) {
+    val filteredVoices = remember(voices.size, searchQuery) {
         if (searchQuery.isBlank()) {
-            vm.voicesList.mapIndexed { idx, name -> idx to name }
+            voices.mapIndexed { idx, name -> idx to name }
         } else {
             val q = searchQuery.trim().lowercase()
-            vm.voicesList.mapIndexedNotNull { idx, name ->
+            voices.mapIndexedNotNull { idx, name ->
                 if (name.lowercase().contains(q)) idx to name else null
             }
         }
@@ -1698,9 +1783,8 @@ private fun VoicesPickerBottomSheet(
 
     val listState = rememberLazyListState()
     LaunchedEffect(Unit) {
-        val currentIdx = vm.settings.voicesSelect
-        if (currentIdx in vm.voicesList.indices && searchQuery.isBlank()) {
-            listState.scrollToItem((currentIdx - 2).coerceAtLeast(0))
+        if (selectedIndex in voices.indices && searchQuery.isBlank()) {
+            listState.scrollToItem((selectedIndex - 2).coerceAtLeast(0))
         }
     }
 
@@ -1715,7 +1799,7 @@ private fun VoicesPickerBottomSheet(
                 .padding(horizontal = 16.dp)
         ) {
             Text(
-                text = vm.tr("KEY_SETTINGS_VOICE"),
+                text = title,
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.padding(bottom = 12.dp)
             )
@@ -1746,49 +1830,64 @@ private fun VoicesPickerBottomSheet(
                     .padding(bottom = 12.dp)
             )
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                itemsIndexed(
-                    items = filteredVoices,
-                    key = { _, pair -> pair.first }
-                ) { _, (originalIndex, voiceName) ->
-                    val isSelected = originalIndex == vm.settings.voicesSelect
-                    val isOffline = vm.repo.isVoiceOffline(voiceName)
-
-                    ListItem(
-                        headlineContent = {
-                            Text(
-                                text = voiceName,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
-                            )
-                        },
-                        supportingContent = if (isOffline) {
-                            { Text(vm.tr("KEY_VOICE_OFFLINE")) }
-                        } else null,
-                        trailingContent = if (isSelected) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        } else null,
-                        colors = ListItemDefaults.colors(
-                            containerColor = if (isSelected) {
-                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                            } else {
-                                Color.Transparent
-                            }
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                vm.selectVoice(originalIndex)
-                            }
+            if (filteredVoices.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = emptyText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    itemsIndexed(
+                        items = filteredVoices,
+                        key = { _, pair -> pair.first }
+                    ) { _, (originalIndex, voiceName) ->
+                        val isSelected = originalIndex == selectedIndex
+
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    text = voiceName,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            },
+                            supportingContent = if (isOfflinePicker) {
+                                { Text(offlineStatusText) }
+                            } else null,
+                            trailingContent = if (isSelected) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            } else null,
+                            colors = ListItemDefaults.colors(
+                                containerColor = if (isSelected) {
+                                    MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                                } else {
+                                    Color.Transparent
+                                }
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSelectVoice(originalIndex)
+                                }
+                        )
+                    }
                 }
             }
         }

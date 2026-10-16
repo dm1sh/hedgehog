@@ -5,6 +5,9 @@ import androidx.compose.ui.graphics.Color
 data class AppSettings(
     val voicesSelect: Int = 0,
     val voicesName: String = "ru-RU, DmitryNeural",
+    val offlineVoicesSelect: Int = 0,
+    val offlineVoicesName: String = "",
+    val useOnlineVoices: Boolean = true,
     val rate: Int = 100,
     val pitch: Int = 0,
     val maxThreads: Int = DEFAULT_MAX_THREADS,

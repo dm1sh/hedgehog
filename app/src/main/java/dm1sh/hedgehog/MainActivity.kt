@@ -106,7 +106,7 @@ class MainActivity : ComponentActivity() {
                     viewModel.dopModal != DopModal.NONE -> {
                         viewModel.dopModal = DopModal.NONE
                     }
-                    viewModel.voicesDropdownOpen || viewModel.languagesDropdownOpen || viewModel.uiTtsDropdownOpen -> {
+                    viewModel.voicesDropdownOpen || viewModel.offlineVoicesDropdownOpen || viewModel.languagesDropdownOpen || viewModel.uiTtsDropdownOpen -> {
                         viewModel.closeAllDropdowns()
                     }
                     viewModel.activeMainTab != MainTab.BOOK -> {

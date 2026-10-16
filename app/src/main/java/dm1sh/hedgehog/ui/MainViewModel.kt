@@ -2,6 +2,8 @@ package dm1sh.hedgehog.ui
 
 import android.app.Application
 import android.media.MediaPlayer
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -74,10 +76,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Dropdown lists
     val voicesList = mutableStateListOf<String>()
+    val offlineVoicesList = mutableStateListOf<String>()
     val languagesList = mutableStateListOf<String>()
     val uiTtsList = mutableStateListOf<String>()
 
     var voicesDropdownOpen by mutableStateOf(false)
+    var offlineVoicesDropdownOpen by mutableStateOf(false)
     var languagesDropdownOpen by mutableStateOf(false)
     var uiTtsDropdownOpen by mutableStateOf(false)
 
@@ -247,18 +251,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshVoicesList() {
-        val combined = repo.combinedVoicesList()
+        val online = repo.onlineVoices
         voicesList.clear()
-        voicesList.addAll(combined)
+        voicesList.addAll(online)
+
+        val offline = repo.readyOfflineVoices()
+        offlineVoicesList.clear()
+        offlineVoicesList.addAll(offline)
+
+        var migratedOfflineName = settings.offlineVoicesName
+        if (migratedOfflineName.isBlank() && repo.isVoiceOffline(settings.voicesName)) {
+            migratedOfflineName = settings.voicesName
+        }
+
+        var onlineSelect = settings.voicesSelect
+        var onlineName = settings.voicesName
         if (voicesList.isNotEmpty()) {
-            var select = settings.voicesSelect.coerceIn(0, voicesList.size - 1)
-            val savedName = settings.voicesName
-            val foundIdx = voicesList.indexOfFirst { it == savedName }
+            onlineSelect = onlineSelect.coerceIn(0, voicesList.size - 1)
+            val foundIdx = voicesList.indexOfFirst { it == onlineName }
             if (foundIdx >= 0) {
-                select = foundIdx
+                onlineSelect = foundIdx
+            } else {
+                onlineSelect = 0
             }
-            val chosenName = voicesList[select]
-            updateSettings { it.copy(voicesSelect = select, voicesName = chosenName) }
+            onlineName = voicesList[onlineSelect]
+        }
+
+        var offlineSelect = settings.offlineVoicesSelect
+        var offlineName = migratedOfflineName
+        if (offlineVoicesList.isNotEmpty()) {
+            offlineSelect = offlineSelect.coerceIn(0, offlineVoicesList.size - 1)
+            val foundIdx = offlineVoicesList.indexOfFirst { it == offlineName }
+            if (foundIdx >= 0) {
+                offlineSelect = foundIdx
+            } else {
+                offlineSelect = 0
+            }
+            offlineName = offlineVoicesList[offlineSelect]
+        } else {
+            offlineSelect = 0
+            offlineName = ""
+        }
+
+        updateSettings {
+            it.copy(
+                voicesSelect = onlineSelect,
+                voicesName = onlineName,
+                offlineVoicesSelect = offlineSelect,
+                offlineVoicesName = offlineName
+            )
         }
     }
 
@@ -331,6 +372,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeAllDropdowns() {
         voicesDropdownOpen = false
+        offlineVoicesDropdownOpen = false
         languagesDropdownOpen = false
         uiTtsDropdownOpen = false
     }
@@ -338,15 +380,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectVoice(index: Int) {
         if (index !in voicesList.indices) return
         val newVoice = voicesList[index]
-        if (settings.voicesName == newVoice) {
-            voicesDropdownOpen = false
-        }
         updateSettings { it.copy(voicesSelect = index, voicesName = newVoice) }
         voicesDropdownOpen = false
+        ttsSay(newVoice)
+        if (!runWork && settings.voicePreview) {
+            previewStart(
+                previewText = tr("KEY_VOICE_PREVIEW_TEXT"),
+                isPartPreview = false,
+                forceVoice = newVoice,
+                forceOnline = true
+            )
+        }
+    }
+
+    fun selectOfflineVoice(index: Int) {
+        if (index !in offlineVoicesList.indices) return
+        val newVoice = offlineVoicesList[index]
+        updateSettings { it.copy(offlineVoicesSelect = index, offlineVoicesName = newVoice) }
+        offlineVoicesDropdownOpen = false
         ttsSay(voiceSayText(newVoice))
         if (!runWork && settings.voicePreview) {
-            previewStart(tr("KEY_VOICE_PREVIEW_TEXT"), isPartPreview = false)
+            previewStart(
+                previewText = tr("KEY_VOICE_PREVIEW_TEXT"),
+                isPartPreview = false,
+                forceVoice = newVoice,
+                forceOnline = false
+            )
         }
+    }
+
+    fun isNetworkAvailable(): Boolean {
+        return try {
+            val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java) ?: return true
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun resolveOfflineFallbackVoice(): String? {
+        val chosen = settings.offlineVoicesName
+        val voicesRoot = File(repo.programDir, "Voices")
+        if (chosen.isNotBlank() && OfflineTtsEngine.voiceInstalled(File(voicesRoot, chosen))) {
+            return chosen
+        }
+        return repo.readyOfflineVoices().firstOrNull()
     }
 
     fun selectLanguage(index: Int) {
@@ -991,37 +1071,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun previewStart(previewText: String, isPartPreview: Boolean): Boolean {
-        if (isOfflineUnavailable(listOf(settings.voicesName))) return false
+    private fun previewStart(
+        previewText: String,
+        isPartPreview: Boolean,
+        forceVoice: String? = null,
+        forceOnline: Boolean? = null
+    ): Boolean {
+        val wantOnline = (forceOnline ?: settings.useOnlineVoices) && isNetworkAvailable()
+        val chosenVoice = when {
+            forceVoice != null && (wantOnline || !forceOnline!!) -> forceVoice
+            wantOnline -> settings.voicesName
+            else -> resolveOfflineFallbackVoice().orEmpty()
+        }
+        if (!wantOnline || repo.isVoiceOffline(chosenVoice)) {
+            if (chosenVoice.isBlank() || isOfflineUnavailable(listOf(chosenVoice))) {
+                if (chosenVoice.isBlank()) {
+                    statInfoDoneHighlight = false
+                    statInfo = tr("KEY_OFFLINE_UNAVAILABLE")
+                    ttsSay(statInfo)
+                }
+                return false
+            }
+        }
+
         voicePreviewStop()
         voicePreviewPrevStatus = statInfo
         statInfoDoneHighlight = false
         statInfo = tr("KEY_VOICE_LOADING")
         partPreviewActive = isPartPreview
 
-        val voice = settings.voicesName
         val pitchStr = "${formatSignedValue(settings.pitch)}Hz"
         val rateStr = "${formatSignedValue(settings.rate)}%"
         val lowBitrate = settings.lowBitrate
 
         previewJob = viewModelScope.launch(Dispatchers.IO) {
-            val mp3Bytes = if (repo.isVoiceOffline(voice)) {
-                val voiceDir = File(File(repo.programDir, "Voices"), voice)
-                OfflineTtsEngine.synthesizePart(
-                    context = getApplication(),
-                    voiceDir = voiceDir,
-                    text = previewText,
-                    rate = rateStr,
-                    pitch = pitchStr,
-                    lowBitrate = lowBitrate,
-                    isPreview = true,
-                    isPaused = { false },
-                    isCancelled = { !isActive },
-                    onStatusUpdate = {}
-                )
-            } else {
-                SocketEdgeTtsWorker.synthesizePart(
-                    voice = voice,
+            var mp3Bytes: ByteArray? = null
+            val useOnlineNow = wantOnline && !repo.isVoiceOffline(chosenVoice) && isNetworkAvailable()
+            if (useOnlineNow) {
+                mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
+                    voice = chosenVoice,
                     pitch = pitchStr,
                     rate = rateStr,
                     text = previewText,
@@ -1032,6 +1120,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isCancelled = { !isActive },
                     onStatusUpdate = {}
                 )
+            }
+            if ((mp3Bytes == null || mp3Bytes.isEmpty()) && (!useOnlineNow || !isNetworkAvailable())) {
+                val fallbackOffline = if (repo.isVoiceOffline(chosenVoice)) chosenVoice else resolveOfflineFallbackVoice()
+                if (!fallbackOffline.isNullOrBlank()) {
+                    val voiceDir = File(File(repo.programDir, "Voices"), fallbackOffline)
+                    if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                        mp3Bytes = OfflineTtsEngine.synthesizePart(
+                            context = getApplication(),
+                            voiceDir = voiceDir,
+                            text = previewText,
+                            rate = rateStr,
+                            pitch = pitchStr,
+                            lowBitrate = lowBitrate,
+                            isPreview = true,
+                            isPaused = { false },
+                            isCancelled = { !isActive },
+                            onStatusUpdate = {}
+                        )
+                    }
+                }
             }
 
             withContext(Dispatchers.Main) {
@@ -1155,10 +1263,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startConversion() {
         val currentBook = book
-        val usedVoices = if (currentBook == null) {
-            listOf(settings.voicesName)
+        val wantOnlineNow = settings.useOnlineVoices && isNetworkAvailable()
+        val defaultVoice = if (wantOnlineNow) {
+            settings.voicesName
         } else {
-            currentBook.fileNames.map { it.voice.ifEmpty { settings.voicesName } }
+            resolveOfflineFallbackVoice().orEmpty()
+        }
+        val usedVoices = if (currentBook == null) {
+            listOf(defaultVoice)
+        } else {
+            currentBook.fileNames.map { it.voice.ifEmpty { defaultVoice } }
+        }
+        if (!wantOnlineNow && usedVoices.any { it.isBlank() }) {
+            statInfoDoneHighlight = false
+            statInfo = tr("KEY_OFFLINE_UNAVAILABLE")
+            ttsSay(statInfo)
+            return
         }
         if (isOfflineUnavailable(usedVoices)) return
 
@@ -1267,7 +1387,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fixNumBook = idx
             }
             val meta = activeBook.fileNames[fileNameInd]
-            val fVoice = meta.voice.ifEmpty { settings.voicesName }
+            val fVoice = meta.voice.ifEmpty {
+                if (settings.useOnlineVoices) settings.voicesName else resolveOfflineFallbackVoice().orEmpty()
+            }
             val fRate = meta.rate.ifEmpty { formatSignedValue(settings.rate) }
             val fPitch = meta.pitch.ifEmpty { formatSignedValue(settings.pitch) }
             specs.add(
@@ -1303,24 +1425,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     launchedAtomic.incrementAndGet()
                     val spec = specs[nextIdx]
                     val job = launch {
-                        val mp3Data = if (repo.isVoiceOffline(spec.voice)) {
-                            val voiceDir = File(File(repo.programDir, "Voices"), spec.voice)
-                            OfflineTtsEngine.synthesizePart(
-                                context = getApplication(),
-                                voiceDir = voiceDir,
-                                text = spec.text,
-                                rate = spec.rate,
-                                pitch = spec.pitch,
-                                lowBitrate = runLowBitrate,
-                                isPreview = false,
-                                isPaused = { workPaused },
-                                isCancelled = { !isActive || runIdGen.get() != currentRunId },
-                                onStatusUpdate = { statusKey ->
-                                    updateStatusBox(spec.index, statusKey, currentRunId)
-                                }
-                            )
-                        } else {
-                            SocketEdgeTtsWorker.synthesizePart(
+                        val shouldUseOnline = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice) && isNetworkAvailable()
+                        var mp3Data: ByteArray? = null
+                        if (shouldUseOnline) {
+                            mp3Data = SocketEdgeTtsWorker.synthesizePart(
                                 voice = spec.voice,
                                 pitch = spec.pitch,
                                 rate = spec.rate,
@@ -1334,6 +1442,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     updateStatusBox(spec.index, statusKey, currentRunId)
                                 }
                             )
+                        }
+                        if ((mp3Data == null || mp3Data.isEmpty()) && (!shouldUseOnline || !isNetworkAvailable())) {
+                            val offlineVoice = if (repo.isVoiceOffline(spec.voice)) {
+                                spec.voice
+                            } else {
+                                resolveOfflineFallbackVoice()
+                            }
+                            if (!offlineVoice.isNullOrBlank()) {
+                                val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
+                                if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                                    mp3Data = OfflineTtsEngine.synthesizePart(
+                                        context = getApplication(),
+                                        voiceDir = voiceDir,
+                                        text = spec.text,
+                                        rate = spec.rate,
+                                        pitch = spec.pitch,
+                                        lowBitrate = runLowBitrate,
+                                        isPreview = false,
+                                        isPaused = { workPaused },
+                                        isCancelled = { !isActive || runIdGen.get() != currentRunId },
+                                        onStatusUpdate = { statusKey ->
+                                            updateStatusBox(spec.index, statusKey, currentRunId)
+                                        }
+                                    )
+                                }
+                            }
                         }
 
                         if (!isActive || runIdGen.get() != currentRunId || mp3Data == null || mp3Data.isEmpty()) {

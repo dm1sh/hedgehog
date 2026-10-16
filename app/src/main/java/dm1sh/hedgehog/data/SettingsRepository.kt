@@ -98,6 +98,9 @@ class SettingsRepository(private val context: Context) {
             AppSettings(
                 voicesSelect = s.optInt("voices_select", 0),
                 voicesName = s.optString("voices_name", "ru-RU, DmitryNeural"),
+                offlineVoicesSelect = s.optInt("offline_voices_select", 0),
+                offlineVoicesName = s.optString("offline_voices_name", ""),
+                useOnlineVoices = s.optBoolean("use_online_voices", true),
                 rate = s.optInt("rate", 100),
                 pitch = s.optInt("pitch", 0),
                 maxThreads = if (hasAppVersion) s.optInt("max_threads", AppSettings.DEFAULT_MAX_THREADS) else AppSettings.DEFAULT_MAX_THREADS,
@@ -146,6 +149,9 @@ class SettingsRepository(private val context: Context) {
             val s = JSONObject().apply {
                 put("voices_select", settings.voicesSelect)
                 put("voices_name", settings.voicesName)
+                put("offline_voices_select", settings.offlineVoicesSelect)
+                put("offline_voices_name", settings.offlineVoicesName)
+                put("use_online_voices", settings.useOnlineVoices)
                 put("rate", settings.rate)
                 put("pitch", settings.pitch)
                 put("max_threads", settings.maxThreads)
@@ -262,13 +268,28 @@ class SettingsRepository(private val context: Context) {
 
     fun readyOfflineVoices(): List<String> {
         val voicesRoot = File(programDir, "Voices")
+        if (voicesRoot.exists() && voicesRoot.isDirectory) {
+            var changed = false
+            voicesRoot.listFiles()?.forEach { dir ->
+                if (dir.isDirectory && OfflineTtsEngine.voiceInstalled(dir) && !offlineVoices.contains(dir.name)) {
+                    offlineVoices.add(dir.name)
+                    changed = true
+                }
+            }
+            if (changed) {
+                saveVoicesJson()
+            }
+        }
         return offlineVoices.filter { voice ->
             OfflineTtsEngine.voiceInstalled(File(voicesRoot, voice))
         }
     }
 
     fun isVoiceOffline(voice: String): Boolean {
-        return voice.isNotEmpty() && offlineVoices.contains(voice)
+        if (voice.isEmpty()) return false
+        if (offlineVoices.contains(voice)) return true
+        val voiceDir = File(File(programDir, "Voices"), voice)
+        return OfflineTtsEngine.voiceInstalled(voiceDir)
     }
 
     fun combinedVoicesList(): List<String> {
