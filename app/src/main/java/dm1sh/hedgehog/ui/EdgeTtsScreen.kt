@@ -198,12 +198,12 @@ fun EdgeTtsScreen(
                                 } else {
                                     Icons.AutoMirrored.Outlined.MenuBook
                                 },
-                                contentDescription = vm.tr("KEY_SETTINGS_BOOK")
+                                contentDescription = vm.tr("KEY_BOOK")
                             )
                         },
                         label = {
                             Text(
-                                text = vm.tr("KEY_SETTINGS_BOOK"),
+                                text = vm.tr("KEY_BOOK"),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )

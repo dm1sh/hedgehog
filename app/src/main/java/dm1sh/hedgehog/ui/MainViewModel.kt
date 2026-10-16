@@ -219,7 +219,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         val key = when (tab) {
-            MainTab.BOOK -> "KEY_SETTINGS_BOOK"
+            MainTab.BOOK -> "KEY_BOOK"
             MainTab.PARTS -> "KEY_VIEW_TEXT"
             MainTab.SETTINGS -> "KEY_SETTINGS"
         }
