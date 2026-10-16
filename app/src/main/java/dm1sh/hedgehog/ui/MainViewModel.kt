@@ -143,10 +143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mergeMutex = Mutex()
     private val mergeList = mutableMapOf<String, MutableMap<String, MutableMap<String, MutableList<String>>>>()
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    private val httpClient = SecMsGecGenerator.createBingHttpClient(20, 20)
 
     // 10-fast-click screen reader toggle
     private var lastTapMsec = 0L
@@ -1199,7 +1196,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     childJobs.add(job)
-                    delay(50)
+                    delay(100)
                 } else {
                     delay(100)
                 }

@@ -1,32 +1,79 @@
 package dm1sh.hedgehog.tts
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.isActive
+import okhttp3.ConnectionSpec
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.TlsVersion
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 
+/**
+ * Port of SocketEdgeTTS.gd:
+ * Synthesizes a single text part via Microsoft Edge ReadAloud WebSocket endpoint
+ * (wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1).
+ * Automatically retries on transient failure or inactivity timeout while respecting pause/stop state.
+ */
 object SocketEdgeTtsWorker {
+    private const val PREVIEW_TIMEOUT_MSEC = 30_000L
+    private const val DEFAULT_STALL_TIMEOUT_MSEC = 60_000L
+    private val AUDIO_SEP_BYTES = "Path:audio\r\n".toByteArray(Charsets.UTF_8)
 
-    private val DATA_SEPARATOR = "Path:audio\r\n".toByteArray(Charsets.UTF_8)
+    private val wsClient: OkHttpClient by lazy {
+        val tls12Spec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+            .tlsVersions(TlsVersion.TLS_1_2)
+            .build()
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 256
+            maxRequestsPerHost = 256
+        }
+        OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .sslSocketFactory(
+                SecMsGecGenerator.tls12NoSessionReuseSocketFactory,
+                SecMsGecGenerator.systemTrustManager
+            )
+            .connectionSpecs(listOf(tls12Spec))
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+    }
 
-    private val wsClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .build()
+    fun mkssml(
+        text: String,
+        voice: String,
+        rate: String,
+        pitch: String,
+        volume: String = "+0%"
+    ): String {
+        return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>\n" +
+            "<voice name='Microsoft Server Speech Text to Speech Voice ($voice)'>" +
+            "<prosody pitch='$pitch' rate='$rate' volume='$volume'>\n" +
+            "$text</prosody></voice></speak>"
+    }
+
+    fun ssmlHeadersPlusData(requestId: String, timestamp: String, ssml: String): String {
+        return "X-RequestId:$requestId\r\n" +
+            "Content-Type:application/ssml+xml\r\n" +
+            "X-Timestamp:${timestamp}Z\r\n" +
+            "Path:ssml\r\n\r\n" +
+            ssml
+    }
 
     suspend fun synthesizePart(
         voice: String,
         pitch: String,
         rate: String,
-        volume: String = "+0%",
         text: String,
         lowBitrate: Boolean,
         timeoutMsec: Long,
@@ -35,39 +82,73 @@ object SocketEdgeTtsWorker {
         isCancelled: () -> Boolean,
         onStatusUpdate: (String) -> Unit
     ): ByteArray? {
-        while (!isCancelled()) {
+        if (text.trim().isEmpty()) {
+            return ByteArray(0)
+        }
+
+        val audioFormat = if (lowBitrate) {
+            "audio-24khz-48kbitrate-mono-mp3"
+        } else {
+            "audio-24khz-96kbitrate-mono-mp3"
+        }
+
+        while (coroutineContext.isActive && !isCancelled()) {
             if (!isPreview && isPaused()) {
                 onStatusUpdate("KEY_PAUSE")
-                while (isPaused() && !isCancelled()) {
+                while (isPaused() && coroutineContext.isActive && !isCancelled()) {
                     delay(100)
                 }
-                if (isCancelled()) return null
+                continue
             }
 
-            val audioBytes = attemptSingleWebSocketSynthesis(
+            val effectiveTimeout = when {
+                isPreview -> PREVIEW_TIMEOUT_MSEC
+                timeoutMsec <= 0L || timeoutMsec >= 10_000_000L -> DEFAULT_STALL_TIMEOUT_MSEC
+                else -> timeoutMsec
+            }
+
+            val result = attemptSingleWebSocketSynthesis(
                 voice = voice,
                 pitch = pitch,
                 rate = rate,
-                volume = volume,
                 text = text,
-                lowBitrate = lowBitrate,
-                timeoutMsec = timeoutMsec,
+                audioFormat = audioFormat,
+                effectiveTimeout = effectiveTimeout,
+                isPreview = isPreview,
+                isPaused = isPaused,
+                isCancelled = isCancelled,
                 onStatusUpdate = onStatusUpdate
             )
 
-            if (isCancelled()) return null
-
-            if (audioBytes != null && audioBytes.isNotEmpty()) {
+            if (result != null && result.isNotEmpty()) {
                 SecMsGecGenerator.reportSuccess()
-                return audioBytes
+                return result
+            }
+
+            if (isCancelled() || !coroutineContext.isActive) {
+                return null
+            }
+
+            if (!isPreview && isPaused()) {
+                continue
             }
 
             SecMsGecGenerator.reportError()
-            onStatusUpdate("KEY_ERROR_RERUN")
+
             if (isPreview) {
                 return null
             }
-            delay(4000)
+
+            onStatusUpdate("KEY_ERROR_RERUN")
+            // Wait 4 seconds before retrying (matching SocketEdgeTTS.gd OS.delay_msec(4000))
+            var waited = 0L
+            while (waited < 4000L && coroutineContext.isActive && !isCancelled()) {
+                if (isPaused()) {
+                    break
+                }
+                delay(200)
+                waited += 200L
+            }
         }
         return null
     }
@@ -76,18 +157,22 @@ object SocketEdgeTtsWorker {
         voice: String,
         pitch: String,
         rate: String,
-        volume: String,
         text: String,
-        lowBitrate: Boolean,
-        timeoutMsec: Long,
+        audioFormat: String,
+        effectiveTimeout: Long,
+        isPreview: Boolean,
+        isPaused: () -> Boolean,
+        isCancelled: () -> Boolean,
         onStatusUpdate: (String) -> Unit
     ): ByteArray? {
+        val resultDeferred = CompletableDeferred<ByteArray?>()
+        val audioBuffer = ByteArrayOutputStream()
+        val receivedFirstChunk = AtomicBoolean(false)
+        val lastActivityTime = AtomicLong(System.currentTimeMillis())
+
         val secMsGec = SecMsGecGenerator.generateSecMsGec()
         val muid = SecMsGecGenerator.generateMuid()
         val connectId = SecMsGecGenerator.generateConnectId()
-        val chromiumMajor = SecMsGecGenerator.CHROMIUM_FULL_VERSION.substringBefore(".")
-        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/$chromiumMajor.0.0.0 Safari/537.36 Edg/$chromiumMajor.0.0.0"
 
         val url = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?" +
             "TrustedClientToken=${SecMsGecGenerator.TRUSTED_CLIENT_TOKEN}" +
@@ -100,53 +185,89 @@ object SocketEdgeTtsWorker {
             .header("Pragma", "no-cache")
             .header("Cache-Control", "no-cache")
             .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
-            .header("User-Agent", userAgent)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+            )
+            .header("Accept-Encoding", "gzip, deflate, br")
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("Cookie", "muid=$muid;")
             .build()
 
-        val resultDeferred = CompletableDeferred<ByteArray?>()
-        val audioStream = ByteArrayOutputStream()
-
-        val listener = object : WebSocketListener() {
+        val ws = wsClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                onStatusUpdate("KEY_STARTED")
-                val kbps = if (lowBitrate) "48" else "96"
+                lastActivityTime.set(System.currentTimeMillis())
+                if (isCancelled() || (!isPreview && isPaused())) {
+                    webSocket.cancel()
+                    resultDeferred.complete(null)
+                    return
+                }
+                if (!isPreview) {
+                    onStatusUpdate("KEY_STARTED")
+                }
                 val myDate = SecMsGecGenerator.dateToString()
-
                 val configMsg = "X-Timestamp:$myDate\r\n" +
                     "Content-Type:application/json; charset=utf-8\r\n" +
                     "Path:speech.config\r\n\r\n" +
                     "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{" +
                     "\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"true\"}," +
-                    "\"outputFormat\":\"audio-24khz-${kbps}kbitrate-mono-mp3\"" +
+                    "\"outputFormat\":\"$audioFormat\"" +
                     "}}}}\r\n"
                 webSocket.send(configMsg)
 
-                val ssml = buildSsml(voice, pitch, rate, volume, text)
-                val ssmlMsg = "X-RequestId:${SecMsGecGenerator.generateConnectId()}\r\n" +
-                    "Content-Type:application/ssml+xml\r\n" +
-                    "X-Timestamp:${myDate}Z\r\n" +
-                    "Path:ssml\r\n\r\n" +
-                    ssml
+                val ssml = mkssml(text = text, voice = voice, rate = rate, pitch = pitch, volume = "+0%")
+                val ssmlMsg = ssmlHeadersPlusData(
+                    requestId = SecMsGecGenerator.generateConnectId(),
+                    timestamp = myDate,
+                    ssml = ssml
+                )
                 webSocket.send(ssmlMsg)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                lastActivityTime.set(System.currentTimeMillis())
+                if (isCancelled() || (!isPreview && isPaused())) {
+                    webSocket.cancel()
+                    resultDeferred.complete(null)
+                    return
+                }
                 if (text.contains("Path:turn.end")) {
-                    val bytes = synchronized(audioStream) { audioStream.toByteArray() }
-                    resultDeferred.complete(bytes.takeIf { it.isNotEmpty() })
+                    val bytes = synchronized(audioBuffer) { audioBuffer.toByteArray() }
+                    if (bytes.isNotEmpty()) {
+                        resultDeferred.complete(bytes)
+                    } else {
+                        resultDeferred.complete(null)
+                    }
                     webSocket.close(1000, "Normal closure")
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                lastActivityTime.set(System.currentTimeMillis())
+                if (isCancelled() || (!isPreview && isPaused())) {
+                    webSocket.cancel()
+                    resultDeferred.complete(null)
+                    return
+                }
                 val arr = bytes.toByteArray()
-                val idx = findSeparatorEndIndex(arr, DATA_SEPARATOR)
-                if (idx != -1 && idx < arr.size) {
-                    synchronized(audioStream) {
-                        audioStream.write(arr, idx, arr.size - idx)
+                val idx = findSubArray(arr, AUDIO_SEP_BYTES)
+                if (idx >= 0) {
+                    val payloadStart = idx + AUDIO_SEP_BYTES.size
+                    if (payloadStart <= arr.size) {
+                        if (receivedFirstChunk.compareAndSet(false, true) && !isPreview) {
+                            onStatusUpdate("KEY_PROCESSING")
+                        }
+                        synchronized(audioBuffer) {
+                            audioBuffer.write(arr, payloadStart, arr.size - payloadStart)
+                        }
                     }
+                }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(1000, null)
+                if (!resultDeferred.isCompleted) {
+                    resultDeferred.complete(null)
                 }
             }
 
@@ -161,51 +282,37 @@ object SocketEdgeTtsWorker {
                     resultDeferred.complete(null)
                 }
             }
-        }
+        })
 
-        val ws = wsClient.newWebSocket(request, listener)
-        return try {
-            val effectiveTimeout = if (timeoutMsec <= 0L || timeoutMsec == Long.MAX_VALUE) {
-                3600_000L
-            } else {
-                timeoutMsec
-            }
-            withTimeoutOrNull(effectiveTimeout) {
-                resultDeferred.await()
-            }.also {
-                if (it == null) {
+        try {
+            while (!resultDeferred.isCompleted) {
+                if (isCancelled() || !coroutineContext.isActive || (!isPreview && isPaused())) {
                     ws.cancel()
+                    return null
                 }
+                val idleMs = System.currentTimeMillis() - lastActivityTime.get()
+                if (idleMs > effectiveTimeout) {
+                    ws.cancel()
+                    return null
+                }
+                delay(100)
             }
-        } catch (e: CancellationException) {
-            ws.cancel()
-            throw e
-        } catch (_: Exception) {
-            ws.cancel()
-            null
+            return resultDeferred.await()
+        } finally {
+            if (!resultDeferred.isCompleted) {
+                ws.cancel()
+            }
         }
     }
 
-    private fun buildSsml(voice: String, pitch: String, rate: String, volume: String, text: String): String {
-        return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>\n" +
-            "<voice name='Microsoft Server Speech Text to Speech Voice ($voice)'>" +
-            "<prosody pitch='$pitch' rate='$rate' volume='$volume'>\n" +
-            "$text</prosody></voice></speak>"
-    }
-
-    private fun findSeparatorEndIndex(array: ByteArray, separator: ByteArray): Int {
-        if (array.size < separator.size) return -1
-        for (i in 0..(array.size - separator.size)) {
-            var found = true
-            for (j in separator.indices) {
-                if (array[i + j] != separator[j]) {
-                    found = false
-                    break
-                }
+    private fun findSubArray(haystack: ByteArray, needle: ByteArray): Int {
+        if (needle.isEmpty() || haystack.size < needle.size) return -1
+        val limit = haystack.size - needle.size
+        outer@ for (i in 0..limit) {
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) continue@outer
             }
-            if (found) {
-                return i + separator.size
-            }
+            return i
         }
         return -1
     }

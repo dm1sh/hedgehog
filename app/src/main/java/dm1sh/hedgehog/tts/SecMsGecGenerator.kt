@@ -1,12 +1,28 @@
 package dm1sh.hedgehog.tts
 
+import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.TlsVersion
+import java.net.InetAddress
+import java.net.Socket
+import java.security.KeyStore
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.HandshakeCompletedListener
+import javax.net.ssl.SNIHostName
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLParameters
+import javax.net.ssl.SSLSession
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 import kotlin.math.floor
 
 object SecMsGecGenerator {
@@ -68,11 +84,178 @@ object SecMsGecGenerator {
     private var gecClockSkewSeconds = 0.0
     private var gecSyncInProgress = false
     private const val GEC_ERRORS_BEFORE_SYNC = 3
+    private val secureRandom = SecureRandom()
 
-    private val syncHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
+    val systemTrustManager: X509TrustManager by lazy {
+        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+        tmf.init(null as KeyStore?)
+        tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+    }
+
+    /**
+     * SSLSocketFactory that creates a fresh TLSv1.2 SSLContext per socket,
+     * disables TLS session tickets (which cause speech.platform.bing.com / Azure Front Door
+     * to return CN=*.azureedge.net on resumed sessions), and preserves SNI.
+     */
+    val tls12NoSessionReuseSocketFactory: SSLSocketFactory by lazy {
+        object : SSLSocketFactory() {
+            private val baseFactory: SSLSocketFactory by lazy {
+                val ctx = SSLContext.getInstance("TLSv1.2")
+                ctx.init(null, arrayOf<TrustManager>(systemTrustManager), secureRandom)
+                ctx.socketFactory
+            }
+
+            override fun getDefaultCipherSuites(): Array<String> = baseFactory.defaultCipherSuites
+            override fun getSupportedCipherSuites(): Array<String> = baseFactory.supportedCipherSuites
+
+            private fun newFactory(): SSLSocketFactory {
+                val ctx = SSLContext.getInstance("TLSv1.2")
+                ctx.init(null, arrayOf<TrustManager>(systemTrustManager), secureRandom)
+                return ctx.socketFactory
+            }
+
+            private fun configure(ssl: SSLSocket, host: String?): SSLSocket {
+                ssl.enabledProtocols = arrayOf("TLSv1.2")
+                if (!host.isNullOrEmpty()) {
+                    try {
+                        val m = ssl.javaClass.getMethod("setUseSessionTickets", Boolean::class.javaPrimitiveType)
+                        m.invoke(ssl, false)
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        val m = ssl.javaClass.getMethod("setHostname", String::class.java)
+                        m.invoke(ssl, host)
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        val params = ssl.sslParameters
+                        params.serverNames = listOf(SNIHostName(host))
+                        ssl.sslParameters = params
+                    } catch (_: Throwable) {
+                    }
+                }
+                return object : SSLSocket() {
+                    override fun setSSLParameters(params: SSLParameters?) {
+                        if (params != null && !host.isNullOrEmpty()) {
+                            try {
+                                params.serverNames = listOf(SNIHostName(host))
+                            } catch (_: Throwable) {
+                            }
+                        }
+                        ssl.sslParameters = params
+                    }
+                    override fun getSSLParameters(): SSLParameters = ssl.sslParameters
+                    override fun setEnabledProtocols(protocols: Array<out String>?) {
+                        ssl.enabledProtocols = arrayOf("TLSv1.2")
+                    }
+                    override fun getEnabledProtocols(): Array<String> = ssl.enabledProtocols
+                    override fun getSupportedProtocols(): Array<String> = ssl.supportedProtocols
+                    override fun getSupportedCipherSuites(): Array<String> = ssl.supportedCipherSuites
+                    override fun getEnabledCipherSuites(): Array<String> = ssl.enabledCipherSuites
+                    override fun setEnabledCipherSuites(suites: Array<out String>?) {
+                        ssl.enabledCipherSuites = suites
+                    }
+                    override fun getSession(): SSLSession = ssl.session
+                    override fun getHandshakeSession(): SSLSession? = ssl.handshakeSession
+                    override fun addHandshakeCompletedListener(l: HandshakeCompletedListener?) =
+                        ssl.addHandshakeCompletedListener(l)
+                    override fun removeHandshakeCompletedListener(l: HandshakeCompletedListener?) =
+                        ssl.removeHandshakeCompletedListener(l)
+                    override fun startHandshake() = ssl.startHandshake()
+                    override fun setUseClientMode(mode: Boolean) {
+                        ssl.useClientMode = mode
+                    }
+                    override fun getUseClientMode(): Boolean = ssl.useClientMode
+                    override fun setNeedClientAuth(need: Boolean) {
+                        ssl.needClientAuth = need
+                    }
+                    override fun getNeedClientAuth(): Boolean = ssl.needClientAuth
+                    override fun setWantClientAuth(want: Boolean) {
+                        ssl.wantClientAuth = want
+                    }
+                    override fun getWantClientAuth(): Boolean = ssl.wantClientAuth
+                    override fun setEnableSessionCreation(flag: Boolean) {
+                        ssl.enableSessionCreation = flag
+                    }
+                    override fun getEnableSessionCreation(): Boolean = ssl.enableSessionCreation
+                    override fun getApplicationProtocol(): String? = ssl.applicationProtocol
+                    override fun getHandshakeApplicationProtocol(): String? = ssl.handshakeApplicationProtocol
+                    override fun getInputStream() = ssl.inputStream
+                    override fun getOutputStream() = ssl.outputStream
+                    override fun close() = ssl.close()
+                    override fun isClosed(): Boolean = ssl.isClosed
+                    override fun isConnected(): Boolean = ssl.isConnected
+                    override fun isBound(): Boolean = ssl.isBound
+                    override fun isInputShutdown(): Boolean = ssl.isInputShutdown
+                    override fun isOutputShutdown(): Boolean = ssl.isOutputShutdown
+                    override fun setSoTimeout(timeout: Int) {
+                        ssl.soTimeout = timeout
+                    }
+                    override fun getSoTimeout(): Int = ssl.soTimeout
+                    override fun setTcpNoDelay(on: Boolean) {
+                        ssl.tcpNoDelay = on
+                    }
+                    override fun getTcpNoDelay(): Boolean = ssl.tcpNoDelay
+                    override fun setKeepAlive(on: Boolean) {
+                        ssl.keepAlive = on
+                    }
+                    override fun getKeepAlive(): Boolean = ssl.keepAlive
+                    override fun getInetAddress(): InetAddress? = ssl.inetAddress
+                    override fun getLocalAddress(): InetAddress? = ssl.localAddress
+                    override fun getPort(): Int = ssl.port
+                    override fun getLocalPort(): Int = ssl.localPort
+                    override fun getRemoteSocketAddress() = ssl.remoteSocketAddress
+                    override fun getLocalSocketAddress() = ssl.localSocketAddress
+                }
+            }
+
+            override fun createSocket(s: Socket?, host: String?, port: Int, autoClose: Boolean): Socket {
+                val ssl = newFactory().createSocket(s, host, port, autoClose) as SSLSocket
+                return configure(ssl, host)
+            }
+
+            override fun createSocket(host: String?, port: Int): Socket {
+                val ssl = newFactory().createSocket(host, port) as SSLSocket
+                return configure(ssl, host)
+            }
+
+            override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket {
+                val ssl = newFactory().createSocket(host, port, localHost, localPort) as SSLSocket
+                return configure(ssl, host)
+            }
+
+            override fun createSocket(host: InetAddress?, port: Int): Socket {
+                val ssl = newFactory().createSocket(host, port) as SSLSocket
+                return configure(ssl, host?.hostName)
+            }
+
+            override fun createSocket(
+                address: InetAddress?,
+                port: Int,
+                localAddress: InetAddress?,
+                localPort: Int
+            ): Socket {
+                val ssl = newFactory().createSocket(address, port, localAddress, localPort) as SSLSocket
+                return configure(ssl, address?.hostName)
+            }
+        }
+    }
+
+    fun createBingHttpClient(connectTimeoutSec: Long = 15, readTimeoutSec: Long = 15): OkHttpClient {
+        val tls12Spec = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+            .tlsVersions(TlsVersion.TLS_1_2)
+            .build()
+        return OkHttpClient.Builder()
+            .sslSocketFactory(tls12NoSessionReuseSocketFactory, systemTrustManager)
+            .connectionSpecs(listOf(tls12Spec))
+            .connectTimeout(connectTimeoutSec, TimeUnit.SECONDS)
+            .readTimeout(readTimeoutSec, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val syncHttpClient: OkHttpClient by lazy {
+        createBingHttpClient(10, 10)
+    }
 
     fun generateSecMsGec(): String {
         val skew = synchronized(gecLock) { gecClockSkewSeconds }
@@ -114,9 +297,20 @@ object SecMsGecGenerator {
     }
 
     fun dateToString(): String {
-        val sdf = SimpleDateFormat("EEE, MMM d, yyyy, h:mm:ss a", Locale.US)
-        sdf.timeZone = TimeZone.getTimeZone("UTC")
-        return sdf.format(Date())
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"), Locale.US)
+        val daysOfWeek = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+        val months = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        val dayOfWeek = daysOfWeek[cal.get(Calendar.DAY_OF_WEEK) - 1]
+        val month = months[cal.get(Calendar.MONTH)]
+        val day = cal.get(Calendar.DAY_OF_MONTH).toString()
+        val year = cal.get(Calendar.YEAR).toString()
+        val hour24 = cal.get(Calendar.HOUR_OF_DAY)
+        var hour = hour24 % 12
+        if (hour == 0) hour = 12
+        val minute = String.format(Locale.US, "%02d", cal.get(Calendar.MINUTE))
+        val second = String.format(Locale.US, "%02d", cal.get(Calendar.SECOND))
+        val period = if (hour24 < 12) "AM" else "PM"
+        return "$dayOfWeek, $month $day, $year, $hour:$minute:$second $period"
     }
 
     fun reportSuccess() {
