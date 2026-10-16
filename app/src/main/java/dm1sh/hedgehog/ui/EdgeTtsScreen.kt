@@ -443,7 +443,7 @@ private fun BookStatusGridCard(
 ) {
     val statusText = when {
         vm.statInfo.isNotBlank() -> vm.statInfo
-        vm.bookLoaded -> vm.tr("KEY_BOOK_LOADED")
+        vm.bookLoaded -> vm.bookLoadedCaption()
         else -> vm.tr("KEY_OPEN_BOOKS")
     }
 

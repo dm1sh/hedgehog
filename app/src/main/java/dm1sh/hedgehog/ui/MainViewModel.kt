@@ -127,6 +127,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var isBookLoading by mutableStateOf(false)
         private set
+    var loadedBooksCount by mutableIntStateOf(0)
+        private set
     private val filesList = mutableListOf<String>()
     private var lexxRules: List<String> = emptyList()
     private var numTextCounter = 0
@@ -603,11 +605,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun bookLoadedCaption(): String {
+        return tr(if (loadedBooksCount <= 1) "KEY_SINGLE_BOOK_LOADED" else "KEY_BOOK_LOADED")
+    }
+
     // Book Open / Clear
     fun clearBook() {
         stopConversion(announce = false)
         isBookLoading = false
         bookLoaded = false
+        loadedBooksCount = 0
         partStatuses.clear()
         textAreaText = ""
         statStr = "0 / 0"
@@ -737,6 +744,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isBookLoading = false
                 book = currentBook
                 val count = currentBook?.allSentences?.size ?: 0
+                loadedBooksCount = filesList.size.coerceAtLeast(if (count > 0) 1 else 0)
                 bookLoaded = count > 0
                 totalPartsCount = count
                 partStatuses.clear()
@@ -749,7 +757,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     editorRefreshFields()
                 }
-                ttsSay("${tr("KEY_BOOK_LOADED")}. $statStr")
+                ttsSay("${bookLoadedCaption()}. $statStr")
             }
         }
     }
