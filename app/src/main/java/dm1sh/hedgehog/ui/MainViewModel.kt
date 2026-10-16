@@ -617,8 +617,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun fetchOnlineVoices() {
         if (onlineVoicesBusy) return
         onlineVoicesBusy = true
+        statInfoDoneHighlight = false
+        statInfo = tr("KEY_GET_VOICES")
         ttsSay(tr("KEY_GET_VOICES"))
         viewModelScope.launch(Dispatchers.IO) {
+            var updatedOk = false
             try {
                 val url = "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=${SecMsGecGenerator.TRUSTED_CLIENT_TOKEN}"
                 val req = Request.Builder().url(url).build()
@@ -642,6 +645,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 repo.updateOnlineVoices(sorted)
                                 refreshVoicesList()
                             }
+                            updatedOk = true
                         }
                     }
                 }
@@ -649,6 +653,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 withContext(Dispatchers.Main) {
                     onlineVoicesBusy = false
+                    statInfoDoneHighlight = updatedOk
+                    statInfo = if (updatedOk) "${tr("KEY_GET_VOICES")}: ${tr("KEY_OK")}" else ""
                 }
             }
         }

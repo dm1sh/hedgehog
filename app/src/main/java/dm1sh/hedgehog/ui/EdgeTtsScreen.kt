@@ -143,43 +143,89 @@ fun EdgeTtsScreen(
                 }
             },
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = "Hedgehog",
-                            style = MaterialTheme.typography.titleLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (vm.bookLoaded || vm.totalPartsCount > 0) {
+            val topBarStatus = when {
+                vm.statInfo.isNotBlank() -> {
+                    if (vm.runWork && vm.totalPartsCount > 0) {
+                        val elapsedSuffix = if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
+                            " • ${vm.elapsedTimeText}"
+                        } else {
+                            ""
+                        }
+                        "${vm.statInfo}: ${vm.statStr}$elapsedSuffix"
+                    } else {
+                        vm.statInfo
+                    }
+                }
+                vm.bookLoaded || vm.totalPartsCount > 0 -> {
+                    "${vm.bookLoadedCaption()} • ${vm.tr("KEY_TOTAL_PARTS")}${vm.totalPartsCount}"
+                }
+                else -> ""
+            }
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+                TopAppBar(
+                    title = {
+                        Column {
                             Text(
-                                text = "${vm.tr("KEY_TOTAL_PARTS")}${vm.totalPartsCount}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1
+                                text = "Hedgehog",
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (topBarStatus.isNotEmpty()) {
+                                Text(
+                                    text = topBarStatus,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (vm.statInfo.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = when {
+                                        vm.statInfoDoneHighlight -> MaterialTheme.colorScheme.primary
+                                        vm.statInfo.isNotBlank() -> MaterialTheme.colorScheme.secondary
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    },
+                    actions = {
+                        IconButton(
+                            onClick = {
+                                vm.stopConversion(announce = false)
+                                onExitApp()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PowerSettingsNew,
+                                contentDescription = vm.tr("KEY_EXIT")
                             )
                         }
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = {
-                            vm.stopConversion(announce = false)
-                            onExitApp()
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.PowerSettingsNew,
-                            contentDescription = vm.tr("KEY_EXIT")
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface
+                    )
                 )
-            )
+                if (vm.progressBarVisible) {
+                    val progress = if (vm.progressBarMax > 0) {
+                        (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
+                    } else 0f
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    )
+                } else if (vm.offlineVoicesBusy || vm.onlineVoicesBusy || vm.isBookLoading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    )
+                }
+            }
         },
         bottomBar = {
             Column(modifier = Modifier.fillMaxWidth()) {
