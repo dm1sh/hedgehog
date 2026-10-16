@@ -2,6 +2,8 @@ package dm1sh.hedgehog.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,6 +101,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -116,6 +119,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dm1sh.hedgehog.model.AppSettings
+import kotlinx.coroutines.delay
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -1527,8 +1531,8 @@ private fun TextAreaEditorPanel(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilledTonalIconButton(
-                    onClick = { vm.onEditorPrevPressed() },
+                RepeatingFilledTonalIconButton(
+                    onAction = { vm.onEditorPrevPressed() },
                     enabled = !noNav
                 ) {
                     Icon(
@@ -1557,8 +1561,8 @@ private fun TextAreaEditorPanel(
                     modifier = Modifier.width(88.dp)
                 )
 
-                FilledTonalIconButton(
-                    onClick = { vm.onEditorNextPressed() },
+                RepeatingFilledTonalIconButton(
+                    onAction = { vm.onEditorNextPressed() },
                     enabled = !noNav
                 ) {
                     Icon(
@@ -1582,6 +1586,37 @@ private fun TextAreaEditorPanel(
             }
         }
     }
+}
+
+@Composable
+private fun RepeatingFilledTonalIconButton(
+    onAction: () -> Unit,
+    enabled: Boolean = true,
+    initialDelayMillis: Long = 350L,
+    repeatIntervalMillis: Long = 80L,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val currentOnAction by rememberUpdatedState(onAction)
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    LaunchedEffect(isPressed, enabled) {
+        if (isPressed && enabled) {
+            currentOnAction()
+            delay(initialDelayMillis)
+            while (isPressed && enabled) {
+                currentOnAction()
+                delay(repeatIntervalMillis)
+            }
+        }
+    }
+
+    FilledTonalIconButton(
+        onClick = {},
+        enabled = enabled,
+        interactionSource = interactionSource,
+        content = content
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
