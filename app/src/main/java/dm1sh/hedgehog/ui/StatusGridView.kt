@@ -44,7 +44,9 @@ fun StatusGridView(
 
     val density = LocalDensity.current
     val boxesPerRow = 10
+    val boxSizeDp = 16.dp
     val boxGapDp = 6.dp
+    val boxSizePx = with(density) { boxSizeDp.toPx() }
     val gapPx = with(density) { boxGapDp.toPx() }
 
     var containerWidthPx by remember { mutableIntStateOf(0) }
@@ -52,13 +54,14 @@ fun StatusGridView(
     var selectedTooltipIndex by remember { mutableIntStateOf(-1) }
     var tooltipOffsetPx by remember { mutableStateOf(Offset.Zero) }
 
-    val boxSizePx = if (containerWidthPx > 0) {
-        max(8f, (containerWidthPx - (boxesPerRow - 1) * gapPx) / boxesPerRow.toFloat())
-    } else {
-        with(density) { 22.dp.toPx() }
-    }
     val cellStepPx = boxSizePx + gapPx
     val rowHeightPx = boxSizePx + gapPx
+    val gridWidthPx = boxesPerRow * boxSizePx + (boxesPerRow - 1) * gapPx
+    val startXPx = if (containerWidthPx > 0) {
+        max(0f, (containerWidthPx - gridWidthPx) / 2f)
+    } else {
+        0f
+    }
     val totalRows = (count + boxesPerRow - 1) / boxesPerRow
     val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - gapPx)
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
@@ -82,25 +85,30 @@ fun StatusGridView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(contentHeightDp)
-                    .pointerInput(count, boxesPerRow, cellStepPx, rowHeightPx) {
+                    .pointerInput(count, boxesPerRow, cellStepPx, rowHeightPx, startXPx) {
                         detectTapGestures { tapPos ->
-                            val col = (tapPos.x / cellStepPx).toInt()
-                            val row = (tapPos.y / rowHeightPx).toInt()
-                            val inBoxX = (tapPos.x % cellStepPx) <= boxSizePx
-                            val inBoxY = (tapPos.y % rowHeightPx) <= boxSizePx
-                            val idx = row * boxesPerRow + col
-                            if (col in 0 until boxesPerRow && inBoxX && inBoxY && idx in 0 until count) {
-                                if (selectedTooltipIndex == idx) {
-                                    selectedTooltipIndex = -1
+                            val localX = tapPos.x - startXPx
+                            if (localX >= 0f && tapPos.y >= 0f) {
+                                val col = (localX / cellStepPx).toInt()
+                                val row = (tapPos.y / rowHeightPx).toInt()
+                                val inBoxX = (localX % cellStepPx) <= boxSizePx
+                                val inBoxY = (tapPos.y % rowHeightPx) <= boxSizePx
+                                val idx = row * boxesPerRow + col
+                                if (col in 0 until boxesPerRow && inBoxX && inBoxY && idx in 0 until count) {
+                                    if (selectedTooltipIndex == idx) {
+                                        selectedTooltipIndex = -1
+                                    } else {
+                                        selectedTooltipIndex = idx
+                                        tooltipOffsetPx = Offset(
+                                            x = startXPx + col * cellStepPx,
+                                            y = row * rowHeightPx - scrollState.value
+                                        )
+                                        val st = statuses[idx]
+                                        val msg = "${tr("KEY_STAT_AREA_TEXT_1")}${idx + 1}: ${tr(st.trKey)}"
+                                        onSpeakTooltip(msg)
+                                    }
                                 } else {
-                                    selectedTooltipIndex = idx
-                                    tooltipOffsetPx = Offset(
-                                        x = col * cellStepPx,
-                                        y = row * rowHeightPx - scrollState.value
-                                    )
-                                    val st = statuses[idx]
-                                    val msg = "${tr("KEY_STAT_AREA_TEXT_1")}${idx + 1}: ${tr(st.trKey)}"
-                                    onSpeakTooltip(msg)
+                                    selectedTooltipIndex = -1
                                 }
                             } else {
                                 selectedTooltipIndex = -1
@@ -108,7 +116,7 @@ fun StatusGridView(
                         }
                     }
             ) {
-                val cornerPx = with(density) { 4.dp.toPx() }
+                val cornerPx = with(density) { 3.dp.toPx() }
                 val scrollY = scrollState.value.toFloat()
                 val viewH = if (containerHeightPx > 0) containerHeightPx.toFloat() else size.height
                 val firstRow = max(0, (scrollY / rowHeightPx).toInt() - 1)
@@ -118,7 +126,7 @@ fun StatusGridView(
                     val startIdx = r * boxesPerRow
                     val endIdx = min(startIdx + boxesPerRow, count)
                     val y = r * rowHeightPx
-                    var x = 0f
+                    var x = startXPx
                     for (idx in startIdx until endIdx) {
                         val st = statuses[idx]
                         drawRoundRect(
