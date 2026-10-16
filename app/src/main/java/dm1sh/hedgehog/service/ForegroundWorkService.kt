@@ -91,11 +91,13 @@ class ForegroundWorkService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "work"
+        private const val COMPLETION_CHANNEL_ID = "work_completed"
         const val EXTRA_TITLE = "title"
         const val EXTRA_TEXT = "text"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_MAX = "max"
         private const val NOTIFICATION_ID = 1
+        private const val COMPLETION_NOTIFICATION_ID = 2
 
         fun setActive(
             context: Context,
@@ -140,6 +142,84 @@ class ForegroundWorkService : Service() {
                 max = max,
                 title = title
             )
+        }
+
+        fun showCompletionNotification(
+            context: Context,
+            bookTitle: String,
+            completedLabel: String,
+            partsProcessed: String,
+            elapsedTime: String
+        ) {
+            try {
+                val nm = context.getSystemService(NotificationManager::class.java) ?: return
+                val appLabel = context.applicationInfo.loadLabel(context.packageManager)
+                val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    nm.createNotificationChannel(
+                        NotificationChannel(
+                            COMPLETION_CHANNEL_ID,
+                            completedLabel.ifBlank { appLabel },
+                            NotificationManager.IMPORTANCE_DEFAULT
+                        )
+                    )
+                    Notification.Builder(context, COMPLETION_CHANNEL_ID)
+                } else {
+                    @Suppress("DEPRECATION")
+                    Notification.Builder(context).setPriority(Notification.PRIORITY_DEFAULT)
+                }
+
+                val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                val pendingIntent = if (launchIntent != null) {
+                    PendingIntent.getActivity(
+                        context,
+                        0,
+                        launchIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                } else null
+
+                val titleText = bookTitle.ifBlank { appLabel.toString() }
+                val summaryLine = buildString {
+                    append(completedLabel)
+                    if (partsProcessed.isNotBlank()) {
+                        append(" • ")
+                        append(partsProcessed)
+                    }
+                    if (elapsedTime.isNotBlank()) {
+                        append(" • ")
+                        append(elapsedTime)
+                    }
+                }
+                val bigText = buildString {
+                    append(completedLabel)
+                    if (bookTitle.isNotBlank()) {
+                        append("\n")
+                        append(bookTitle)
+                    }
+                    if (partsProcessed.isNotBlank()) {
+                        append("\n")
+                        append(partsProcessed)
+                    }
+                    if (elapsedTime.isNotBlank()) {
+                        append(" (")
+                        append(elapsedTime)
+                        append(")")
+                    }
+                }
+
+                val notification = builder
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle(titleText)
+                    .setContentText(summaryLine)
+                    .setStyle(Notification.BigTextStyle().bigText(bigText))
+                    .setContentIntent(pendingIntent)
+                    .setAutoCancel(true)
+                    .setOngoing(false)
+                    .build()
+
+                nm.notify(COMPLETION_NOTIFICATION_ID, notification)
+            } catch (_: Exception) {
+            }
         }
     }
 }

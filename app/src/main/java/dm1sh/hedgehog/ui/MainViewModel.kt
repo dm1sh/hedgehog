@@ -1646,7 +1646,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     progressBarVisible = false
                     progressBarValue = 0
                     val msg = "${tr("KEY_WORK_COMPLETED")}. $statInfo $statStr"
-                    statInfo = tr("KEY_WORK_COMPLETED")
+                    val completedLabel = tr("KEY_WORK_COMPLETED")
+                    val bookTitle = book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
+                    val processedSummary = "${tr("KEY_PROCESSED")}: $statStr"
+                    ForegroundWorkService.showCompletionNotification(
+                        context = getApplication(),
+                        bookTitle = bookTitle,
+                        completedLabel = completedLabel,
+                        partsProcessed = processedSummary,
+                        elapsedTime = elapsedTimeText
+                    )
+                    statInfo = completedLabel
                     statInfoDoneHighlight = true
                     ttsSay(msg)
                 }
