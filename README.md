@@ -1,37 +1,72 @@
-# Hedgehog (EdgeTTS Native Android Reimplementation)
+# Hedgehog
 
-Native Android reimplementation of **EdgeTTS** built with **Kotlin** and **Jetpack Compose** (`dm1sh.hedgehog`), faithfully porting the original Godot 4.6 application and its custom Android plugins into a clean, single-process native Android codebase.
+**Hedgehog** is a native Android app for turning e-books and text files into audiobooks using natural-sounding neural voices. It features a clean Material 3 interface with Material You (Monet) dynamic colors and works both online and completely offline.
 
-## Features
+---
 
-- **Online Microsoft Edge Neural TTS**:
-  - Direct WebSocket synthesis (`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`) with bit-exact `Sec-MS-GEC` (`2-143.0.3650.75`) security token generation and automatic server clock-skew synchronization.
-  - Multi-threaded concurrent part synthesis (`1..100` streams) with configurable retry delay (`5s..300s` or `∞`) and `48 kbps` / `96 kbps` 24kHz mono MP3 output.
-  - Online voice list updater (`edge.microsoft.com` endpoint).
-- **Offline Embedded Neural TTS**:
-  - Full integration with `com.microsoft.cognitiveservices.speech:client-sdk-embedded:1.40.0` and `de.sciss:jump3r:1.0.5` LAME MP3 encoder (`24 kHz`, `48/96 kbps` mono).
-  - One-click downloader & installer for offline voice models (`offline_voices_3.json` from `edgetts.github.io/assets/offline/`) into `EdgeTTS/offline/models/`.
-- **Book & Document Processing**:
-  - Native parsers for `.txt`, `.ini`, `.fb2`, `.epub`, `.csv`, and `.zip` archives containing books, with automatic UTF-8 and Windows-1251 (CP1251) encoding detection.
-  - `.lexx` pronunciation & regex dictionary support (`regex"=replacement`, case-sensitive `#` rules, whole-word vs. substring replacements).
-  - Chapter splitting by customizable regular expression, optional chapter intro audio (`glav.mp3`), chapter titles in output filenames, and configurable MP3 chunk merging (`1..99` parts or `All`).
-- **Material 3 UI with Monet Dynamic Color**:
-  - Designed according to **Material 3** guidelines (`Scaffold`, `TopAppBar`, `NavigationBar`, `ElevatedCard` / `OutlinedCard`, `ExposedDropdownMenuBox`, searchable `ModalBottomSheet` voice picker, `OutlinedTextField`, Material 3 `Slider`, `Switch` with check icon, and `AlertDialog`).
-  - Supports **Monet Dynamic Color** (`dynamicDarkColorScheme` / `dynamicLightColorScheme` on Android 12+) and edge-to-edge system bars respecting system light/dark theme.
-  - Native Android system file & directory pickers (`OpenMultipleDocuments`, `OpenDocument`, `OpenDocumentTree`).
-  - Interactive `StatusGrid` Canvas with per-part status colors and Material 3 tooltips, plus full-screen/split-screen Part Editor with live preview.
-  - 12-language localization (`localization/translations.csv`: Auto, English, Russian, Ukrainian, Belarusian, Kazakh, German, French, Spanish, Italian, Portuguese, Chinese, Turkish).
-  - Built-in UI Screen Reader (`TextToSpeech`) for accessibility.
-- **Background Execution & Storage**:
-  - `ForegroundWorkService` with partial `WakeLock` and ongoing notification (`dataSync`) so book synthesis continues reliably while the screen is off.
-  - `EdgeTTS/Trash` recycle bin support and `MANAGE_EXTERNAL_STORAGE` + Android Storage Access Framework (SAF) file picker integration.
+## What the App Can Do
 
-## Building Debug APKs
+- **Convert Books to Audiobooks**:
+  - Open books in **FB2**, **EPUB**, **TXT**, **CSV**, **INI**, or **ZIP** archives containing books.
+  - Automatically detects book metadata (`Author - Book Title`) and text encodings (UTF-8 and Windows-1251).
+  - Save audiobooks in **MP3** (`96 kbps` or compact `48 kbps`) or **Opus** (`32 kbps VoIP` for small file sizes).
+- **Online & Offline Neural Voices**:
+  - Choose from hundreds of **Online** Microsoft Edge neural voices across dozens of languages.
+  - Download **Offline** voices directly inside the app to convert books without an internet connection.
+  - Automatically falls back to your selected offline voice if your internet connection drops.
+- **Smart Book & Audio Organization**:
+  - **Cut by chapters**: Split audiobooks into separate chapter files named after each chapter.
+  - **Inline footnotes**: Optionally embed FB2 and EPUB footnotes directly into the spoken text so notes are read naturally in context.
+  - **Merge audio**: Combine parts into a single audiobook file or group them by a custom number of parts per file.
+  - **Pronunciation dictionaries (`.lexx`)**: Apply custom word replacements, stress marks, and regex rules before synthesis.
+- **Preview & Edit Before Converting**:
+  - Browse and edit individual text parts, listen to a voice preview of any part, or customize the output book title before saving.
+- **Background Conversion**:
+  - Converts books in multiple parallel streams with live progress in the status grid, top bar, and system notification—even while your screen is off.
 
-A GitHub Actions workflow (`.github/workflows/build-debug.yml`) automatically builds `app-debug.apk` on every push to `main`/`master` or via manual `workflow_dispatch` and uploads it as the `hedgehog-debug-apk` artifact.
+---
 
-To build locally with Android SDK and JDK 17:
+## How to Use
 
-```bash
-./gradlew assembleDebug
-```
+### 1. Choose a Voice (`Book` or `Settings` tab)
+1. Select your preferred **Online voice** (or switch off *Use online voices* in **Settings → Voice settings** to use an **Offline voice**).
+2. Adjust **Speed** and **Pitch** if needed.
+3. To use offline voices without internet, open **Settings → Voice settings** and tap **Get offline voices** once to download the voice models.
+
+### 2. Open a Book (`Book` tab)
+- Tap a book directly from the **Load folder** list on the **Book** tab, or tap **Open books** at the bottom to pick one or more files from your device.
+- Once loaded, you can edit the output book title right below the status grid.
+- To inspect or edit the text of individual parts (or listen to a preview), switch to the **View text** tab.
+
+### 3. Convert to Audio
+- Tap **Save to MP3** (or **Save to Opus**) at the bottom of the screen to start conversion.
+- Each square in the status grid represents a part of the book and changes color as it is processed and saved.
+- You can **Pause**, **Resume**, or **Stop** conversion at any time. Finished audiobooks are saved to your **Save folder** (`Downloads` by default).
+
+---
+
+## How to Build
+
+### Option 1: Download Prebuilt APK from GitHub Actions
+Every push to the repository automatically builds a signed debug APK via GitHub Actions:
+1. Open the **Actions** tab in this repository.
+2. Select the latest **Build Debug APK** workflow run.
+3. Download the **`hedgehog-debug-apk`** artifact and install `app-debug.apk` on your Android device (Android 7.0+).
+
+### Option 2: Build Locally
+1. Install **JDK 17**, the **Android SDK** (API 35), and **Android NDK** (`27.2.12479018`).
+2. Build the native Opus/FFmpeg libraries once:
+   ```bash
+   ./scripts/build-opus-ffmpeg-android.sh
+   ```
+3. Build the debug APK with Gradle:
+   ```bash
+   ./gradlew assembleDebug
+   ```
+   The compiled APK will be generated at `app/build/outputs/apk/debug/app-debug.apk`.
+
+---
+
+## Credits
+
+Hedgehog is a native Android (Kotlin & Jetpack Compose) reimplementation based on the original **EdgeTTS** application ([EdgeTTS topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1089727)).
