@@ -28,6 +28,27 @@ object OfflineTtsEngine {
 
     private var maxJobs = 1
     private var semaphore = Semaphore(1)
+    private val nativeLock = Any()
+
+    private class CachedSession(
+        val voiceDir: String,
+        val voice: Voice,
+        val config: EmbeddedSpeechConfig,
+        val synthesizer: SpeechSynthesizer
+    ) {
+        fun closeQuietly() {
+            try {
+                synthesizer.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                config.close()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private var cachedSession: CachedSession? = null
 
     fun setMaxJobs(value: Int) {
         val processors = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
@@ -65,9 +86,17 @@ object OfflineTtsEngine {
                 if (isCancelled() || (!isPreview && isPaused())) {
                     ByteArray(0)
                 } else {
-                    onStatusUpdate("KEY_PROCESSING")
                     val kbps = if (lowBitrate) "48" else "96"
-                    synthesizeBlocking(context, voiceDir.absolutePath, text, rate, pitch, kbps)
+                    synthesizeBlocking(
+                        context = context,
+                        voiceDir = voiceDir.absolutePath,
+                        text = text,
+                        rate = rate,
+                        pitch = pitch,
+                        kbps = kbps,
+                        shouldAbort = { isCancelled() || (!isPreview && isPaused()) },
+                        onProcessingStart = { onStatusUpdate("KEY_PROCESSING") }
+                    )
                 }
             }
             if (isCancelled()) return null
@@ -90,11 +119,17 @@ object OfflineTtsEngine {
         text: String,
         rate: String,
         pitch: String,
-        kbps: String
+        kbps: String,
+        shouldAbort: () -> Boolean = { false },
+        onProcessingStart: () -> Unit = {}
     ): ByteArray {
         return try {
-            val pcmBytes = pcm(voiceDir, text, rate, pitch)
-            if (pcmBytes.isEmpty()) pcmBytes else mp3(context, pcmBytes, kbps)
+            val pcmBytes = synchronized(nativeLock) {
+                if (shouldAbort()) return ByteArray(0)
+                onProcessingStart()
+                pcmLocked(voiceDir, text, rate, pitch)
+            }
+            if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else mp3(context, pcmBytes, kbps)
         } catch (t: Throwable) {
             Log.e(TAG, "synthesize failed: ${t.message}", t)
             ByteArray(0)
@@ -107,32 +142,68 @@ object OfflineTtsEngine {
         val licensed: Boolean
     )
 
-    private fun pcm(voiceDir: String, text: String, rate: String, pitch: String): ByteArray {
+    private fun getOrCreateSessionLocked(voiceDir: String): CachedSession {
+        val existing = cachedSession
+        if (existing != null && existing.voiceDir == voiceDir) {
+            return existing
+        }
+        existing?.closeQuietly()
+        cachedSession = null
+
         val v = parseVoice(voiceDir)
         val config = EmbeddedSpeechConfig.fromPath(voiceDir)
         try {
             config.setSpeechSynthesisVoice(v.name, resolveKey(voiceDir, v.licensed))
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
             val synthesizer = SpeechSynthesizer(config, null)
+            val created = CachedSession(voiceDir, v, config, synthesizer)
+            cachedSession = created
+            return created
+        } catch (t: Throwable) {
             try {
-                val result = synthesizer.SpeakSsml(buildSsml(v, text, rate, pitch))
+                config.close()
+            } catch (_: Throwable) {
+            }
+            throw t
+        }
+    }
+
+    private fun resetSessionLocked() {
+        cachedSession?.closeQuietly()
+        cachedSession = null
+    }
+
+    private fun pcmLocked(voiceDir: String, text: String, rate: String, pitch: String): ByteArray {
+        for (attempt in 0..1) {
+            val session = try {
+                getOrCreateSessionLocked(voiceDir)
+            } catch (t: Throwable) {
+                resetSessionLocked()
+                if (attempt == 1) throw t
+                continue
+            }
+            try {
+                val ssml = buildSsml(session.voice, text, rate, pitch)
+                val result = session.synthesizer.SpeakSsml(ssml)
                 try {
-                    if (result.reason != ResultReason.SynthesizingAudioCompleted) {
+                    if (result.reason == ResultReason.SynthesizingAudioCompleted) {
+                        val audioData = result.audioData
+                        if (audioData != null && audioData.isNotEmpty()) {
+                            return stripRiff(audioData)
+                        }
+                    } else {
                         val details = SpeechSynthesisCancellationDetails.fromResult(result)
                         Log.e(TAG, "FAIL reason=${details.reason} code=${details.errorCode} details=${details.errorDetails}")
-                        return ByteArray(0)
                     }
-                    val audioData = result.audioData ?: return ByteArray(0)
-                    return stripRiff(audioData)
                 } finally {
                     result.close()
                 }
-            } finally {
-                synthesizer.close()
+            } catch (t: Throwable) {
+                Log.w(TAG, "SpeakSsml attempt ${attempt + 1} failed: ${t.message}")
             }
-        } finally {
-            config.close()
+            resetSessionLocked()
         }
+        return ByteArray(0)
     }
 
     private fun parseVoice(voiceDir: String): Voice {
