@@ -2088,7 +2088,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.Main) {
                 if (playerRunIdGen.get() == runId) {
                     playerIsPlaying = false
-                    syncPlayerNotification()
+                    PlayerNotificationService.dismiss(getApplication())
                 }
             }
         }
@@ -2183,8 +2183,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopPlayerPlayback(clearCache: Boolean = false) {
         pausePlayerPlayback()
+        PlayerNotificationService.dismiss(getApplication())
         if (clearCache) {
-            PlayerNotificationService.dismiss(getApplication())
             playerSessionIdGen.incrementAndGet()
             playerSentenceStatuses.clear()
             val filesToDelete = ArrayList(playerCachedFiles.values)

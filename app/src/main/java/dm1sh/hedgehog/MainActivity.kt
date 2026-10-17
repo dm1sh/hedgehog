@@ -128,6 +128,9 @@ class MainActivity : ComponentActivity() {
                     else -> {
                         val now = System.currentTimeMillis()
                         if (now - lastBackPressTime < 1000L) {
+                            if (!viewModel.playerIsPlaying) {
+                                viewModel.stopPlayerPlayback(clearCache = false)
+                            }
                             finish()
                         } else {
                             lastBackPressTime = now

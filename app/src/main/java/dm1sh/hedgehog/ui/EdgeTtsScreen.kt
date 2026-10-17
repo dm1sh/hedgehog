@@ -226,6 +226,7 @@ fun EdgeTtsScreen(
                         IconButton(
                             onClick = {
                                 vm.stopConversion(announce = false)
+                                vm.stopPlayerPlayback(clearCache = true)
                                 onExitApp()
                             }
                         ) {

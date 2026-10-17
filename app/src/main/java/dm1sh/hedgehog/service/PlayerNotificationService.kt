@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -51,7 +52,7 @@ class PlayerNotificationService : Service() {
         }
     }
 
-    override fun onDestroy() {
+    private fun shutdownAndRemoveNotification() {
         isNotificationVisible = false
         try {
             wakeLock?.let {
@@ -60,7 +61,41 @@ class PlayerNotificationService : Service() {
         } catch (_: Exception) {
         }
         try {
-            mediaSession?.isActive = false
+            mediaSession?.let { session ->
+                val stoppedState = PlaybackState.Builder()
+                    .setActions(0L)
+                    .setState(PlaybackState.STATE_NONE, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 0f)
+                    .build()
+                session.setPlaybackState(stoppedState)
+                session.setMetadata(null)
+                session.isActive = false
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        shutdownAndRemoveNotification()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        shutdownAndRemoveNotification()
+        try {
             mediaSession?.release()
         } catch (_: Exception) {
         }
@@ -83,13 +118,7 @@ class PlayerNotificationService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_DISMISS -> {
-                isNotificationVisible = false
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
-                }
+                shutdownAndRemoveNotification()
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -246,24 +275,24 @@ class PlayerNotificationService : Service() {
         )
 
         val prevAction = Notification.Action.Builder(
-            android.R.drawable.ic_media_previous,
+            Icon.createWithResource(this, R.drawable.ic_media_prev),
             prevLabel,
             serviceActionPendingIntent(ACTION_PREV, 201)
         ).build()
 
         val playPauseIcon = if (isPlaying) {
-            android.R.drawable.ic_media_pause
+            R.drawable.ic_media_pause
         } else {
-            android.R.drawable.ic_media_play
+            R.drawable.ic_media_play
         }
         val playPauseAction = Notification.Action.Builder(
-            playPauseIcon,
+            Icon.createWithResource(this, playPauseIcon),
             playPauseLabel,
             serviceActionPendingIntent(ACTION_PLAY_PAUSE, 202)
         ).build()
 
         val nextAction = Notification.Action.Builder(
-            android.R.drawable.ic_media_next,
+            Icon.createWithResource(this, R.drawable.ic_media_next),
             nextLabel,
             serviceActionPendingIntent(ACTION_NEXT, 203)
         ).build()
