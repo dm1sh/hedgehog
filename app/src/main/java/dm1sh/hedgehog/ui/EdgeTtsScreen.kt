@@ -652,7 +652,7 @@ private fun BookStatusGridCard(
                 onSpeakTooltip = { vm.ttsSay(it) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 160.dp, max = 280.dp)
+                    .heightIn(min = 104.dp, max = 280.dp)
             )
         }
     }
