@@ -130,6 +130,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1883,7 +1884,7 @@ private fun PlayerTabContent(
             text = {
                 if (bookmarks.isEmpty()) {
                     Text(
-                        text = "0",
+                        text = vm.tr("KEY_NO_BOOKMARKS"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2456,6 +2457,7 @@ private fun PlayerTabContent(
                             },
                             modifier = Modifier
                                 .size(44.dp)
+                                .clip(CircleShape)
                                 .combinedClickable(
                                     enabled = sentences.isNotEmpty(),
                                     onClick = { vm.onTogglePlayerBookmark(selectedIdx) },
