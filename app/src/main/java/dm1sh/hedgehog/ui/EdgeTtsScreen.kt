@@ -1375,6 +1375,7 @@ private fun BookSettingsGroupContent(
                             onRequestNativePicker(NativePickerType.LEXX_FILE)
                         } else {
                             vm.updateSettings { it.copy(lexxUse = checked) }
+                            vm.reprocessBookForCurrentSettings()
                             vm.ttsSay("${vm.tr("KEY_USE_LEXX")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
                         }
                     }
@@ -1390,6 +1391,7 @@ private fun BookSettingsGroupContent(
             checked = settings.lexxRegister,
             onCheckedChange = { checked ->
                 vm.updateSettings { it.copy(lexxRegister = checked) }
+                vm.reprocessBookForCurrentSettings()
                 vm.ttsSay("${vm.tr("KEY_LEXX_REGISTER")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
             }
         )
@@ -1414,6 +1416,7 @@ private fun BookSettingsGroupContent(
             checked = settings.inlineNotes,
             onCheckedChange = { checked ->
                 vm.updateSettings { it.copy(inlineNotes = checked) }
+                vm.reprocessBookForCurrentSettings()
                 vm.ttsSay("${vm.tr("KEY_INLINE_NOTES")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
             }
         )
@@ -1445,6 +1448,7 @@ private fun BookSettingsGroupContent(
                     checked = settings.bookChapter,
                     onCheckedChange = { checked ->
                         vm.updateSettings { it.copy(bookChapter = checked) }
+                        vm.reprocessBookForCurrentSettings()
                         vm.ttsSay("${vm.tr("KEY_BOOK_CHAPTER")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
                     }
                 )

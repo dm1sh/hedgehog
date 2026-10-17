@@ -15,10 +15,10 @@ class ProcessingFile(
     text: String,
     val firstStringsLength: Int = 800,
     val lastStringsLength: Int = 4200,
-    private val langLexx: List<String>,
-    private val lexxRegister: Boolean,
-    private val bookChapter: Boolean,
-    private val glavTextUse: Boolean,
+    var langLexx: List<String>,
+    var lexxRegister: Boolean,
+    val bookChapter: Boolean,
+    val glavTextUse: Boolean,
     regexGlavaPattern: String,
     voice: String,
     rate: String,
@@ -66,7 +66,7 @@ class ProcessingFile(
                 '[', '<' -> sb.append('(')
                 ']', '>' -> sb.append(')')
                 '&' -> sb.append(" and ")
-                '•' -> {}
+                '•', '\uFEFF' -> {}
                 '\n' -> {
                     sb.append('\n')
                     var skippedSpaces = 0
@@ -87,7 +87,7 @@ class ProcessingFile(
 
         if (langLexx.isNotEmpty()) {
             for (rawRule in langLexx) {
-                val rule = rawRule.trimEnd('\r')
+                val rule = rawRule.trimStart('\uFEFF').trimEnd('\r')
                 if (rule.isEmpty()) continue
                 if (rule.startsWith("regex\"") && rule.contains("\"=")) {
                     val matchArr = rule.replaceFirst("regex\"", "\"").split("=", limit = 2)

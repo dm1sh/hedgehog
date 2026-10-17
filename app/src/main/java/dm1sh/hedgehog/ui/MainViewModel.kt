@@ -177,6 +177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var playerIsSharedText by mutableStateOf(false)
         private set
+    private var lastSharedInput: Pair<String, String?>? = null
     val playerBookmarks = mutableStateListOf<Int>()
     private val playerRunIdGen = AtomicInteger(0)
     private val playerSessionIdGen = AtomicInteger(0)
@@ -266,6 +267,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             editorLoadCurrentPart()
             takeEditorSnapshot()
+        }
+        if (tab == MainTab.PLAYER && book == null && textAreaText.isNotBlank()) {
+            onEditorSavePressed()
         }
         if (tab == MainTab.BOOK) {
             refreshLoadDirFiles()
@@ -629,6 +633,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         dopModal = DopModal.NONE
+        reprocessBookForCurrentSettings()
         ttsSay(tr("KEY_OK"))
     }
 
@@ -673,6 +678,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         } else {
             lexxRules = emptyList()
+        }
+        reprocessBookForCurrentSettings()
+    }
+
+    fun reprocessBookForCurrentSettings() {
+        if (runWork || isBookLoading) return
+        val shared = lastSharedInput
+        if (playerIsSharedText && shared != null) {
+            onSharedPlainText(
+                sharedText = shared.first,
+                sharedTitle = shared.second,
+                openPlayerTab = false
+            )
+        } else if (filesList.isNotEmpty()) {
+            onOpenBooks(
+                paths = filesList.toList(),
+                announceLoad = false
+            )
         }
     }
 
@@ -784,6 +807,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSelectedIndex = 0
         playerBookKey = null
         playerIsSharedText = false
+        lastSharedInput = null
         playerBookmarks.clear()
         isBookLoading = false
         bookLoaded = false
@@ -819,13 +843,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onOpenBookUris(uris)
     }
 
-    fun onSharedPlainText(sharedText: String, sharedTitle: String? = null) {
+    fun onSharedPlainText(
+        sharedText: String,
+        sharedTitle: String? = null,
+        openPlayerTab: Boolean = true
+    ) {
         val text = sharedText.trim()
         if (text.isEmpty()) return
+        val previousIdx = if (playerIsSharedText && !openPlayerTab) playerSelectedIndex else 0
         stopConversion(announce = false)
         stopPlayerPlayback(clearCache = true)
         clearEditorSnapshot()
-        selectMainTab(MainTab.PLAYER)
+        if (openPlayerTab) {
+            selectMainTab(MainTab.PLAYER)
+        }
         isBookLoading = true
         bookLoaded = false
         statInfoDoneHighlight = false
@@ -836,6 +867,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSelectedIndex = 0
         playerBookKey = null
         playerIsSharedText = true
+        lastSharedInput = sharedText to sharedTitle
         playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
@@ -862,9 +894,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
+            val normalizedInput = if (text.contains("<FictionBook", ignoreCase = true)) {
+                TextsConverter.convertFb2ToTxt(text, inlineNotes = settings.inlineNotes)
+            } else {
+                text
+            }
             val createdBook = ProcessingFile(
                 fileName = saveName,
-                text = text,
+                text = normalizedInput,
                 langLexx = activeLexx,
                 lexxRegister = settings.lexxRegister,
                 bookChapter = settings.bookChapter,
@@ -894,7 +931,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
-                applyPlayerSentences(extractedPlayerSentences)
+                applyPlayerSentences(
+                    sentences = extractedPlayerSentences,
+                    savedState = if (previousIdx > 0) {
+                        SettingsRepository.PlayerBookState(lastPlayedIndex = previousIdx)
+                    } else null
+                )
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -904,7 +946,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     editorRefreshFields()
                 }
-                ttsSay("${bookLoadedCaption()}. $statStr")
+                if (openPlayerTab) {
+                    ttsSay("${bookLoadedCaption()}. $statStr")
+                }
             }
         }
     }
@@ -927,7 +971,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun onOpenBooks(paths: List<String>) {
+    fun onOpenBooks(paths: List<String>, announceLoad: Boolean = true) {
         if (paths.isEmpty()) {
             isBookLoading = false
             return
@@ -945,6 +989,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSelectedIndex = 0
         playerBookKey = null
         playerIsSharedText = false
+        lastSharedInput = null
         playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
@@ -1090,7 +1135,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     editorRefreshFields()
                 }
-                ttsSay("${bookLoadedCaption()}. $statStr")
+                if (announceLoad) {
+                    ttsSay("${bookLoadedCaption()}. $statStr")
+                }
             }
         }
     }
@@ -1157,6 +1204,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             book = newBook
             editorPartIndex = 0
         } else {
+            currentBook.langLexx = if (settings.lexxUse) lexxRules else emptyList()
+            currentBook.lexxRegister = settings.lexxRegister
             val k = currentBook.replacePart(editorPartIndex, textAreaText)
             if (k <= 0 && currentBook.allSentences.isEmpty()) {
                 currentBook.allSentences.add("")
@@ -1354,6 +1403,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         var lastPartGlav = ""
         var pendingParagraphBreak = false
         var pendingChapterTitle: String? = null
+        var consecutiveEmptyLines = 0
 
         fun emitSentence(raw: String) {
             val s = raw.trim()
@@ -1398,11 +1448,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     lineCheckedForChapter = true
                     var lineEnd = part.indexOf('\n', i)
                     if (lineEnd == -1) lineEnd = len
-                    if (lineEnd - i in 1..90) {
-                        val trimmedLine = part.substring(i, lineEnd).trim()
-                        if (trimmedLine.length in 1..60 && chapterRegex.containsMatchIn(trimmedLine)) {
+                    val rawLine = part.substring(i, lineEnd)
+                    val trimmedLine = rawLine.trim()
+                    if (trimmedLine.isEmpty()) {
+                        consecutiveEmptyLines++
+                    } else {
+                        if (trimmedLine.length < 50 && chapterRegex.containsMatchIn(trimmedLine)) {
                             pendingChapterTitle = trimmedLine
+                        } else if (consecutiveEmptyLines >= 3 && result.isNotEmpty()) {
+                            pendingChapterTitle = trimmedLine.take(60)
                         }
+                        consecutiveEmptyLines = 0
                     }
                 }
 
