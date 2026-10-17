@@ -1768,9 +1768,13 @@ private fun PlayerTabContent(
     LaunchedEffect(selectedIdx, sentences.size) {
         if (selectedIdx in sentences.indices) {
             val visibleItems = listState.layoutInfo.visibleItemsInfo
-            val isVisible = visibleItems.any { it.index == selectedIdx }
-            if (!isVisible) {
-                listState.animateScrollToItem(selectedIdx)
+            if (visibleItems.isNotEmpty() && visibleItems.none { it.index == selectedIdx }) {
+                val firstVisible = listState.firstVisibleItemIndex
+                if (kotlin.math.abs(selectedIdx - firstVisible) > 15) {
+                    listState.scrollToItem(selectedIdx)
+                } else {
+                    listState.animateScrollToItem(selectedIdx)
+                }
             }
         }
     }
@@ -1820,9 +1824,12 @@ private fun PlayerTabContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 4.dp)
             ) {
-                itemsIndexed(sentences) { idx, sentence ->
+                itemsIndexed(
+                    items = sentences,
+                    key = { idx, _ -> idx }
+                ) { idx, sentence ->
                     val isSelected = idx == selectedIdx
-                    val status = statuses.getOrElse(idx) { PartStatus.OPENED }
+                    val status = statuses[idx] ?: PartStatus.OPENED
                     val cardContainerColor = when {
                         isSelected -> MaterialTheme.colorScheme.primaryContainer
                         status == PartStatus.SAVED -> MaterialTheme.colorScheme.surfaceContainerHigh

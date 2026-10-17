@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -157,8 +158,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var editorSnapshotBook: ProcessingFile? = null
 
     // Built-in Player state
-    val playerSentences = mutableStateListOf<String>()
-    val playerSentenceStatuses = mutableStateListOf<PartStatus>()
+    var playerSentences by mutableStateOf<List<String>>(emptyList())
+        private set
+    val playerSentenceStatuses = mutableStateMapOf<Int, PartStatus>()
     var playerSelectedIndex by mutableIntStateOf(0)
         private set
     var playerIsPlaying by mutableStateOf(false)
@@ -745,7 +747,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearBook() {
         stopConversion(announce = false)
         stopPlayerPlayback(clearCache = true)
-        playerSentences.clear()
+        playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
         isBookLoading = false
@@ -794,7 +796,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
-        playerSentences.clear()
+        playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
         textAreaText = ""
@@ -897,7 +899,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
-        playerSentences.clear()
+        playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
         textAreaText = ""
@@ -1265,64 +1267,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Built-in Player (per-sentence chunking, parallel synthesis, sequential playback, caching)
     private fun splitIntoPlayerSentences(parts: List<String>): List<String> {
         if (parts.isEmpty()) return emptyList()
-        val sentenceSplitRegex = Regex("(?<=[.!?…;])\\s+")
-        val result = mutableListOf<String>()
+        val result = ArrayList<String>(parts.size * 16)
         for (part in parts) {
-            for (rawLine in part.split('\n')) {
-                val line = rawLine.trim()
-                if (line.isEmpty() || !line.any { it.isLetterOrDigit() }) continue
-                val pieces = sentenceSplitRegex.split(line)
-                var pendingShort = ""
-                for (rawPiece in pieces) {
-                    val piece = rawPiece.trim()
-                    if (piece.isEmpty() || !piece.any { it.isLetterOrDigit() }) continue
-                    val combined = if (pendingShort.isNotEmpty()) "$pendingShort $piece" else piece
-                    val alnumCount = combined.count { it.isLetterOrDigit() }
-                    if (alnumCount < 4) {
-                        pendingShort = combined
-                    } else {
-                        pendingShort = ""
-                        if (combined.length <= 360) {
-                            result.add(combined)
-                        } else {
-                            // Split extra-long sentences at clause boundaries or spaces
-                            var start = 0
-                            while (start < combined.length) {
-                                val rem = combined.length - start
-                                if (rem <= 360) {
-                                    val tail = combined.substring(start).trim()
-                                    if (tail.any { it.isLetterOrDigit() }) result.add(tail)
-                                    break
-                                }
-                                val targetEnd = start + 300
-                                var splitPos = -1
-                                for (i in minOf(start + 350, combined.length - 1) downTo start + 150) {
-                                    val c = combined[i]
-                                    if (c == ',' || c == ':' || c == '—' || c == '-') {
-                                        splitPos = i + 1
-                                        break
-                                    }
-                                }
-                                if (splitPos == -1) {
-                                    splitPos = combined.lastIndexOf(' ', minOf(targetEnd + 50, combined.length - 1))
-                                }
-                                if (splitPos <= start) {
-                                    splitPos = minOf(start + 300, combined.length)
-                                }
-                                val sub = combined.substring(start, splitPos).trim()
-                                if (sub.any { it.isLetterOrDigit() }) result.add(sub)
-                                start = splitPos
-                            }
-                        }
-                    }
+            val len = part.length
+            var chunkStart = 0
+            var alnumCount = 0
+            var lastClauseEnd = -1
+            var lastSpace = -1
+            var i = 0
+            while (i < len) {
+                val c = part[i]
+                if (Character.isLetterOrDigit(c)) {
+                    alnumCount++
+                } else if (c == ' ' || c == '\t') {
+                    lastSpace = i
+                } else if (c == ',' || c == ':' || c == '—' || c == '-') {
+                    lastClauseEnd = i + 1
                 }
-                if (pendingShort.isNotEmpty()) {
-                    if (result.isNotEmpty()) {
-                        result[result.lastIndex] = "${result.last()} $pendingShort"
-                    } else {
-                        result.add(pendingShort)
+
+                val isNewline = c == '\n' || c == '\r'
+                val isSentenceEndPunct = (c == '.' || c == '!' || c == '?' || c == '…' || c == ';') &&
+                    (i + 1 == len || part[i + 1].isWhitespace() || part[i + 1] == '"' || part[i + 1] == '»' || part[i + 1] == ')')
+
+                val spanLen = i + 1 - chunkStart
+                if (isNewline) {
+                    if (alnumCount > 0) {
+                        val s = part.substring(chunkStart, i).trim()
+                        if (s.isNotEmpty()) result.add(s)
                     }
+                    chunkStart = i + 1
+                    alnumCount = 0
+                    lastClauseEnd = -1
+                    lastSpace = -1
+                } else if (isSentenceEndPunct && alnumCount >= 4) {
+                    var endIdx = i + 1
+                    while (endIdx < len && (part[endIdx] == '"' || part[endIdx] == '»' || part[endIdx] == ')')) {
+                        endIdx++
+                    }
+                    val s = part.substring(chunkStart, endIdx).trim()
+                    if (s.isNotEmpty()) result.add(s)
+                    i = endIdx - 1
+                    chunkStart = endIdx
+                    alnumCount = 0
+                    lastClauseEnd = -1
+                    lastSpace = -1
+                } else if (spanLen >= 340 && alnumCount >= 4) {
+                    val splitAt = when {
+                        lastClauseEnd > chunkStart + 120 -> lastClauseEnd
+                        lastSpace > chunkStart + 120 -> lastSpace
+                        else -> i + 1
+                    }
+                    val s = part.substring(chunkStart, splitAt).trim()
+                    if (s.isNotEmpty()) result.add(s)
+                    chunkStart = splitAt
+                    alnumCount = 0
+                    lastClauseEnd = -1
+                    lastSpace = -1
                 }
+                i++
+            }
+            if (chunkStart < len && alnumCount > 0) {
+                val tail = part.substring(chunkStart, len).trim()
+                if (tail.isNotEmpty()) result.add(tail)
             }
         }
         return result
@@ -1330,12 +1336,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun applyPlayerSentences(sentences: List<String>) {
         stopPlayerPlayback(clearCache = true)
-        playerSentences.clear()
-        playerSentences.addAll(sentences)
+        playerSentences = sentences
         playerSentenceStatuses.clear()
-        if (sentences.isNotEmpty()) {
-            playerSentenceStatuses.addAll(java.util.Collections.nCopies(sentences.size, PartStatus.OPENED))
-        }
         playerSelectedIndex = 0
     }
 
@@ -1343,9 +1345,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val wasPlaying = playerIsPlaying
         val currentIdx = playerSelectedIndex
         stopPlayerPlayback(clearCache = true)
-        for (i in playerSentenceStatuses.indices) {
-            playerSentenceStatuses[i] = PartStatus.OPENED
-        }
+        playerSentenceStatuses.clear()
         if (wasPlaying && playerSentences.isNotEmpty()) {
             startPlayerFrom(currentIdx)
         }
@@ -1387,11 +1387,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun updatePlayerSentenceStatus(index: Int, status: PartStatus, expectedRunId: Int) {
         viewModelScope.launch(Dispatchers.Main) {
-            if (playerRunIdGen.get() == expectedRunId && index in playerSentenceStatuses.indices) {
-                if (playerSentenceStatuses[index] != status) {
+            if (playerRunIdGen.get() == expectedRunId && index in playerSentences.indices) {
+                if (status == PartStatus.OPENED) {
+                    playerSentenceStatuses.remove(index)
+                } else if (playerSentenceStatuses[index] != status) {
                     playerSentenceStatuses[index] = status
                 }
             }
+        }
+    }
+
+    private fun clearTransientPlayerStatuses() {
+        val toRemove = playerSentenceStatuses.entries
+            .filter { (idx, st) -> st != PartStatus.SAVED || !playerCachedFiles.containsKey(idx) }
+            .map { it.key }
+        for (idx in toRemove) {
+            playerSentenceStatuses.remove(idx)
         }
     }
 
@@ -1420,17 +1431,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val runId = playerRunIdGen.incrementAndGet()
         playerCoordinatorJob?.cancel()
 
-        // Reset any non-cached sentence status back to OPENED
-        for (i in playerSentenceStatuses.indices) {
-            val cached = playerCachedFiles[i]
-            playerSentenceStatuses[i] = if (cached != null && cached.exists()) {
-                PartStatus.SAVED
-            } else {
-                PartStatus.OPENED
-            }
-        }
+        clearTransientPlayerStatuses()
 
-        val total = playerSentences.size
+        val sentencesSnapshot = playerSentences
+        val total = sentencesSnapshot.size
         val sessionId = playerSessionIdGen.get()
         val maxParallel = settings.maxThreads.coerceAtLeast(1)
         val pitchStr = "${formatSignedValue(settings.pitch)}Hz"
@@ -1473,8 +1477,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
                             continue
                         }
-                        val sentenceText = playerSentences.getOrNull(claimIdx) ?: continue
+                        val sentenceText = sentencesSnapshot.getOrNull(claimIdx) ?: continue
                         activeSynthCount.incrementAndGet()
+                        workerJobs.removeAll { it.isCompleted }
                         val wJob = launch {
                             try {
                                 val isCancelledFn = {
@@ -1531,6 +1536,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     FileOutputStream(outFile).use { it.write(mp3Bytes) }
                                     playerCachedFiles[claimIdx] = outFile
                                     updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
+                                } else {
+                                    updatePlayerSentenceStatus(claimIdx, PartStatus.OPENED, runId)
                                 }
                             } catch (_: Exception) {
                             } finally {
@@ -1660,32 +1667,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerCoordinatorJob = null
         stopPlayerMediaOnly()
         playerIsPlaying = false
-        for (i in playerSentenceStatuses.indices) {
-            val cached = playerCachedFiles[i]
-            if (cached == null || !cached.exists()) {
-                playerSentenceStatuses[i] = PartStatus.OPENED
-            } else {
-                playerSentenceStatuses[i] = PartStatus.SAVED
-            }
-        }
+        clearTransientPlayerStatuses()
     }
 
     fun stopPlayerPlayback(clearCache: Boolean = false) {
         pausePlayerPlayback()
         if (clearCache) {
             playerSessionIdGen.incrementAndGet()
-            playerCachedFiles.values.forEach {
+            playerSentenceStatuses.clear()
+            val filesToDelete = ArrayList(playerCachedFiles.values)
+            playerCachedFiles.clear()
+            viewModelScope.launch(Dispatchers.IO) {
+                filesToDelete.forEach {
+                    try {
+                        it.delete()
+                    } catch (_: Exception) {
+                    }
+                }
                 try {
-                    it.delete()
+                    File(getApplication<Application>().cacheDir, "player_cache")
+                        .listFiles()
+                        ?.forEach { it.delete() }
                 } catch (_: Exception) {
                 }
-            }
-            playerCachedFiles.clear()
-            try {
-                File(getApplication<Application>().cacheDir, "player_cache")
-                    .listFiles()
-                    ?.forEach { it.delete() }
-            } catch (_: Exception) {
             }
         }
     }
