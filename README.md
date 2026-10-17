@@ -35,22 +35,23 @@
 
 #### Installing Offline Voices Manually (Completely Offline Setup)
 If your device has no internet access at all, you can install offline voices manually:
-1. Download the `.zip` archives for the voices you want from the [**`offline-voices` release**](https://github.com/dm1sh/hedgehog/releases/tag/offline-voices).
-2. Extract each archive on your device into:
+1. Download the `.zip` archives for the voices you want (and optionally `Voices.json`) from the [**`offline-voices` release**](https://github.com/dm1sh/hedgehog/releases/tag/offline-voices).
+2. Extract each voice archive on your device into:
    ```text
    Documents/EdgeTTS/Voices/<voice name>
    ```
    *(for example, `Documents/EdgeTTS/Voices/Dmitry`, `Documents/EdgeTTS/Voices/Svetlana`, etc.)*
-3. Open `Documents/EdgeTTS/Data/Voices.json` and add the folder names of the extracted voices to the `values_offline` (or `value_offline`) array, for example:
+3. Either place the `Voices.json` downloaded from the release directly into `Documents/EdgeTTS/Data/Voices.json`, or edit `Documents/EdgeTTS/Data/Voices.json` so that the `value_offline` array includes the folder names of the extracted voices:
    ```json
    {
        "value": [...],
-       "values_offline": [
+       "value_offline": [
            "Dmitry",
            "Svetlana"
        ]
    }
    ```
+   *(If you placed the release's `Voices.json` into `Documents/EdgeTTS/Data/Voices.json` and later tap **Get online voices**, the app will automatically convert it into the standard `Voices.json` format while keeping your offline voices.)*
 
 ### 2. Open a Book (`Book` tab)
 - Tap a book directly from the **Load folder** list on the **Book** tab, or tap **Open books** at the bottom to pick one or more files from your device.

@@ -221,24 +221,39 @@ class SettingsRepository(private val context: Context) {
         }
         try {
             val obj = JSONObject(file.readText(Charsets.UTF_8))
-            val valArr = obj.optJSONArray("value")
-            if (valArr != null && valArr.length() > 0) {
-                val list = mutableListOf<String>()
-                for (i in 0 until valArr.length()) {
-                    list.add(valArr.getString(i))
+            val hasStandardKeys = obj.has("value") || obj.has("value_offline")
+            if (hasStandardKeys) {
+                val valArr = obj.optJSONArray("value")
+                if (valArr != null && valArr.length() > 0) {
+                    val list = mutableListOf<String>()
+                    for (i in 0 until valArr.length()) {
+                        list.add(valArr.getString(i))
+                    }
+                    onlineVoices = list
+                } else {
+                    onlineVoices = DefaultVoices.ONLINE_VOICES
                 }
-                onlineVoices = list
+                val offArr = obj.optJSONArray("value_offline")
+                val offList = mutableListOf<String>()
+                if (offArr != null) {
+                    for (i in 0 until offArr.length()) {
+                        offList.add(offArr.getString(i))
+                    }
+                }
+                offlineVoices = offList
             } else {
+                // Accept release-format Voices.json (e.g. {"Dmitry": ["ru"], "Svetlana": ["ru"], ...})
                 onlineVoices = DefaultVoices.ONLINE_VOICES
-            }
-            val offArr = obj.optJSONArray("value_offline") ?: obj.optJSONArray("values_offline")
-            val offList = mutableListOf<String>()
-            if (offArr != null) {
-                for (i in 0 until offArr.length()) {
-                    offList.add(offArr.getString(i))
+                val offList = mutableListOf<String>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val voice = keys.next()
+                    if (voice.isNotBlank() && !voice.startsWith(".") && !voice.contains("/")) {
+                        offList.add(voice)
+                    }
                 }
+                offlineVoices = offList
             }
-            offlineVoices = offList
         } catch (e: Exception) {
             onlineVoices = DefaultVoices.ONLINE_VOICES
         }
@@ -255,6 +270,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     fun updateOnlineVoices(sortedVoices: List<String>) {
+        loadCustomVoices()
         onlineVoices = sortedVoices
         saveVoicesJson()
     }
