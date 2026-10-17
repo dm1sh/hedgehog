@@ -2553,47 +2553,49 @@ private fun TextAreaEditorPanel(
         }
 
         // Chapter navigation & Chapter title editor
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            RepeatingFilledTonalIconButton(
-                onAction = { vm.onEditorPrevChapterPressed() },
-                enabled = vm.editorHasPrevChapter
+        if (vm.editorHasChapters) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.ChevronLeft,
-                    contentDescription = null
-                )
-            }
+                RepeatingFilledTonalIconButton(
+                    onAction = { vm.onEditorPrevChapterPressed() },
+                    enabled = vm.editorHasPrevChapter
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronLeft,
+                        contentDescription = null
+                    )
+                }
 
-            OutlinedTextField(
-                value = vm.editorChapterTitleText,
-                onValueChange = { if (!vm.runWork) vm.editorChapterTitleText = it },
-                readOnly = vm.runWork,
-                singleLine = true,
-                placeholder = { Text(vm.tr("KEY_CHAPTER_TITLE")) },
-                keyboardOptions = KeyboardOptions(
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        focusManager.clearFocus()
-                        vm.onEditorChapterTitleSubmitted()
-                    }
-                ),
-                modifier = Modifier.weight(1f)
-            )
-
-            RepeatingFilledTonalIconButton(
-                onAction = { vm.onEditorNextChapterPressed() },
-                enabled = vm.editorHasNextChapter
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = null
+                OutlinedTextField(
+                    value = vm.editorChapterTitleText,
+                    onValueChange = { if (!vm.runWork) vm.editorChapterTitleText = it },
+                    readOnly = vm.runWork,
+                    singleLine = true,
+                    placeholder = { Text(vm.tr("KEY_CHAPTER_TITLE")) },
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            focusManager.clearFocus()
+                            vm.onEditorChapterTitleSubmitted()
+                        }
+                    ),
+                    modifier = Modifier.weight(1f)
                 )
+
+                RepeatingFilledTonalIconButton(
+                    onAction = { vm.onEditorNextChapterPressed() },
+                    enabled = vm.editorHasNextChapter
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null
+                    )
+                }
             }
         }
 

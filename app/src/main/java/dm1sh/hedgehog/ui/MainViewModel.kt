@@ -157,6 +157,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     var textAreaText by mutableStateOf("")
     var editorChapterTitleText by mutableStateOf("")
+    var editorHasChapters by mutableStateOf(false)
+        private set
     var editorHasPrevChapter by mutableStateOf(false)
         private set
     var editorHasNextChapter by mutableStateOf(false)
@@ -822,6 +824,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         partStatuses.clear()
         textAreaText = ""
         editorChapterTitleText = ""
+        editorHasChapters = false
         editorHasPrevChapter = false
         editorHasNextChapter = false
         processedPartsCount = 0
@@ -1423,6 +1426,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         editorRefreshFields()
     }
 
+    private fun bookHasChapters(activeBook: ProcessingFile?): Boolean {
+        val b = activeBook ?: return false
+        if (b.allSentences.isEmpty() || b.allGlavs.isEmpty()) return false
+        val firstBounds = findChapterBounds(b, 0)
+        if (firstBounds.last + 1 < b.allSentences.size) return true
+        return b.allGlavs.any { raw ->
+            val trimmed = raw.trim()
+            trimmed.isNotEmpty() && trimmed != "0000"
+        }
+    }
+
     private fun editorRefreshFields() {
         val b = book
         val count = b?.allSentences?.size ?: 0
@@ -1436,9 +1450,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (b != null && count > 0) {
             val idx = editorPartIndex.coerceIn(0, count - 1)
             val bounds = findChapterBounds(b, idx)
+            editorHasChapters = bookHasChapters(b)
             editorHasPrevChapter = bounds.first > 0
             editorHasNextChapter = bounds.last + 1 < count
         } else {
+            editorHasChapters = false
             editorHasPrevChapter = false
             editorHasNextChapter = false
         }
