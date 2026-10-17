@@ -32,6 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -41,12 +42,14 @@ import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 enum class MainTab {
-    BOOK, PARTS, SETTINGS
+    BOOK, PARTS, PLAYER, SETTINGS
 }
 
 enum class SettingsTab {
@@ -152,6 +155,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var editorSnapshot: List<String> = emptyList()
     private var editorSnapshotIndex = 0
     private var editorSnapshotBook: ProcessingFile? = null
+
+    // Built-in Player state
+    val playerSentences = mutableStateListOf<String>()
+    val playerSentenceStatuses = mutableStateListOf<PartStatus>()
+    var playerSelectedIndex by mutableIntStateOf(0)
+        private set
+    var playerIsPlaying by mutableStateOf(false)
+        private set
+    private val playerRunIdGen = AtomicInteger(0)
+    private val playerSessionIdGen = AtomicInteger(0)
+    private var playerCoordinatorJob: Job? = null
+    private var playerMediaPlayer: MediaPlayer? = null
+    private val playerCachedFiles = ConcurrentHashMap<Int, File>()
 
     // Jobs & synchronization
     private var conversionMasterJob: Job? = null
@@ -385,6 +401,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (index !in voicesList.indices) return
         val newVoice = voicesList[index]
         updateSettings { it.copy(voicesSelect = index, voicesName = newVoice) }
+        invalidatePlayerCache()
         voicesDropdownOpen = false
         ttsSay(newVoice)
         if (!runWork && settings.voicePreview) {
@@ -401,6 +418,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (index !in offlineVoicesList.indices) return
         val newVoice = offlineVoicesList[index]
         updateSettings { it.copy(offlineVoicesSelect = index, offlineVoicesName = newVoice) }
+        invalidatePlayerCache()
         offlineVoicesDropdownOpen = false
         ttsSay(voiceSayText(newVoice))
         if (!runWork && settings.voicePreview) {
@@ -459,6 +477,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val clamped = stepped.coerceIn(-50, 100)
         if (clamped != settings.rate) {
             updateSettings { it.copy(rate = clamped) }
+            invalidatePlayerCache()
             ttsSay("${tr("KEY_SPEED")} ${formatSignedValue(clamped)}%")
         }
     }
@@ -467,6 +486,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val clamped = value.coerceIn(-50, 50)
         if (clamped != settings.pitch) {
             updateSettings { it.copy(pitch = clamped) }
+            invalidatePlayerCache()
             ttsSay("${tr("KEY_PITCH")} ${formatSignedValue(clamped)}Hz")
         }
     }
@@ -723,6 +743,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Book Open / Clear
     fun clearBook() {
         stopConversion(announce = false)
+        stopPlayerPlayback(clearCache = true)
+        playerSentences.clear()
+        playerSentenceStatuses.clear()
+        playerSelectedIndex = 0
         isBookLoading = false
         bookLoaded = false
         loadedBooksCount = 0
@@ -761,13 +785,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val text = sharedText.trim()
         if (text.isEmpty()) return
         stopConversion(announce = false)
+        stopPlayerPlayback(clearCache = true)
         clearEditorSnapshot()
-        selectMainTab(MainTab.BOOK)
+        selectMainTab(MainTab.PLAYER)
         isBookLoading = true
         bookLoaded = false
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
+        playerSentences.clear()
+        playerSentenceStatuses.clear()
+        playerSelectedIndex = 0
         textAreaText = ""
         processedPartsCount = 0
         totalPartsCount = 0
@@ -805,6 +833,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 rate = "",
                 pitch = ""
             )
+            val extractedPlayerSentences = splitIntoPlayerSentences(createdBook.allSentences)
 
             withContext(Dispatchers.Main) {
                 isBookLoading = false
@@ -821,6 +850,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
+                applyPlayerSentences(extractedPlayerSentences)
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -859,12 +889,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         stopConversion(announce = false)
+        stopPlayerPlayback(clearCache = true)
         clearEditorSnapshot()
         isBookLoading = true
         bookLoaded = false
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
+        playerSentences.clear()
+        playerSentenceStatuses.clear()
+        playerSelectedIndex = 0
         textAreaText = ""
         processedPartsCount = 0
         totalPartsCount = 0
@@ -967,6 +1001,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            val extractedPlayerSentences = splitIntoPlayerSentences(currentBook?.allSentences.orEmpty())
+
             withContext(Dispatchers.Main) {
                 isBookLoading = false
                 book = currentBook
@@ -982,6 +1018,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
+                applyPlayerSentences(extractedPlayerSentences)
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -1081,6 +1118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (finalCount > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
         }
+        applyPlayerSentences(splitIntoPlayerSentences(book?.allSentences.orEmpty()))
         editorLoadCurrentPart()
         takeEditorSnapshot()
         ttsSay(tr("KEY_SAVED"))
@@ -1221,6 +1259,434 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         editorSnapshot = emptyList()
         editorSnapshotIndex = 0
         editorSnapshotBook = null
+    }
+
+    // Built-in Player (per-sentence chunking, parallel synthesis, sequential playback, caching)
+    private fun splitIntoPlayerSentences(parts: List<String>): List<String> {
+        if (parts.isEmpty()) return emptyList()
+        val sentenceSplitRegex = Regex("(?<=[.!?…;])\\s+")
+        val result = mutableListOf<String>()
+        for (part in parts) {
+            for (rawLine in part.split('\n')) {
+                val line = rawLine.trim()
+                if (line.isEmpty() || !line.any { it.isLetterOrDigit() }) continue
+                val pieces = sentenceSplitRegex.split(line)
+                var pendingShort = ""
+                for (rawPiece in pieces) {
+                    val piece = rawPiece.trim()
+                    if (piece.isEmpty() || !piece.any { it.isLetterOrDigit() }) continue
+                    val combined = if (pendingShort.isNotEmpty()) "$pendingShort $piece" else piece
+                    val alnumCount = combined.count { it.isLetterOrDigit() }
+                    if (alnumCount < 4) {
+                        pendingShort = combined
+                    } else {
+                        pendingShort = ""
+                        if (combined.length <= 360) {
+                            result.add(combined)
+                        } else {
+                            // Split extra-long sentences at clause boundaries or spaces
+                            var start = 0
+                            while (start < combined.length) {
+                                val rem = combined.length - start
+                                if (rem <= 360) {
+                                    val tail = combined.substring(start).trim()
+                                    if (tail.any { it.isLetterOrDigit() }) result.add(tail)
+                                    break
+                                }
+                                val targetEnd = start + 300
+                                var splitPos = -1
+                                for (i in minOf(start + 350, combined.length - 1) downTo start + 150) {
+                                    val c = combined[i]
+                                    if (c == ',' || c == ':' || c == '—' || c == '-') {
+                                        splitPos = i + 1
+                                        break
+                                    }
+                                }
+                                if (splitPos == -1) {
+                                    splitPos = combined.lastIndexOf(' ', minOf(targetEnd + 50, combined.length - 1))
+                                }
+                                if (splitPos <= start) {
+                                    splitPos = minOf(start + 300, combined.length)
+                                }
+                                val sub = combined.substring(start, splitPos).trim()
+                                if (sub.any { it.isLetterOrDigit() }) result.add(sub)
+                                start = splitPos
+                            }
+                        }
+                    }
+                }
+                if (pendingShort.isNotEmpty()) {
+                    if (result.isNotEmpty()) {
+                        result[result.lastIndex] = "${result.last()} $pendingShort"
+                    } else {
+                        result.add(pendingShort)
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    private fun applyPlayerSentences(sentences: List<String>) {
+        stopPlayerPlayback(clearCache = true)
+        playerSentences.clear()
+        playerSentences.addAll(sentences)
+        playerSentenceStatuses.clear()
+        if (sentences.isNotEmpty()) {
+            playerSentenceStatuses.addAll(java.util.Collections.nCopies(sentences.size, PartStatus.OPENED))
+        }
+        playerSelectedIndex = 0
+    }
+
+    fun invalidatePlayerCache() {
+        val wasPlaying = playerIsPlaying
+        val currentIdx = playerSelectedIndex
+        stopPlayerPlayback(clearCache = true)
+        for (i in playerSentenceStatuses.indices) {
+            playerSentenceStatuses[i] = PartStatus.OPENED
+        }
+        if (wasPlaying && playerSentences.isNotEmpty()) {
+            startPlayerFrom(currentIdx)
+        }
+    }
+
+    fun onPlayerPlayPausePressed() {
+        if (playerSentences.isEmpty()) return
+        if (playerIsPlaying) {
+            pausePlayerPlayback()
+        } else {
+            startPlayerFrom(playerSelectedIndex)
+        }
+    }
+
+    fun onPlayerPrevPressed() {
+        if (playerSentences.isEmpty()) return
+        val target = (playerSelectedIndex - 1).coerceIn(0, playerSentences.lastIndex)
+        if (playerIsPlaying) {
+            startPlayerFrom(target)
+        } else {
+            playerSelectedIndex = target
+        }
+    }
+
+    fun onPlayerNextPressed() {
+        if (playerSentences.isEmpty()) return
+        val target = (playerSelectedIndex + 1).coerceIn(0, playerSentences.lastIndex)
+        if (playerIsPlaying) {
+            startPlayerFrom(target)
+        } else {
+            playerSelectedIndex = target
+        }
+    }
+
+    fun onPlayerCardClicked(index: Int) {
+        if (index !in playerSentences.indices) return
+        startPlayerFrom(index)
+    }
+
+    private fun updatePlayerSentenceStatus(index: Int, status: PartStatus, expectedRunId: Int) {
+        viewModelScope.launch(Dispatchers.Main) {
+            if (playerRunIdGen.get() == expectedRunId && index in playerSentenceStatuses.indices) {
+                if (playerSentenceStatuses[index] != status) {
+                    playerSentenceStatuses[index] = status
+                }
+            }
+        }
+    }
+
+    private fun startPlayerFrom(startIndex: Int) {
+        if (playerSentences.isEmpty()) return
+        val wantOnline = settings.useOnlineVoicesPlayer && isNetworkAvailable()
+        val offlineVoice = resolveOfflineFallbackVoice()
+        if (!wantOnline) {
+            if (offlineVoice.isNullOrBlank() || isOfflineUnavailable(listOf(offlineVoice))) {
+                if (offlineVoice.isNullOrBlank()) {
+                    statInfoDoneHighlight = false
+                    statInfo = tr("KEY_OFFLINE_UNAVAILABLE")
+                    ttsSay(statInfo)
+                }
+                return
+            }
+        }
+
+        voicePreviewStop()
+        stopPlayerMediaOnly()
+
+        val targetStart = startIndex.coerceIn(0, playerSentences.lastIndex)
+        playerSelectedIndex = targetStart
+        playerIsPlaying = true
+
+        val runId = playerRunIdGen.incrementAndGet()
+        playerCoordinatorJob?.cancel()
+
+        // Reset any non-cached sentence status back to OPENED
+        for (i in playerSentenceStatuses.indices) {
+            val cached = playerCachedFiles[i]
+            playerSentenceStatuses[i] = if (cached != null && cached.exists()) {
+                PartStatus.SAVED
+            } else {
+                PartStatus.OPENED
+            }
+        }
+
+        val total = playerSentences.size
+        val sessionId = playerSessionIdGen.get()
+        val maxParallel = settings.maxThreads.coerceAtLeast(1)
+        val pitchStr = "${formatSignedValue(settings.pitch)}Hz"
+        val rateStr = "${formatSignedValue(settings.rate)}%"
+        val lowBitrate = settings.lowBitrate
+        val onlineVoice = settings.voicesName
+        val timeoutMsec = if (settings.restartDelay < 0) Long.MAX_VALUE else settings.restartDelay * 1000L
+
+        playerCoordinatorJob = viewModelScope.launch(Dispatchers.IO) {
+            val cacheDir = File(getApplication<Application>().cacheDir, "player_cache").apply { mkdirs() }
+            val currentPlayIdxAtomic = AtomicInteger(targetStart)
+            val nextSynthIdxAtomic = AtomicInteger(targetStart)
+            val activeSynthCount = AtomicInteger(0)
+
+            val producerJob = launch {
+                val workerJobs = mutableListOf<Job>()
+                while (isActive && playerRunIdGen.get() == runId) {
+                    val playIdx = currentPlayIdxAtomic.get()
+                    if (playIdx >= total) break
+                    val candidate = nextSynthIdxAtomic.get()
+                    if (candidate < playIdx) {
+                        nextSynthIdxAtomic.compareAndSet(candidate, playIdx)
+                        continue
+                    }
+                    if (candidate >= total) {
+                        delay(40)
+                        continue
+                    }
+                    val existing = playerCachedFiles[candidate]
+                    if (existing != null && existing.exists()) {
+                        updatePlayerSentenceStatus(candidate, PartStatus.SAVED, runId)
+                        nextSynthIdxAtomic.compareAndSet(candidate, candidate + 1)
+                        continue
+                    }
+                    if (activeSynthCount.get() < maxParallel && candidate < playIdx + maxParallel) {
+                        val claimIdx = nextSynthIdxAtomic.getAndIncrement()
+                        if (claimIdx >= total) continue
+                        val alreadyCached = playerCachedFiles[claimIdx]
+                        if (alreadyCached != null && alreadyCached.exists()) {
+                            updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
+                            continue
+                        }
+                        val sentenceText = playerSentences.getOrNull(claimIdx) ?: continue
+                        activeSynthCount.incrementAndGet()
+                        val wJob = launch {
+                            try {
+                                val isCancelledFn = {
+                                    !isActive || playerRunIdGen.get() != runId || claimIdx < currentPlayIdxAtomic.get()
+                                }
+                                if (isCancelledFn()) return@launch
+                                var mp3Bytes: ByteArray? = null
+                                val hasOfflineFallback = !offlineVoice.isNullOrBlank()
+                                val shouldUseOnline = settings.useOnlineVoicesPlayer &&
+                                    !repo.isVoiceOffline(onlineVoice) &&
+                                    isNetworkAvailable() &&
+                                    (!hasOfflineFallback || SocketEdgeTtsWorker.isOnlineReachable())
+
+                                if (shouldUseOnline) {
+                                    mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
+                                        voice = onlineVoice,
+                                        pitch = pitchStr,
+                                        rate = rateStr,
+                                        text = sentenceText,
+                                        lowBitrate = lowBitrate,
+                                        timeoutMsec = timeoutMsec,
+                                        isPreview = false,
+                                        fallbackToOfflineOnError = hasOfflineFallback,
+                                        isPaused = { false },
+                                        isCancelled = isCancelledFn,
+                                        onStatusUpdate = { key ->
+                                            updatePlayerSentenceStatus(claimIdx, PartStatus.fromKey(key), runId)
+                                        }
+                                    )
+                                }
+                                if ((mp3Bytes == null || mp3Bytes.isEmpty()) && !isCancelledFn()) {
+                                    if (!offlineVoice.isNullOrBlank()) {
+                                        val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
+                                        if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                                            mp3Bytes = OfflineTtsEngine.synthesizePart(
+                                                context = getApplication(),
+                                                voiceDir = voiceDir,
+                                                text = sentenceText,
+                                                rate = rateStr,
+                                                pitch = pitchStr,
+                                                lowBitrate = lowBitrate,
+                                                isPreview = false,
+                                                isPaused = { false },
+                                                isCancelled = isCancelledFn,
+                                                onStatusUpdate = { key ->
+                                                    updatePlayerSentenceStatus(claimIdx, PartStatus.fromKey(key), runId)
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                                if (mp3Bytes != null && mp3Bytes.isNotEmpty() && !isCancelledFn()) {
+                                    val outFile = File(cacheDir, "player_${sessionId}_$claimIdx.mp3")
+                                    FileOutputStream(outFile).use { it.write(mp3Bytes) }
+                                    playerCachedFiles[claimIdx] = outFile
+                                    updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
+                                }
+                            } catch (_: Exception) {
+                            } finally {
+                                activeSynthCount.decrementAndGet()
+                            }
+                        }
+                        workerJobs.add(wJob)
+                    } else {
+                        delay(35)
+                    }
+                }
+                workerJobs.forEach { it.join() }
+            }
+
+            var playIdx = targetStart
+            while (isActive && playerRunIdGen.get() == runId && playIdx < total) {
+                currentPlayIdxAtomic.set(playIdx)
+                withContext(Dispatchers.Main) {
+                    if (playerRunIdGen.get() == runId) {
+                        playerSelectedIndex = playIdx
+                    }
+                }
+                var audioFile = playerCachedFiles[playIdx]
+                while ((audioFile == null || !audioFile.exists()) && isActive && playerRunIdGen.get() == runId) {
+                    delay(35)
+                    audioFile = playerCachedFiles[playIdx]
+                }
+                if (!isActive || playerRunIdGen.get() != runId || audioFile == null || !audioFile.exists()) {
+                    break
+                }
+                val finishedOk = playSinglePlayerFileSuspend(audioFile, runId)
+                if (!finishedOk || !isActive || playerRunIdGen.get() != runId) {
+                    break
+                }
+                playIdx++
+            }
+
+            producerJob.cancel()
+            withContext(Dispatchers.Main) {
+                if (playerRunIdGen.get() == runId) {
+                    playerIsPlaying = false
+                }
+            }
+        }
+    }
+
+    private suspend fun playSinglePlayerFileSuspend(audioFile: File, expectedRunId: Int): Boolean =
+        withContext(Dispatchers.Main) {
+            if (playerRunIdGen.get() != expectedRunId || !audioFile.exists()) {
+                return@withContext false
+            }
+            suspendCancellableCoroutine { cont ->
+                val mp = MediaPlayer()
+                playerMediaPlayer = mp
+                cont.invokeOnCancellation {
+                    try {
+                        mp.stop()
+                    } catch (_: Exception) {
+                    }
+                    try {
+                        mp.release()
+                    } catch (_: Exception) {
+                    }
+                    if (playerMediaPlayer === mp) {
+                        playerMediaPlayer = null
+                    }
+                }
+                try {
+                    mp.setDataSource(audioFile.absolutePath)
+                    mp.setOnCompletionListener { player ->
+                        try {
+                            player.release()
+                        } catch (_: Exception) {
+                        }
+                        if (playerMediaPlayer === player) {
+                            playerMediaPlayer = null
+                        }
+                        if (cont.isActive) {
+                            cont.resume(true)
+                        }
+                    }
+                    mp.setOnErrorListener { player, _, _ ->
+                        try {
+                            player.release()
+                        } catch (_: Exception) {
+                        }
+                        if (playerMediaPlayer === player) {
+                            playerMediaPlayer = null
+                        }
+                        if (cont.isActive) {
+                            cont.resume(true)
+                        }
+                        true
+                    }
+                    mp.prepare()
+                    mp.start()
+                } catch (_: Exception) {
+                    try {
+                        mp.release()
+                    } catch (_: Exception) {
+                    }
+                    if (playerMediaPlayer === mp) {
+                        playerMediaPlayer = null
+                    }
+                    if (cont.isActive) {
+                        cont.resume(false)
+                    }
+                }
+            }
+        }
+
+    private fun stopPlayerMediaOnly() {
+        try {
+            playerMediaPlayer?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            playerMediaPlayer?.release()
+        } catch (_: Exception) {
+        }
+        playerMediaPlayer = null
+    }
+
+    fun pausePlayerPlayback() {
+        playerRunIdGen.incrementAndGet()
+        playerCoordinatorJob?.cancel()
+        playerCoordinatorJob = null
+        stopPlayerMediaOnly()
+        playerIsPlaying = false
+        for (i in playerSentenceStatuses.indices) {
+            val cached = playerCachedFiles[i]
+            if (cached == null || !cached.exists()) {
+                playerSentenceStatuses[i] = PartStatus.OPENED
+            } else {
+                playerSentenceStatuses[i] = PartStatus.SAVED
+            }
+        }
+    }
+
+    fun stopPlayerPlayback(clearCache: Boolean = false) {
+        pausePlayerPlayback()
+        if (clearCache) {
+            playerSessionIdGen.incrementAndGet()
+            playerCachedFiles.values.forEach {
+                try {
+                    it.delete()
+                } catch (_: Exception) {
+                }
+            }
+            playerCachedFiles.clear()
+            try {
+                File(getApplication<Application>().cacheDir, "player_cache")
+                    .listFiles()
+                    ?.forEach { it.delete() }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     // Voice & Part Preview
@@ -1455,6 +1921,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (isOfflineUnavailable(usedVoices)) return
 
         stopConversion(announce = false)
+        pausePlayerPlayback()
         voicePreviewStop()
 
         if (book == null) {
@@ -2139,6 +2606,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         voicePreviewStop()
+        stopPlayerPlayback(clearCache = true)
         ForegroundWorkService.setActive(getApplication(), false)
         screenReader.shutdown()
     }

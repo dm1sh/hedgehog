@@ -8,6 +8,7 @@ data class AppSettings(
     val offlineVoicesSelect: Int = 0,
     val offlineVoicesName: String = "",
     val useOnlineVoices: Boolean = true,
+    val useOnlineVoicesPlayer: Boolean = false,
     val rate: Int = 100,
     val pitch: Int = 0,
     val maxThreads: Int = DEFAULT_MAX_THREADS,

@@ -1,5 +1,6 @@
 package dm1sh.hedgehog.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -36,7 +37,10 @@ import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.CloudDownload
@@ -50,6 +54,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Refresh
@@ -123,6 +128,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dm1sh.hedgehog.model.AppSettings
+import dm1sh.hedgehog.model.PartStatus
 import kotlinx.coroutines.delay
 import java.io.File
 import java.util.Locale
@@ -283,6 +289,27 @@ fun EdgeTtsScreen(
                         }
                     )
                     NavigationBarItem(
+                        selected = vm.activeMainTab == MainTab.PLAYER,
+                        onClick = { vm.selectMainTab(MainTab.PLAYER) },
+                        icon = {
+                            Icon(
+                                imageVector = if (vm.activeMainTab == MainTab.PLAYER) {
+                                    Icons.Filled.PlayCircleFilled
+                                } else {
+                                    Icons.Outlined.PlayCircleOutline
+                                },
+                                contentDescription = vm.tr("KEY_PLAYER")
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = vm.tr("KEY_PLAYER"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                    NavigationBarItem(
                         selected = vm.activeMainTab == MainTab.SETTINGS,
                         onClick = { vm.selectMainTab(MainTab.SETTINGS) },
                         icon = {
@@ -324,6 +351,14 @@ fun EdgeTtsScreen(
                 }
                 MainTab.PARTS -> {
                     TextAreaEditorPanel(
+                        vm = vm,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+                MainTab.PLAYER -> {
+                    PlayerTabContent(
                         vm = vm,
                         modifier = Modifier
                             .fillMaxSize()
@@ -982,6 +1017,18 @@ private fun VoiceSettingsGroupContent(vm: MainViewModel) {
             onCheckedChange = { checked ->
                 vm.updateSettings { it.copy(useOnlineVoices = checked) }
                 vm.ttsSay("${vm.tr("KEY_USE_ONLINE_VOICES")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+        M3SwitchListItem(
+            headline = vm.tr("KEY_USE_ONLINE_VOICES_PLAYER"),
+            checked = settings.useOnlineVoicesPlayer,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(useOnlineVoicesPlayer = checked) }
+                vm.invalidatePlayerCache()
+                vm.ttsSay("${vm.tr("KEY_USE_ONLINE_VOICES_PLAYER")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
             }
         )
 
@@ -1701,6 +1748,221 @@ private fun ConversionActionDock(
                         contentDescription = vm.tr(if (vm.workPaused) "KEY_RESUME" else "KEY_PAUSE")
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerTabContent(
+    vm: MainViewModel,
+    modifier: Modifier = Modifier
+) {
+    val sentences = vm.playerSentences
+    val statuses = vm.playerSentenceStatuses
+    val selectedIdx = vm.playerSelectedIndex
+    val isPlaying = vm.playerIsPlaying
+    val listState = rememberLazyListState()
+    val cardFontSize = (vm.settings.fontSize + 1).sp
+
+    LaunchedEffect(selectedIdx, sentences.size) {
+        if (selectedIdx in sentences.indices) {
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            val isVisible = visibleItems.any { it.index == selectedIdx }
+            if (!isVisible) {
+                listState.animateScrollToItem(selectedIdx)
+            }
+        }
+    }
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (vm.isBookLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        } else if (sentences.isEmpty()) {
+            ElevatedCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = vm.tr("KEY_OPEN_BOOKS"),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 4.dp)
+            ) {
+                itemsIndexed(sentences) { idx, sentence ->
+                    val isSelected = idx == selectedIdx
+                    val status = statuses.getOrElse(idx) { PartStatus.OPENED }
+                    val cardContainerColor = when {
+                        isSelected -> MaterialTheme.colorScheme.primaryContainer
+                        status == PartStatus.SAVED -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> MaterialTheme.colorScheme.surfaceContainerLow
+                    }
+                    val cardContentColor = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
+                    val borderStroke = if (isSelected) {
+                        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                    } else {
+                        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    }
+
+                    OutlinedCard(
+                        onClick = { vm.onPlayerCardClicked(idx) },
+                        shape = MaterialTheme.shapes.medium,
+                        colors = CardDefaults.outlinedCardColors(
+                            containerColor = cardContainerColor,
+                            contentColor = cardContentColor
+                        ),
+                        border = borderStroke,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "#${idx + 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                                if (status != PartStatus.OPENED) {
+                                    Surface(
+                                        shape = MaterialTheme.shapes.extraSmall,
+                                        color = status.color.copy(alpha = 0.2f)
+                                    ) {
+                                        Text(
+                                            text = vm.tr(status.trKey),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                text = sentence,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontSize = cardFontSize,
+                                    lineHeight = (vm.settings.fontSize + 8).sp
+                                ),
+                                fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom player controls: Previous, Play/Pause, Next
+        ElevatedCard(
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = if (sentences.isEmpty()) "0 / 0" else "${selectedIdx + 1} / ${sentences.size}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(80.dp)
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    FilledTonalIconButton(
+                        onClick = { vm.onPlayerPrevPressed() },
+                        enabled = sentences.isNotEmpty() && selectedIdx > 0,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipPrevious,
+                            contentDescription = vm.tr("KEY_EDITOR_PREV")
+                        )
+                    }
+
+                    Button(
+                        onClick = { vm.onPlayerPlayPausePressed() },
+                        enabled = sentences.isNotEmpty(),
+                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = vm.tr(if (isPlaying) "KEY_PAUSE" else "KEY_RESUME"),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = { vm.onPlayerNextPressed() },
+                        enabled = sentences.isNotEmpty() && selectedIdx < sentences.lastIndex,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = vm.tr("KEY_EDITOR_NEXT")
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(80.dp))
             }
         }
     }
