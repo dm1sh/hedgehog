@@ -1919,7 +1919,7 @@ private fun PlayerTabContent(
                                         verticalArrangement = Arrangement.spacedBy(2.dp)
                                     ) {
                                         Text(
-                                            text = "#${bmIdx + 1}",
+                                            text = "${bmIdx + 1}",
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.primary
@@ -2167,7 +2167,7 @@ private fun PlayerTabContent(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
-                                            text = "#${idx + 1}",
+                                            text = "${idx + 1}",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.SemiBold,
                                             color = if (isSelected) {
@@ -2260,9 +2260,16 @@ private fun PlayerTabContent(
                             .padding(vertical = 4.dp)
                             .onSizeChanged { trackHeightPx = it.height }
                             .pointerInput(sentences.size) {
-                                detectTapGestures { offset ->
-                                    scrubToY(offset.y)
-                                }
+                                detectTapGestures(
+                                    onPress = { offset ->
+                                        isDraggingScrollbar = true
+                                        scrubToY(offset.y)
+                                        val released = tryAwaitRelease()
+                                        if (released) {
+                                            isDraggingScrollbar = false
+                                        }
+                                    }
+                                )
                             }
                             .pointerInput(sentences.size) {
                                 detectVerticalDragGestures(
@@ -2312,6 +2319,7 @@ private fun PlayerTabContent(
 
                     if (isDraggingScrollbar) {
                         val previewIdx = (dragFraction * maxIndex).roundToInt().coerceIn(0, maxIndex)
+                        val previewChapter = sentences.getOrNull(previewIdx)?.chapterTitle?.takeIf { it.isNotBlank() }
                         Surface(
                             shape = MaterialTheme.shapes.small,
                             color = MaterialTheme.colorScheme.inverseSurface,
@@ -2320,15 +2328,30 @@ private fun PlayerTabContent(
                             shadowElevation = 4.dp,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(end = 28.dp)
+                                .padding(start = 16.dp, end = 28.dp)
                                 .offset { IntOffset(0, thumbOffsetY) }
                         ) {
-                            Text(
-                                text = "#${previewIdx + 1} / ${sentences.size}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
+                            Column(
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
+                            ) {
+                                if (previewChapter != null) {
+                                    Text(
+                                        text = previewChapter,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    text = "${previewIdx + 1} / ${sentences.size}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }

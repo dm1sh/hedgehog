@@ -1403,6 +1403,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         var lastPartGlav = ""
         var pendingParagraphBreak = false
         var pendingChapterTitle: String? = null
+        var currentChapterTitle: String? = null
         var consecutiveEmptyLines = 0
 
         fun emitSentence(raw: String) {
@@ -1410,13 +1411,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (s.isEmpty()) return
             val isFirstInBook = result.isEmpty()
             val isNewChapter = pendingChapterTitle != null
+            if (pendingChapterTitle != null) {
+                currentChapterTitle = pendingChapterTitle
+            }
             val isNewParagraph = !isFirstInBook && (pendingParagraphBreak || isNewChapter)
             result.add(
                 PlayerSentenceItem(
                     text = s,
                     startsNewParagraph = isNewParagraph,
                     startsNewChapter = isNewChapter,
-                    chapterTitle = pendingChapterTitle
+                    chapterTitle = currentChapterTitle
                 )
             )
             pendingParagraphBreak = false
