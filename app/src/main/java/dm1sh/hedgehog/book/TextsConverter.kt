@@ -1,5 +1,6 @@
 package dm1sh.hedgehog.book
 
+import android.util.Base64
 import dm1sh.hedgehog.model.DefaultVoices
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -369,6 +370,186 @@ object TextsConverter {
         return fallbackName
     }
 
+    fun extractFb2Metadata(fb2String: String, fallbackName: String): BookAudioMetadata {
+        return try {
+            var title = ""
+            var author = ""
+            var date = ""
+            var genre = ""
+            var description = ""
+            var language = ""
+            var publisher = ""
+            var series = ""
+            var seriesIndex = ""
+            var coverHrefId = ""
+
+            val tiStart = fb2String.indexOf("<title-info>", ignoreCase = true)
+            if (tiStart != -1) {
+                val tiEnd = fb2String.indexOf("</title-info>", tiStart, ignoreCase = true)
+                if (tiEnd != -1) {
+                    val ti = fb2String.substring(tiStart + "<title-info>".length, tiEnd)
+                    val authors = mutableListOf<String>()
+                    for (m in Regex("(?si)<author>(.*?)</author>").findAll(ti)) {
+                        val name = fb2AuthorName(m.groupValues[1]).trim()
+                        if (name.isNotEmpty()) authors.add(name)
+                    }
+                    author = authors.joinToString(", ")
+
+                    title = Regex("(?si)<book-title>(.*?)</book-title>")
+                        .find(ti)
+                        ?.let { fb2StripTags(it.groupValues[1]).trim() }
+                        .orEmpty()
+
+                    val genres = Regex("(?si)<genre[^>]*>(.*?)</genre>")
+                        .findAll(ti)
+                        .map { fb2StripTags(it.groupValues[1]).trim() }
+                        .filter { it.isNotEmpty() }
+                        .toList()
+                    genre = genres.joinToString(", ")
+
+                    Regex("(?si)<date([^>]*)>(.*?)</date>").find(ti)?.let { dm ->
+                        val attrPart = dm.groupValues[1]
+                        val valAttr = Regex("(?i)\\bvalue\\s*=\\s*[\"']([^\"']+)[\"']")
+                            .find(attrPart)
+                            ?.groupValues
+                            ?.getOrNull(1)
+                            ?.trim()
+                            .orEmpty()
+                        val innerText = fb2StripTags(dm.groupValues[2]).trim()
+                        date = valAttr.ifEmpty { innerText }
+                    }
+
+                    Regex("(?si)<annotation>(.*?)</annotation>").find(ti)?.let { ann ->
+                        description = fb2StripTags(ann.groupValues[1])
+                            .replace(Regex("\\s+"), " ")
+                            .trim()
+                    }
+
+                    Regex("(?si)<lang>(.*?)</lang>").find(ti)?.let { lm ->
+                        language = fb2StripTags(lm.groupValues[1]).trim()
+                    }
+
+                    Regex("(?si)<sequence\\b([^>]*)/?>").find(ti)?.let { sm ->
+                        val attrs = sm.groupValues[1]
+                        series = Regex("(?i)\\bname\\s*=\\s*[\"']([^\"']+)[\"']")
+                            .find(attrs)?.groupValues?.getOrNull(1)?.let { decodeEntities(it).trim() }.orEmpty()
+                        seriesIndex = Regex("(?i)\\bnumber\\s*=\\s*[\"']([^\"']+)[\"']")
+                            .find(attrs)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                    }
+
+                    Regex("(?si)<coverpage>(.*?)</coverpage>").find(ti)?.let { cm ->
+                        val coverInner = cm.groupValues[1]
+                        val hrefMatch = Regex("(?i)\\b(?:[a-z0-9_]+:)?href\\s*=\\s*[\"']#?([^\"']+)[\"']")
+                            .find(coverInner)
+                        if (hrefMatch != null) {
+                            coverHrefId = hrefMatch.groupValues[1].trim()
+                        }
+                    }
+                }
+            }
+
+            val piStart = fb2String.indexOf("<publish-info>", ignoreCase = true)
+            if (piStart != -1) {
+                val piEnd = fb2String.indexOf("</publish-info>", piStart, ignoreCase = true)
+                if (piEnd != -1) {
+                    val pi = fb2String.substring(piStart + "<publish-info>".length, piEnd)
+                    publisher = Regex("(?si)<publisher>(.*?)</publisher>")
+                        .find(pi)
+                        ?.let { fb2StripTags(it.groupValues[1]).trim() }
+                        .orEmpty()
+                    if (date.isBlank()) {
+                        date = Regex("(?si)<year>(.*?)</year>")
+                            .find(pi)
+                            ?.let { fb2StripTags(it.groupValues[1]).trim() }
+                            .orEmpty()
+                    }
+                }
+            }
+
+            val (coverBytes, coverMime, coverW, coverH) = extractFb2CoverBinary(fb2String, coverHrefId)
+            BookAudioMetadata(
+                title = title.ifBlank { fallbackName },
+                author = author,
+                date = date,
+                genre = genre,
+                description = description,
+                language = language,
+                publisher = publisher,
+                series = series,
+                seriesIndex = seriesIndex,
+                coverBytes = coverBytes,
+                coverMimeType = coverMime,
+                coverWidth = coverW,
+                coverHeight = coverH
+            )
+        } catch (_: Exception) {
+            BookAudioMetadata(title = fallbackName)
+        }
+    }
+
+    private data class CoverBinaryResult(
+        val bytes: ByteArray?,
+        val mimeType: String,
+        val width: Int,
+        val height: Int
+    )
+
+    private fun extractFb2CoverBinary(fb2String: String, targetId: String): CoverBinaryResult {
+        var searchPos = 0
+        val cleanTarget = targetId.removePrefix("#").trim()
+        var fallbackBody: String? = null
+        var fallbackMime = ""
+
+        while (true) {
+            val binOpen = fb2String.indexOf("<binary", searchPos, ignoreCase = true)
+            if (binOpen == -1) break
+            val tagClose = fb2String.indexOf('>', binOpen + 7)
+            if (tagClose == -1) break
+            val binEnd = fb2String.indexOf("</binary>", tagClose + 1, ignoreCase = true)
+            if (binEnd == -1) break
+
+            val attrs = fb2String.substring(binOpen + 7, tagClose)
+            val idVal = Regex("(?i)\\bid\\s*=\\s*[\"']#?([^\"']+)[\"']")
+                .find(attrs)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+            val ctVal = Regex("(?i)\\bcontent-type\\s*=\\s*[\"']([^\"']+)[\"']")
+                .find(attrs)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+
+            val matchesTarget = cleanTarget.isNotEmpty() && idVal.equals(cleanTarget, ignoreCase = true)
+            if (matchesTarget) {
+                val base64Str = fb2String.substring(tagClose + 1, binEnd)
+                val decoded = decodeBase64Quietly(base64Str)
+                if (decoded != null && decoded.isNotEmpty()) {
+                    val info = AudioMetadataTagger.inspectImage(decoded, ctVal)
+                    return CoverBinaryResult(decoded, info.mimeType, info.width, info.height)
+                }
+            } else if (fallbackBody == null &&
+                (idVal.contains("cover", ignoreCase = true) || (cleanTarget.isEmpty() && ctVal.startsWith("image/", ignoreCase = true)))
+            ) {
+                fallbackBody = fb2String.substring(tagClose + 1, binEnd)
+                fallbackMime = ctVal
+            }
+
+            searchPos = binEnd + 9
+        }
+
+        if (fallbackBody != null) {
+            val decoded = decodeBase64Quietly(fallbackBody)
+            if (decoded != null && decoded.isNotEmpty()) {
+                val info = AudioMetadataTagger.inspectImage(decoded, fallbackMime)
+                return CoverBinaryResult(decoded, info.mimeType, info.width, info.height)
+            }
+        }
+        return CoverBinaryResult(null, "", 0, 0)
+    }
+
+    private fun decodeBase64Quietly(rawBase64: String): ByteArray? {
+        return try {
+            Base64.decode(rawBase64.trim(), Base64.DEFAULT)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     fun extractEpubBookName(epubPath: String, fallbackName: String): String {
         try {
             ZipFile(epubPath).use { zip ->
@@ -412,6 +593,238 @@ object TextsConverter {
         } catch (_: Exception) {
         }
         return fallbackName
+    }
+
+    fun extractEpubMetadata(epubPath: String, fallbackName: String): BookAudioMetadata {
+        return try {
+            ZipFile(epubPath).use { zip ->
+                val entriesByNormPath = LinkedHashMap<String, java.util.zip.ZipEntry>()
+                for (entry in zip.entries().asSequence()) {
+                    if (!entry.isDirectory) {
+                        entriesByNormPath[simplifyPath(entry.name)] = entry
+                    }
+                }
+
+                var opfEntryName: String? = null
+                val containerEntry = zip.getEntry("META-INF/container.xml")
+                    ?: entriesByNormPath["META-INF/container.xml"]
+                if (containerEntry != null) {
+                    val containerXml = zip.getInputStream(containerEntry).use { String(it.readBytes(), Charsets.UTF_8) }
+                    val soup = Jsoup.parse(containerXml, "", Parser.xmlParser())
+                    val fullPath = soup.selectFirst("rootfile")?.attr("full-path").orEmpty()
+                    if (fullPath.isNotEmpty()) {
+                        opfEntryName = simplifyPath(fullPath)
+                    }
+                }
+                if (opfEntryName == null) {
+                    opfEntryName = entriesByNormPath.keys
+                        .firstOrNull { it.lowercase(Locale.ROOT).endsWith(".opf") }
+                }
+
+                var title = ""
+                var author = ""
+                var date = ""
+                var genre = ""
+                var description = ""
+                var language = ""
+                var publisher = ""
+                var series = ""
+                var seriesIndex = ""
+                var coverBytes: ByteArray? = null
+                var coverMime = ""
+                var coverW = 0
+                var coverH = 0
+
+                fun findZipEntry(resolvedPath: String): java.util.zip.ZipEntry? {
+                    val norm = simplifyPath(resolvedPath)
+                    return entriesByNormPath[norm]
+                        ?: zip.getEntry(norm)
+                        ?: entriesByNormPath.entries.firstOrNull { it.key.equals(norm, ignoreCase = true) }?.value
+                }
+
+                fun tryReadCoverFromEntryPath(path: String, declaredMime: String = ""): Boolean {
+                    val entry = findZipEntry(path) ?: return false
+                    val lowerPath = path.lowercase(Locale.ROOT)
+                    val isHtml = XHTML_EXTS.any { lowerPath.endsWith(it) } || declaredMime.contains("html", ignoreCase = true)
+                    if (isHtml) {
+                        val htmlDir = if (path.contains("/")) path.substringBeforeLast("/") else ""
+                        val htmlStr = zip.getInputStream(entry).use { String(it.readBytes(), Charsets.UTF_8) }
+                        val htmlDoc = Jsoup.parse(htmlStr, "", Parser.xmlParser())
+                        val imgEl = htmlDoc.selectFirst("img[src], image[xlink:href], image[href], image[l:href]")
+                        val imgHref = imgEl?.let {
+                            it.attr("src")
+                                .ifEmpty { it.attr("xlink:href") }
+                                .ifEmpty { it.attr("href") }
+                                .ifEmpty { it.attr("l:href") }
+                        }.orEmpty()
+                        if (imgHref.isNotEmpty()) {
+                            val resolvedImg = resolveHref(htmlDir, imgHref)
+                            if (!resolvedImg.isNullOrEmpty()) {
+                                return tryReadCoverFromEntryPath(resolvedImg)
+                            }
+                        }
+                        return false
+                    }
+                    val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                    if (bytes.isEmpty()) return false
+                    val info = AudioMetadataTagger.inspectImage(bytes, declaredMime)
+                    coverBytes = bytes
+                    coverMime = info.mimeType
+                    coverW = info.width
+                    coverH = info.height
+                    return true
+                }
+
+                if (opfEntryName != null) {
+                    val opfEntry = findZipEntry(opfEntryName)
+                    if (opfEntry != null) {
+                        val opfDir = if (opfEntryName.contains("/")) opfEntryName.substringBeforeLast("/") else ""
+                        val opfXml = zip.getInputStream(opfEntry).use { String(it.readBytes(), Charsets.UTF_8) }
+                        val soup = Jsoup.parse(opfXml, "", Parser.xmlParser())
+
+                        title = soup.selectFirst("dc|title, title")?.text()?.trim().orEmpty()
+                        author = soup.select("dc|creator, creator")
+                            .map { it.text().trim() }
+                            .filter { it.isNotEmpty() }
+                            .joinToString(", ")
+                        date = soup.selectFirst("dc|date, date")?.text()?.trim().orEmpty()
+                        genre = soup.select("dc|subject, subject")
+                            .map { it.text().trim() }
+                            .filter { it.isNotEmpty() }
+                            .joinToString(", ")
+                        val rawDesc = soup.selectFirst("dc|description, description")?.text()?.trim().orEmpty()
+                        if (rawDesc.isNotEmpty()) {
+                            description = fb2StripTags(rawDesc).replace(Regex("\\s+"), " ").trim()
+                        }
+                        language = soup.selectFirst("dc|language, language")?.text()?.trim().orEmpty()
+                        publisher = soup.selectFirst("dc|publisher, publisher")?.text()?.trim().orEmpty()
+
+                        for (metaEl in soup.select("meta")) {
+                            val nameAttr = metaEl.attr("name").lowercase(Locale.ROOT)
+                            val propAttr = metaEl.attr("property").lowercase(Locale.ROOT)
+                            val contentAttr = metaEl.attr("content").trim()
+                            when {
+                                nameAttr == "calibre:series" && contentAttr.isNotEmpty() -> series = contentAttr
+                                nameAttr == "calibre:series_index" && contentAttr.isNotEmpty() -> seriesIndex = contentAttr
+                                propAttr == "belongs-to-collection" && series.isEmpty() -> series = metaEl.text().trim()
+                                propAttr == "group-position" && seriesIndex.isEmpty() -> seriesIndex = metaEl.text().trim()
+                                propAttr == "dcterms:modified" && date.isEmpty() -> date = metaEl.text().trim()
+                            }
+                        }
+
+                        data class ManifestItem(
+                            val id: String,
+                            val href: String,
+                            val resolvedPath: String,
+                            val mediaType: String,
+                            val properties: String
+                        )
+                        val manifestItems = mutableListOf<ManifestItem>()
+                        val manifestById = HashMap<String, ManifestItem>()
+                        for (item in soup.select("manifest > item, item")) {
+                            val id = item.attr("id").trim()
+                            val href = item.attr("href").trim()
+                            val mt = item.attr("media-type").trim()
+                            val props = item.attr("properties").trim()
+                            val resolved = resolveHref(opfDir, href).orEmpty()
+                            if (resolved.isNotEmpty()) {
+                                val mi = ManifestItem(id, href, resolved, mt, props)
+                                manifestItems.add(mi)
+                                if (id.isNotEmpty()) manifestById[id] = mi
+                            }
+                        }
+
+                        // 1. EPUB 3 cover-image property
+                        val epub3Cover = manifestItems.firstOrNull {
+                            it.properties.split(Regex("\\s+")).any { p -> p.equals("cover-image", ignoreCase = true) }
+                        }
+                        if (epub3Cover != null) {
+                            tryReadCoverFromEntryPath(epub3Cover.resolvedPath, epub3Cover.mediaType)
+                        }
+
+                        // 2. EPUB 2 <meta name="cover" content="..."/>
+                        if (coverBytes == null) {
+                            val coverMetaContent = soup.select("meta")
+                                .firstOrNull { it.attr("name").equals("cover", ignoreCase = true) }
+                                ?.attr("content")
+                                ?.trim()
+                                .orEmpty()
+                            if (coverMetaContent.isNotEmpty()) {
+                                val targetItem = manifestById[coverMetaContent]
+                                    ?: manifestItems.firstOrNull { it.href == coverMetaContent || it.resolvedPath == coverMetaContent }
+                                if (targetItem != null) {
+                                    tryReadCoverFromEntryPath(targetItem.resolvedPath, targetItem.mediaType)
+                                } else {
+                                    val resolvedDirect = resolveHref(opfDir, coverMetaContent).orEmpty()
+                                    if (resolvedDirect.isNotEmpty()) {
+                                        tryReadCoverFromEntryPath(resolvedDirect)
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. <guide><reference type="cover" href="..."/></guide>
+                        if (coverBytes == null) {
+                            val guideCoverHref = soup.select("guide > reference, reference")
+                                .firstOrNull { it.attr("type").equals("cover", ignoreCase = true) }
+                                ?.attr("href")
+                                ?.trim()
+                                .orEmpty()
+                            if (guideCoverHref.isNotEmpty()) {
+                                val resolvedGuide = resolveHref(opfDir, guideCoverHref).orEmpty()
+                                if (resolvedGuide.isNotEmpty()) {
+                                    tryReadCoverFromEntryPath(resolvedGuide)
+                                }
+                            }
+                        }
+
+                        // 4. Manifest image item with "cover" in id or href
+                        if (coverBytes == null) {
+                            val candidate = manifestItems.firstOrNull { item ->
+                                val lowerHref = item.href.lowercase(Locale.ROOT)
+                                val isImg = item.mediaType.startsWith("image/", ignoreCase = true) ||
+                                    lowerHref.endsWith(".jpg") || lowerHref.endsWith(".jpeg") ||
+                                    lowerHref.endsWith(".png") || lowerHref.endsWith(".webp")
+                                isImg && (item.id.contains("cover", ignoreCase = true) || lowerHref.contains("cover"))
+                            }
+                            if (candidate != null) {
+                                tryReadCoverFromEntryPath(candidate.resolvedPath, candidate.mediaType)
+                            }
+                        }
+                    }
+                }
+
+                // 5. Fallback scan in zip entries for cover.(jpg|jpeg|png|webp)
+                if (coverBytes == null) {
+                    val fallbackEntryKey = entriesByNormPath.keys.firstOrNull { key ->
+                        val fileName = key.substringAfterLast('/').lowercase(Locale.ROOT)
+                        fileName == "cover.jpg" || fileName == "cover.jpeg" ||
+                            fileName == "cover.png" || fileName == "cover.webp"
+                    }
+                    if (fallbackEntryKey != null) {
+                        tryReadCoverFromEntryPath(fallbackEntryKey)
+                    }
+                }
+
+                BookAudioMetadata(
+                    title = title.ifBlank { fallbackName },
+                    author = author,
+                    date = date,
+                    genre = genre,
+                    description = description,
+                    language = language,
+                    publisher = publisher,
+                    series = series,
+                    seriesIndex = seriesIndex,
+                    coverBytes = coverBytes,
+                    coverMimeType = coverMime,
+                    coverWidth = coverW,
+                    coverHeight = coverH
+                )
+            }
+        } catch (_: Exception) {
+            BookAudioMetadata(title = fallbackName)
+        }
     }
 
     private fun fb2StripTags(text: String): String {
@@ -1060,7 +1473,7 @@ object TextsConverter {
     fun extractZipEntries(
         zipPath: String,
         inlineNotes: Boolean = false,
-        onTextEntry: (saveName: String, text: String, voice: String, rate: String, pitch: String) -> Unit
+        onTextEntry: (saveName: String, text: String, voice: String, rate: String, pitch: String, metadata: BookAudioMetadata) -> Unit
     ) {
         try {
             val zipFileObj = File(zipPath)
@@ -1076,13 +1489,14 @@ object TextsConverter {
                     when {
                         lower.endsWith("txt") || lower.endsWith("ini") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                            onTextEntry(saveName, readTextWithFallback(bytes), "", "", "")
+                            onTextEntry(saveName, readTextWithFallback(bytes), "", "", "", BookAudioMetadata(title = saveName))
                         }
                         lower.endsWith("fb2") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
                             val fb2Text = readTextWithFallback(bytes)
                             val bookName = extractFb2BookName(fb2Text, saveName)
-                            onTextEntry(bookName, convertFb2ToTxt(fb2Text, inlineNotes = inlineNotes), "", "", "")
+                            val meta = extractFb2Metadata(fb2Text, saveName)
+                            onTextEntry(bookName, convertFb2ToTxt(fb2Text, inlineNotes = inlineNotes), "", "", "", meta)
                         }
                         lower.endsWith(".csv") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
@@ -1102,12 +1516,13 @@ object TextsConverter {
         line: List<String>,
         defaultName: String,
         lineNum: Int,
-        onTextEntry: (saveName: String, text: String, voice: String, rate: String, pitch: String) -> Unit
+        onTextEntry: (saveName: String, text: String, voice: String, rate: String, pitch: String, metadata: BookAudioMetadata) -> Unit
     ) {
         if (line.size >= 5 && line[1].toDoubleOrNull() != null && line[2].toDoubleOrNull() != null) {
-            onTextEntry(line[4], line[3], line[0], line[1], line[2])
+            onTextEntry(line[4], line[3], line[0], line[1], line[2], BookAudioMetadata(title = line[4]))
         } else {
-            onTextEntry("$defaultName L-${"%04d".format(lineNum)}", line.joinToString(" "), "", "", "")
+            val lineTitle = "$defaultName L-${"%04d".format(lineNum)}"
+            onTextEntry(lineTitle, line.joinToString(" "), "", "", "", BookAudioMetadata(title = lineTitle))
         }
     }
 

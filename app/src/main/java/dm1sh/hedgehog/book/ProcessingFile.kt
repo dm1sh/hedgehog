@@ -7,7 +7,8 @@ data class FileBookMeta(
     var endSentenceIndex: Int,
     val voice: String,
     val rate: String,
-    val pitch: String
+    val pitch: String,
+    val metadata: BookAudioMetadata = BookAudioMetadata()
 )
 
 class ProcessingFile(
@@ -22,7 +23,8 @@ class ProcessingFile(
     regexGlavaPattern: String,
     voice: String,
     rate: String,
-    pitch: String
+    pitch: String,
+    metadata: BookAudioMetadata = BookAudioMetadata()
 ) {
     private val regexGlava: Regex = try {
         Regex(regexGlavaPattern.ifEmpty { "глава |раздел |эпизод |рассказ |chapter " })
@@ -30,7 +32,7 @@ class ProcessingFile(
         Regex("глава |раздел |эпизод |рассказ |chapter ")
     }
 
-    val fileNames = mutableListOf(FileBookMeta(fileName, 0, voice, rate, pitch))
+    val fileNames = mutableListOf(FileBookMeta(fileName, 0, voice, rate, pitch, metadata))
     val allSentences = mutableListOf<String>()
     val allGlavs = mutableListOf<String>()
 
@@ -41,11 +43,18 @@ class ProcessingFile(
         allGlavs.addAll(glavs)
     }
 
-    fun addNewText(fileName: String, text: String, voice: String, rate: String, pitch: String) {
+    fun addNewText(
+        fileName: String,
+        text: String,
+        voice: String,
+        rate: String,
+        pitch: String,
+        metadata: BookAudioMetadata = BookAudioMetadata()
+    ) {
         if (fileNames.isNotEmpty()) {
             fileNames[fileNames.lastIndex].endSentenceIndex = allSentences.size
         }
-        fileNames.add(FileBookMeta(fileName, 0, voice, rate, pitch))
+        fileNames.add(FileBookMeta(fileName, 0, voice, rate, pitch, metadata))
         val pre = getFixPoints(text)
         val (sentences, glavs) = getFixSection(pre)
         allSentences.addAll(sentences)

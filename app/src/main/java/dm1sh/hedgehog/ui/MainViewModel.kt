@@ -15,6 +15,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dm1sh.hedgehog.accessibility.ScreenReaderTts
+import dm1sh.hedgehog.book.AudioMetadataTagger
+import dm1sh.hedgehog.book.BookAudioMetadata
 import dm1sh.hedgehog.book.ProcessingFile
 import dm1sh.hedgehog.book.TextsConverter
 import dm1sh.hedgehog.data.SettingsRepository
@@ -906,10 +908,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
-            val normalizedInput = if (text.contains("<FictionBook", ignoreCase = true)) {
+            val isFb2Shared = text.contains("<FictionBook", ignoreCase = true)
+            val normalizedInput = if (isFb2Shared) {
                 TextsConverter.convertFb2ToTxt(text, inlineNotes = settings.inlineNotes)
             } else {
                 text
+            }
+            val sharedMeta = if (isFb2Shared) {
+                TextsConverter.extractFb2Metadata(text, saveName)
+            } else {
+                BookAudioMetadata(title = saveName)
             }
             val createdBook = ProcessingFile(
                 fileName = saveName,
@@ -921,7 +929,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 regexGlavaPattern = settings.regexGlavaCompile,
                 voice = "",
                 rate = "",
-                pitch = ""
+                pitch = "",
+                metadata = sharedMeta
             )
             val extractedPlayerSentences = splitIntoPlayerSentences(
                 parts = createdBook.allSentences,
@@ -1021,7 +1030,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var currentBook: ProcessingFile? = null
             val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
 
-            fun appendTextEntry(saveName: String, content: String, voice: String, rate: String, pitch: String) {
+            fun appendTextEntry(
+                saveName: String,
+                content: String,
+                voice: String,
+                rate: String,
+                pitch: String,
+                metadata: BookAudioMetadata = BookAudioMetadata(title = saveName)
+            ) {
                 if (content.isEmpty()) return
                 val b = currentBook
                 if (b == null) {
@@ -1035,10 +1051,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         regexGlavaPattern = settings.regexGlavaCompile,
                         voice = voice,
                         rate = rate,
-                        pitch = pitch
+                        pitch = pitch,
+                        metadata = metadata
                     )
                 } else {
-                    b.addNewText(saveName, content, voice, rate, pitch)
+                    b.addNewText(saveName, content, voice, rate, pitch, metadata)
                 }
             }
 
@@ -1052,45 +1069,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     when (ext) {
                         "txt", "ini" -> {
                             val text = TextsConverter.readTextWithFallback(file.readBytes())
-                            appendTextEntry(baseName, text, "", "", "")
+                            appendTextEntry(baseName, text, "", "", "", BookAudioMetadata(title = baseName))
                         }
                         "fb2", "xml" -> {
                             val raw = TextsConverter.readTextWithFallback(file.readBytes())
                             if (ext == "fb2" || raw.contains("<FictionBook", ignoreCase = true)) {
                                 val bookName = TextsConverter.extractFb2BookName(raw, baseName)
+                                val meta = TextsConverter.extractFb2Metadata(raw, baseName)
                                 appendTextEntry(
                                     bookName,
                                     TextsConverter.convertFb2ToTxt(raw, inlineNotes = settings.inlineNotes),
                                     "",
                                     "",
-                                    ""
+                                    "",
+                                    meta
                                 )
                             } else {
-                                appendTextEntry(baseName, raw, "", "", "")
+                                appendTextEntry(baseName, raw, "", "", "", BookAudioMetadata(title = baseName))
                             }
                         }
                         "epub" -> {
                             val bookName = TextsConverter.extractEpubBookName(file.absolutePath, baseName)
+                            val meta = TextsConverter.extractEpubMetadata(file.absolutePath, baseName)
                             val text = TextsConverter.convertEpubToTxt(
                                 file.absolutePath,
                                 inlineNotes = settings.inlineNotes
                             )
-                            appendTextEntry(bookName, text, "", "", "")
+                            appendTextEntry(bookName, text, "", "", "", meta)
                         }
                         "zip" -> {
                             TextsConverter.extractZipEntries(
                                 file.absolutePath,
                                 inlineNotes = settings.inlineNotes
-                            ) { saveName, text, v, r, p ->
-                                appendTextEntry(saveName, text, v, r, p)
+                            ) { saveName, text, v, r, p, meta ->
+                                appendTextEntry(saveName, text, v, r, p, meta)
                             }
                         }
                         "csv" -> {
                             val raw = TextsConverter.readTextWithFallback(file.readBytes())
                             val lines = TextsConverter.parseCsv(raw)
                             lines.forEachIndexed { idx, row ->
-                                TextsConverter.processCsvLine(row, baseName, idx + 1) { saveName, text, v, r, p ->
-                                    appendTextEntry(saveName, text, v, r, p)
+                                TextsConverter.processCsvLine(row, baseName, idx + 1) { saveName, text, v, r, p, meta ->
+                                    appendTextEntry(saveName, text, v, r, p, meta)
                                 }
                             }
                         }
@@ -1800,10 +1820,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
-                val finalBytes = if (useOpus) {
-                    OpusConverter.convertMp3ToOpus(mergedMp3) ?: mergedMp3
+                val bookMeta = book?.fileNames?.firstOrNull()?.metadata
+                    ?: BookAudioMetadata(title = bookTitles.firstOrNull().orEmpty())
+                val albumTitle = bookMeta.title.ifBlank { bookTitles.firstOrNull().orEmpty() }.ifBlank { "Audiobook" }
+                val voiceName = if (settings.useOnlineVoicesPlayer) {
+                    settings.voicesName
                 } else {
-                    mergedMp3
+                    resolveOfflineFallbackVoice().orEmpty()
+                }
+
+                val finalBytes = if (useOpus) {
+                    val opus = OpusConverter.convertMp3ToOpus(mergedMp3)
+                    if (opus != null && opus.isNotEmpty()) {
+                        AudioMetadataTagger.tagOpus(
+                            opusBytes = opus,
+                            bookMeta = bookMeta,
+                            trackTitle = albumTitle,
+                            albumTitle = albumTitle,
+                            trackNumber = 1,
+                            totalTracks = 1,
+                            voiceName = voiceName
+                        )
+                    } else {
+                        AudioMetadataTagger.tagMp3(
+                            mp3Bytes = mergedMp3,
+                            bookMeta = bookMeta,
+                            trackTitle = albumTitle,
+                            albumTitle = albumTitle,
+                            trackNumber = 1,
+                            totalTracks = 1,
+                            voiceName = voiceName
+                        )
+                    }
+                } else {
+                    AudioMetadataTagger.tagMp3(
+                        mp3Bytes = mergedMp3,
+                        bookMeta = bookMeta,
+                        trackTitle = albumTitle,
+                        albumTitle = albumTitle,
+                        trackNumber = 1,
+                        totalTracks = 1,
+                        voiceName = voiceName
+                    )
                 }
 
                 getApplication<Application>().contentResolver.openOutputStream(targetUri)?.use { out ->
@@ -2540,7 +2598,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val voice: String,
             val pitch: String,
             val rate: String,
-            val text: String
+            val text: String,
+            val metadata: BookAudioMetadata
         )
 
         // Ensure each loaded book has a clean, unique book folder/stem name
@@ -2581,7 +2640,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     voice = fVoice,
                     pitch = "${fPitch}Hz",
                     rate = "${fRate}%",
-                    text = activeBook.allSentences[idx]
+                    text = activeBook.allSentences[idx],
+                    metadata = meta.metadata
                 )
             )
         }
@@ -2631,9 +2691,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             totalChunksAcrossBooks += totalChunksForBook
 
+            var bookChunkCounter = 0
             for ((glava, chunks) in glavaChunkedList) {
                 val totalChunksForGlava = chunks.size
                 for ((chunkIdx, chunkParts) in chunks.withIndex()) {
+                    bookChunkCounter++
                     val partNumberStr = "%04d".format(chunkIdx + 1)
                     val targetBaseName = if (glava.isEmpty()) {
                         "c$partNumberStr"
@@ -2642,16 +2704,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         "${glava}_c$partNumberStr"
                     }
+                    val firstPart = chunkParts.first()
                     val chunkSpec = ChunkJobSpec(
                         bookFolderName = bookFolderName,
                         glava = glava,
                         chunkIdx = chunkIdx,
                         totalChunksForGlava = totalChunksForGlava,
                         totalChunksForBook = totalChunksForBook,
+                        bookChunkNumber = bookChunkCounter,
                         targetBaseName = targetBaseName,
                         includeGlavaIntro = addGlavMp3 && chunkIdx == 0,
                         fileNums = chunkParts.map { it.fileNum },
-                        remainingParts = AtomicInteger(chunkParts.size)
+                        remainingParts = AtomicInteger(chunkParts.size),
+                        bookMetadata = firstPart.metadata,
+                        voice = firstPart.voice
                     )
                     for (partSpec in chunkParts) {
                         partToChunkMap[partSpec.index] = chunkSpec
@@ -2826,10 +2892,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val chunkIdx: Int,
         val totalChunksForGlava: Int,
         val totalChunksForBook: Int,
+        val bookChunkNumber: Int,
         val targetBaseName: String,
         val includeGlavaIntro: Boolean,
         val fileNums: List<String>,
-        val remainingParts: AtomicInteger
+        val remainingParts: AtomicInteger,
+        val bookMetadata: BookAudioMetadata,
+        val voice: String
     )
 
     private fun updateStatusBox(index: Int, statusKey: String, expectedRunId: Int) {
@@ -2897,16 +2966,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chunkSpec.targetBaseName
         }
 
-        if (chunkSpec.fileNums.size == 1 && !chunkSpec.includeGlavaIntro && !opusOutput) {
-            val rawFile = File(bookDir, rawPartFileName(chunkSpec.glava, chunkSpec.fileNums[0], "mp3"))
-            val outFile = File(outDir, "$finalBaseName.mp3")
-            if (rawFile.exists()) {
-                moveFileOverwrite(rawFile, outFile)
-                return outFile.exists()
-            }
-            return false
-        }
-
         val mergeBuffer = ByteArrayOutputStream()
         if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
             mergeBuffer.write(soundGlavaBytes)
@@ -2925,30 +2984,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val assembledMp3 = mergeBuffer.toByteArray()
         if (assembledMp3.isEmpty() || runIdGen.get() != rid) return false
 
+        val albumTitle = chunkSpec.bookMetadata.title.ifBlank { chunkSpec.bookFolderName }
+        val trackTitle = when {
+            chunkSpec.totalChunksForBook == 1 -> albumTitle
+            chunkSpec.glava.isNotBlank() -> {
+                val cleanChapter = extractDisplayChapterTitle(chunkSpec.glava).ifBlank { chunkSpec.glava.trim() }
+                if (chunkSpec.totalChunksForGlava > 1) {
+                    "$cleanChapter (${chunkSpec.chunkIdx + 1}/${chunkSpec.totalChunksForGlava})"
+                } else {
+                    cleanChapter
+                }
+            }
+            else -> "$albumTitle - ${"%04d".format(chunkSpec.bookChunkNumber)}"
+        }
+
         return if (opusOutput) {
             val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3)
             if (runIdGen.get() != rid) return false
             if (opusBytes != null && opusBytes.isNotEmpty()) {
+                val taggedOpus = AudioMetadataTagger.tagOpus(
+                    opusBytes = opusBytes,
+                    bookMeta = chunkSpec.bookMetadata,
+                    trackTitle = trackTitle,
+                    albumTitle = albumTitle,
+                    trackNumber = chunkSpec.bookChunkNumber,
+                    totalTracks = chunkSpec.totalChunksForBook,
+                    voiceName = chunkSpec.voice
+                )
                 val outFile = File(outDir, "$finalBaseName.opus")
                 try {
-                    FileOutputStream(outFile).use { it.write(opusBytes) }
+                    FileOutputStream(outFile).use { it.write(taggedOpus) }
                     true
                 } catch (_: Exception) {
                     false
                 }
             } else {
+                val taggedMp3 = AudioMetadataTagger.tagMp3(
+                    mp3Bytes = assembledMp3,
+                    bookMeta = chunkSpec.bookMetadata,
+                    trackTitle = trackTitle,
+                    albumTitle = albumTitle,
+                    trackNumber = chunkSpec.bookChunkNumber,
+                    totalTracks = chunkSpec.totalChunksForBook,
+                    voiceName = chunkSpec.voice
+                )
                 val outFile = File(outDir, "$finalBaseName.mp3")
                 try {
-                    FileOutputStream(outFile).use { it.write(assembledMp3) }
+                    FileOutputStream(outFile).use { it.write(taggedMp3) }
                     true
                 } catch (_: Exception) {
                     false
                 }
             }
         } else {
+            val taggedMp3 = AudioMetadataTagger.tagMp3(
+                mp3Bytes = assembledMp3,
+                bookMeta = chunkSpec.bookMetadata,
+                trackTitle = trackTitle,
+                albumTitle = albumTitle,
+                trackNumber = chunkSpec.bookChunkNumber,
+                totalTracks = chunkSpec.totalChunksForBook,
+                voiceName = chunkSpec.voice
+            )
             val outFile = File(outDir, "$finalBaseName.mp3")
             try {
-                FileOutputStream(outFile).use { it.write(assembledMp3) }
+                FileOutputStream(outFile).use { it.write(taggedMp3) }
                 true
             } catch (_: Exception) {
                 false
