@@ -43,6 +43,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.roundToInt
 
 enum class MainTab {
     BOOK, PARTS, SETTINGS
@@ -102,15 +103,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Status & progress states
     var statInfo by mutableStateOf("")
     var statInfoDoneHighlight by mutableStateOf(false)
-    var statStr by mutableStateOf("0 / 0")
+    var statStr by mutableStateOf("0/0")
+    var chunksStatStr by mutableStateOf("0/0")
+    var processedPartsCount by mutableIntStateOf(0)
     var totalPartsCount by mutableIntStateOf(0)
+    var postprocessedChunksCount by mutableIntStateOf(0)
+    var totalChunksCount by mutableIntStateOf(0)
     var elapsedTimeText by mutableStateOf("")
     var elapsedVisible by mutableStateOf(false)
     var workFinished by mutableStateOf(true)
 
     var progressBarVisible by mutableStateOf(false)
     var progressBarValue by mutableIntStateOf(0)
-    var progressBarMax by mutableIntStateOf(1)
+    var progressBarMax by mutableIntStateOf(1000)
 
     val partStatuses = mutableStateListOf<PartStatus>()
 
@@ -489,6 +494,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val clamped = value.coerceIn(1, 100)
         if (clamped != settings.mergeFiles) {
             updateSettings { it.copy(mergeFiles = clamped) }
+            if (!runWork) {
+                totalChunksCount = computeTotalChunks()
+                chunksStatStr = "$postprocessedChunksCount/$totalChunksCount"
+            }
             val label = if (clamped == 100) tr("KEY_ALL") else "$clamped ${tr("KEY_UNIT")}"
             ttsSay("${tr("KEY_MARGE_FILES")} $label")
         }
@@ -720,8 +729,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bookTitles.clear()
         partStatuses.clear()
         textAreaText = ""
-        statStr = "0 / 0"
+        processedPartsCount = 0
         totalPartsCount = 0
+        postprocessedChunksCount = 0
+        totalChunksCount = 0
+        statStr = "0/0"
+        chunksStatStr = "0/0"
         book = null
         editorPartIndex = 0
         clearEditorSnapshot()
@@ -769,8 +782,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
         textAreaText = ""
-        statStr = "0 / 0"
+        processedPartsCount = 0
         totalPartsCount = 0
+        postprocessedChunksCount = 0
+        totalChunksCount = 0
+        statStr = "0/0"
+        chunksStatStr = "0/0"
         resetElapsedLabel()
         filesList.clear()
         bookTitles.clear()
@@ -869,12 +886,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 syncBookTitlesFromBook()
                 loadedBooksCount = bookTitles.size.coerceAtLeast(if (count > 0) 1 else 0)
                 bookLoaded = count > 0
+                processedPartsCount = 0
                 totalPartsCount = count
+                postprocessedChunksCount = 0
+                totalChunksCount = computeTotalChunks(currentBook)
                 partStatuses.clear()
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
-                statStr = "0 / $count"
+                statStr = "0/$count"
+                chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
                 editorPartIndex = 0
                 if (settings.showTextAreaPressed) {
@@ -962,8 +983,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         syncBookTitlesFromBook()
         loadedBooksCount = bookTitles.size.coerceAtLeast(if (finalCount > 0) 1 else 0)
         bookLoaded = finalCount > 0
+        processedPartsCount = 0
         totalPartsCount = finalCount
-        statStr = "0 / $finalCount"
+        postprocessedChunksCount = 0
+        totalChunksCount = computeTotalChunks()
+        statStr = "0/$finalCount"
+        chunksStatStr = "0/$totalChunksCount"
         partStatuses.clear()
         if (finalCount > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
@@ -1032,7 +1057,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val b = book
         val count = b?.allSentences?.size ?: 0
         totalPartsCount = count
+        if (!runWork) {
+            totalChunksCount = computeTotalChunks(b)
+            statStr = "$processedPartsCount/$totalPartsCount"
+            chunksStatStr = "$postprocessedChunksCount/$totalChunksCount"
+        }
         editorPartFieldText = if (count == 0) "0" else (editorPartIndex + 1).toString()
+    }
+
+    private fun computeTotalChunks(activeBook: ProcessingFile? = book): Int {
+        val b = activeBook ?: return 0
+        val total = b.allSentences.size
+        if (total == 0) return 0
+        val perFile = settings.mergeFiles
+        val byBook = LinkedHashMap<Int, LinkedHashMap<String, Int>>()
+        var fileNameInd = 0
+        for (idx in 0 until total) {
+            val currentMeta = b.fileNames[fileNameInd]
+            if (currentMeta.endSentenceIndex in 1..idx && fileNameInd + 1 < b.fileNames.size) {
+                fileNameInd++
+            }
+            val glava = b.allGlavs[idx].trim()
+            val byGlava = byBook.getOrPut(fileNameInd) { LinkedHashMap() }
+            byGlava[glava] = (byGlava[glava] ?: 0) + 1
+        }
+        var totalChunks = 0
+        for ((_, byGlava) in byBook) {
+            for ((_, count) in byGlava) {
+                val chunkSize = when {
+                    perFile <= 1 -> 1
+                    perFile >= 100 -> count
+                    else -> perFile
+                }
+                val step = chunkSize.coerceAtLeast(1)
+                totalChunks += (count + step - 1) / step
+            }
+        }
+        return totalChunks
+    }
+
+    fun computeCompositeProgress(
+        doneParts: Int = processedPartsCount,
+        totalParts: Int = totalPartsCount,
+        doneChunks: Int = postprocessedChunksCount,
+        totalChunks: Int = totalChunksCount
+    ): Float {
+        val partsRatio = if (totalParts > 0) doneParts.toFloat() / totalParts.toFloat() else 0f
+        val chunksRatio = if (totalChunks > 0) doneChunks.toFloat() / totalChunks.toFloat() else partsRatio
+        return (0.5f * (partsRatio + chunksRatio)).coerceIn(0f, 1f)
     }
 
     private fun takeEditorSnapshot() {
@@ -1231,8 +1303,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onPauseOrResumeButtonPressed() {
         if (!runWork) return
         workPaused = !workPaused
-        val doneCount = (progressBarValue - 1).coerceAtLeast(0)
-        val pct = if (totalPartsCount > 0) (doneCount * 100) / totalPartsCount else 0
+        val composite = computeCompositeProgress()
+        val pct = (composite * 100f).roundToInt().coerceIn(0, 100)
+        progressBarMax = 1000
+        progressBarValue = (composite * 1000f).roundToInt().coerceIn(0, 1000)
         val notifTitle = book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
         if (workPaused) {
             pauseIdleSince = System.currentTimeMillis()
@@ -1250,9 +1324,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         ForegroundWorkService.updateProgress(
             context = getApplication(),
-            text = "$statInfo $doneCount / $totalPartsCount ($pct%)",
-            progress = doneCount,
-            max = totalPartsCount,
+            text = "$statInfo $statStr • $chunksStatStr ($pct%)",
+            progress = progressBarValue,
+            max = progressBarMax,
             title = notifTitle
         )
         updateElapsedLabel()
@@ -1328,7 +1402,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val total = activeBook.allSentences.size
+        processedPartsCount = 0
         totalPartsCount = total
+        postprocessedChunksCount = 0
+        totalChunksCount = computeTotalChunks(activeBook)
+        statStr = "0/$totalPartsCount"
+        chunksStatStr = "0/$totalChunksCount"
         partStatuses.clear()
         if (total > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(total, PartStatus.OPENED))
@@ -1342,15 +1421,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ForegroundWorkService.setActive(
             context = getApplication(),
             active = true,
-            text = "${tr("KEY_PROCESSED")} 0 / $total (0%)",
+            text = "${tr("KEY_PROCESSED")} $statStr • $chunksStatStr (0%)",
             progress = 0,
-            max = total,
+            max = 1000,
             title = notifTitle
         )
 
         statInfoDoneHighlight = false
         statInfo = tr("KEY_PROCESSED")
-        statStr = "0 / $total"
         ttsSay("${tr("KEY_WORK_ON")}. $statInfo $statStr")
 
         workStartMsec = System.currentTimeMillis()
@@ -1366,8 +1444,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val runSaveDir = settings.saveDir.ifEmpty { repo.defaultDownloadsDir }
         val timeoutMsec = if (settings.restartDelay < 0) Long.MAX_VALUE else settings.restartDelay * 1000L
 
-        progressBarMax = total + 1
-        progressBarValue = 1
+        progressBarMax = 1000
+        progressBarValue = 0
         progressBarVisible = true
 
         if (total == 0) {
@@ -1457,6 +1535,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val multipleBooks = specsByBook.size > 1 || loadedBooksCount.coerceAtLeast(1) > 1
         val partToChunkMap = arrayOfNulls<ChunkJobSpec>(total)
+        var totalChunksAcrossBooks = 0
 
         for ((bookFolderName, byGlava) in specsByBook) {
             val glavaChunkedList = mutableListOf<Pair<String, List<List<PartJobSpec>>>>()
@@ -1472,6 +1551,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 totalChunksForBook += chunks.size
                 glavaChunkedList.add(glava to chunks)
             }
+            totalChunksAcrossBooks += totalChunksForBook
 
             for ((glava, chunks) in glavaChunkedList) {
                 val totalChunksForGlava = chunks.size
@@ -1502,8 +1582,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        totalChunksCount = totalChunksAcrossBooks
+        chunksStatStr = "0/$totalChunksCount"
+
         val savedPartsAtomic = AtomicInteger(0)
+        val postprocessedChunksAtomic = AtomicInteger(0)
         val launchedAtomic = AtomicInteger(0)
+
+        suspend fun publishConversionProgress(doneParts: Int, doneChunks: Int) {
+            withContext(Dispatchers.Main) {
+                if (runIdGen.get() == currentRunId && runWork) {
+                    processedPartsCount = doneParts
+                    postprocessedChunksCount = doneChunks
+                    statStr = "$doneParts/$totalPartsCount"
+                    chunksStatStr = "$doneChunks/$totalChunksCount"
+                    val composite = computeCompositeProgress(
+                        doneParts = doneParts,
+                        totalParts = totalPartsCount,
+                        doneChunks = doneChunks,
+                        totalChunks = totalChunksCount
+                    )
+                    progressBarMax = 1000
+                    progressBarValue = (composite * 1000f).roundToInt().coerceIn(0, 1000)
+                    val pct = (composite * 100f).roundToInt().coerceIn(0, 100)
+                    val statusLabel = tr(if (workPaused) "KEY_PAUSE" else "KEY_PROCESSED")
+                    ForegroundWorkService.updateProgress(
+                        context = getApplication(),
+                        text = "$statusLabel $statStr • $chunksStatStr ($pct%)",
+                        progress = progressBarValue,
+                        max = progressBarMax,
+                        title = notifTitle
+                    )
+                }
+            }
+        }
 
         conversionMasterJob = viewModelScope.launch(Dispatchers.IO) {
             val childJobs = mutableListOf<Job>()
@@ -1587,26 +1699,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
 
-                        val doneCount = savedPartsAtomic.incrementAndGet()
-                        withContext(Dispatchers.Main) {
-                            if (runIdGen.get() == currentRunId && runWork) {
-                                progressBarValue = doneCount + 1
-                                statStr = "$doneCount / $totalPartsCount"
-                                val pct = if (totalPartsCount > 0) (doneCount * 100) / totalPartsCount else 0
-                                val statusLabel = tr(if (workPaused) "KEY_PAUSE" else "KEY_PROCESSED")
-                                ForegroundWorkService.updateProgress(
-                                    context = getApplication(),
-                                    text = "$statusLabel $doneCount / $totalPartsCount ($pct%)",
-                                    progress = doneCount,
-                                    max = totalPartsCount,
-                                    title = notifTitle
-                                )
-                            }
-                        }
+                        val doneParts = savedPartsAtomic.incrementAndGet()
+                        publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
 
                         val chunkSpec = partToChunkMap.getOrNull(spec.index)
                         if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
-                            mergeMutex.withLock {
+                            val chunkAssembled = mergeMutex.withLock {
                                 assembleChunk(
                                     chunkSpec = chunkSpec,
                                     saveDirBase = runSaveDir,
@@ -1616,6 +1714,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     opusOutput = runOpusOutput,
                                     rid = currentRunId
                                 )
+                            }
+                            if (chunkAssembled && runIdGen.get() == currentRunId) {
+                                val doneChunks = postprocessedChunksAtomic.incrementAndGet()
+                                publishConversionProgress(savedPartsAtomic.get(), doneChunks)
                             }
                         }
                     }
@@ -1698,8 +1800,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         soundGlavaBytes: ByteArray,
         opusOutput: Boolean,
         rid: Int
-    ) {
-        if (runIdGen.get() != rid) return
+    ): Boolean {
+        if (runIdGen.get() != rid) return false
         val bookDir = File(saveDirBase, chunkSpec.bookFolderName)
         val outDir = if (chunkSpec.totalChunksForBook == 1 || (!inBookDir && !multipleBooks)) {
             File(saveDirBase)
@@ -1718,8 +1820,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val outFile = File(outDir, "$finalBaseName.mp3")
             if (rawFile.exists()) {
                 moveFileOverwrite(rawFile, outFile)
+                return outFile.exists()
             }
-            return
+            return false
         }
 
         val mergeBuffer = ByteArrayOutputStream()
@@ -1727,7 +1830,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             mergeBuffer.write(soundGlavaBytes)
         }
         for (num in chunkSpec.fileNums) {
-            if (runIdGen.get() != rid) return
+            if (runIdGen.get() != rid) return false
             val rawFile = File(bookDir, rawPartFileName(chunkSpec.glava, num, "mp3"))
             if (rawFile.exists()) {
                 try {
@@ -1738,29 +1841,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val assembledMp3 = mergeBuffer.toByteArray()
-        if (assembledMp3.isEmpty() || runIdGen.get() != rid) return
+        if (assembledMp3.isEmpty() || runIdGen.get() != rid) return false
 
-        if (opusOutput) {
+        return if (opusOutput) {
             val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3)
-            if (runIdGen.get() != rid) return
+            if (runIdGen.get() != rid) return false
             if (opusBytes != null && opusBytes.isNotEmpty()) {
                 val outFile = File(outDir, "$finalBaseName.opus")
                 try {
                     FileOutputStream(outFile).use { it.write(opusBytes) }
+                    true
                 } catch (_: Exception) {
+                    false
                 }
             } else {
                 val outFile = File(outDir, "$finalBaseName.mp3")
                 try {
                     FileOutputStream(outFile).use { it.write(assembledMp3) }
+                    true
                 } catch (_: Exception) {
+                    false
                 }
             }
         } else {
             val outFile = File(outDir, "$finalBaseName.mp3")
             try {
                 FileOutputStream(outFile).use { it.write(assembledMp3) }
+                true
             } catch (_: Exception) {
+                false
             }
         }
     }
@@ -1794,10 +1903,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     updateElapsedLabel()
                     progressBarVisible = false
                     progressBarValue = 0
-                    val msg = "${tr("KEY_WORK_COMPLETED")}. $statInfo $statStr"
+                    val msg = "${tr("KEY_WORK_COMPLETED")}. $statInfo $statStr • $chunksStatStr"
                     val completedLabel = tr("KEY_WORK_COMPLETED")
                     val bookTitle = book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
-                    val processedSummary = "${tr("KEY_PROCESSED")}: $statStr"
+                    val processedSummary = "${tr("KEY_PROCESSED")}: $statStr • $chunksStatStr"
                     ForegroundWorkService.showCompletionNotification(
                         context = getApplication(),
                         bookTitle = bookTitle,
@@ -1864,11 +1973,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         for (i in partStatuses.indices) {
             partStatuses[i] = PartStatus.OPENED
         }
+        processedPartsCount = 0
+        postprocessedChunksCount = 0
+        totalChunksCount = computeTotalChunks()
         progressBarVisible = false
         progressBarValue = 0
         statInfoDoneHighlight = false
         statInfo = ""
-        statStr = "0 / $totalPartsCount"
+        statStr = "0/$totalPartsCount"
+        chunksStatStr = "0/$totalChunksCount"
         resetElapsedLabel()
     }
 

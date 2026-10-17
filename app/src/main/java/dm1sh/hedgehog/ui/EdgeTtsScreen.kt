@@ -155,13 +155,15 @@ fun EdgeTtsScreen(
                         } else {
                             ""
                         }
-                        "${vm.statInfo}: ${vm.statStr}$elapsedSuffix"
+                        "${vm.statInfo}: ${vm.statStr} • ${vm.chunksStatStr}$elapsedSuffix"
+                    } else if (vm.statInfoDoneHighlight && vm.totalPartsCount > 0) {
+                        "${vm.statInfo} • ${vm.statStr} • ${vm.chunksStatStr}"
                     } else {
                         vm.statInfo
                     }
                 }
                 vm.bookLoaded || vm.totalPartsCount > 0 -> {
-                    "${vm.bookLoadedCaption()} • ${vm.tr("KEY_TOTAL_PARTS")}${vm.totalPartsCount}"
+                    "${vm.bookLoadedCaption()} • ${vm.statStr} • ${vm.chunksStatStr}"
                 }
                 else -> ""
             }
@@ -670,6 +672,18 @@ private fun BookStatusGridCard(
                         ) {
                             Text(
                                 text = vm.statStr,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        ) {
+                            Text(
+                                text = vm.chunksStatStr,
                                 style = MaterialTheme.typography.labelLarge,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                             )
