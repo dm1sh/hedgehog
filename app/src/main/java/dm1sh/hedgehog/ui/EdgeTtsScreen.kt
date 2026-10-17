@@ -1457,6 +1457,18 @@ private fun BookSettingsGroupContent(
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
+        // Embed cover and metadata into audio files
+        M3SwitchListItem(
+            headline = vm.tr("KEY_EMBED_METADATA"),
+            checked = settings.embedMetadata,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(embedMetadata = checked) }
+                vm.ttsSay("${vm.tr("KEY_EMBED_METADATA")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         // Cut by chapters + Chapter Regex Modal Button
         ListItem(
             headlineContent = { Text(vm.tr("KEY_BOOK_CHAPTER")) },

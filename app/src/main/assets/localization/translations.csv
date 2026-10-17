@@ -152,6 +152,8 @@ KEY_USE_ONLINE_VOICES_SYSTEM_TTS,Use online voices for system TTS,Online-Stimmen
 KEY_OFFLINE_FALLBACK_TOAST,Online voice unavailable — falling back to offline voice,Online-Stimme nicht verfügbar — Wechsel zu Offline-Stimme,Voz en línea no disponible — usando voz sin conexión,Online-ääni ei ole käytettävissä — vaihdetaan offline-ääneen,Voix en ligne indisponible — passage à la voix hors ligne,Voce online non disponibile — passaggio alla voce offline,オンライン音声が利用できないためオフライン音声に切り替えます,온라인 음성을 사용할 수 없어 오프라인 음성으로 전환합니다,Głos online niedostępny — przełączanie na głos offline,Voz online indisponível — alternando para voz offline,Онлайн-голос недоступен — используется оффлайн-голос,線上語音不可用 — 已切換為離線語音
 KEY_PARTS_UNIT,parts,Teile,partes,osaa,parties,parti,パート,파트,części,partes,частей,部份
 KEY_CHAPTERS_UNIT,chapters,Kapitel,capítulos,lukua,chapitres,capitoli,章,장,rozdziałów,capítulos,глав,章節
+KEY_EMBED_METADATA,Embed cover and metadata into audio files,Cover und Metadaten in Audiodateien einbetten,Incrustar portada y metadatos en los archivos de audio,Upota kansikuva ja metatiedot äänitiedostoihin,Intégrer la couverture et les métadonnées dans les fichiers audio,Incorpora copertina e metadati nei file audio,音声ファイルに表紙とメタデータを埋め込む,오디오 파일에 표지 및 메타데이터 포함,Osadzaj okładkę i metadane w plikach audio,Incorporar capa e metadados nos arquivos de áudio,Встраивать обложку и метаданные в аудиофайлы,在音訊檔案中嵌入封面與元數據
+
 
 
 

@@ -25,6 +25,7 @@ data class AppSettings(
     val lowBitrate: Boolean = false,
     val opusOutput: Boolean = false,
     val inlineNotes: Boolean = false,
+    val embedMetadata: Boolean = true,
     val voicePreview: Boolean = false,
     val bookChapter: Boolean = false,
     val dopSettingsPressed: Boolean = false,

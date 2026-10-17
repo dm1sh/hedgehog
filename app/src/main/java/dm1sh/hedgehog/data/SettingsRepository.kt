@@ -121,6 +121,7 @@ class SettingsRepository(private val context: Context) {
                 lowBitrate = s.optBoolean("low_bitrate", false),
                 opusOutput = s.optBoolean("opus_output", false),
                 inlineNotes = s.optBoolean("inline_notes", false),
+                embedMetadata = s.optBoolean("embed_metadata", true),
                 voicePreview = s.optBoolean("voice_preview", false),
                 bookChapter = s.optBoolean("book_chapter", false),
                 dopSettingsPressed = s.optBoolean("dop_settings_pressed", false),
@@ -174,6 +175,7 @@ class SettingsRepository(private val context: Context) {
                 put("low_bitrate", settings.lowBitrate)
                 put("opus_output", settings.opusOutput)
                 put("inline_notes", settings.inlineNotes)
+                put("embed_metadata", settings.embedMetadata)
                 put("voice_preview", settings.voicePreview)
                 put("book_chapter", settings.bookChapter)
                 put("dop_settings_pressed", settings.dopSettingsPressed)
