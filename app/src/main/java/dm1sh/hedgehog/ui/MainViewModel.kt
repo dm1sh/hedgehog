@@ -246,6 +246,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val key = when (tab) {
             MainTab.BOOK -> "KEY_BOOK"
             MainTab.PARTS -> "KEY_VIEW_TEXT"
+            MainTab.PLAYER -> "KEY_PLAYER"
             MainTab.SETTINGS -> "KEY_SETTINGS"
         }
         ttsSay(tr(key))
