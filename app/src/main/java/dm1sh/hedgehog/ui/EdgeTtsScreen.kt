@@ -1056,6 +1056,17 @@ private fun VoiceSettingsGroupContent(vm: MainViewModel) {
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
+        M3SwitchListItem(
+            headline = vm.tr("KEY_USE_ONLINE_VOICES_SYSTEM_TTS"),
+            checked = settings.useOnlineVoicesSystemTts,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(useOnlineVoicesSystemTts = checked) }
+                vm.ttsSay("${vm.tr("KEY_USE_ONLINE_VOICES_SYSTEM_TTS")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()

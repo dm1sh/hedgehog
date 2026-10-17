@@ -124,14 +124,37 @@ object OfflineTtsEngine {
         onProcessingStart: () -> Unit = {}
     ): ByteArray {
         return try {
-            val pcmBytes = synchronized(nativeLock) {
+            val pcmBytes = synthesizePcmBlocking(
+                voiceDir = voiceDir,
+                text = text,
+                rate = rate,
+                pitch = pitch,
+                shouldAbort = shouldAbort,
+                onProcessingStart = onProcessingStart
+            )
+            if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else mp3(context, pcmBytes, kbps)
+        } catch (t: Throwable) {
+            Log.e(TAG, "synthesize failed: ${t.message}", t)
+            ByteArray(0)
+        }
+    }
+
+    fun synthesizePcmBlocking(
+        voiceDir: String,
+        text: String,
+        rate: String,
+        pitch: String,
+        shouldAbort: () -> Boolean = { false },
+        onProcessingStart: () -> Unit = {}
+    ): ByteArray {
+        return try {
+            synchronized(nativeLock) {
                 if (shouldAbort()) return ByteArray(0)
                 onProcessingStart()
                 pcmLocked(voiceDir, text, rate, pitch)
             }
-            if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else mp3(context, pcmBytes, kbps)
         } catch (t: Throwable) {
-            Log.e(TAG, "synthesize failed: ${t.message}", t)
+            Log.e(TAG, "synthesizePcmBlocking failed: ${t.message}", t)
             ByteArray(0)
         }
     }

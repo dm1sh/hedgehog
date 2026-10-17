@@ -105,6 +105,7 @@ class SettingsRepository(private val context: Context) {
                 offlineVoicesName = s.optString("offline_voices_name", ""),
                 useOnlineVoices = s.optBoolean("use_online_voices", true),
                 useOnlineVoicesPlayer = s.optBoolean("use_online_voices_player", false),
+                useOnlineVoicesSystemTts = s.optBoolean("use_online_voices_system_tts", false),
                 rate = s.optInt("rate", 100),
                 pitch = s.optInt("pitch", 0),
                 maxThreads = if (hasAppVersion) s.optInt("max_threads", AppSettings.DEFAULT_MAX_THREADS) else AppSettings.DEFAULT_MAX_THREADS,
@@ -157,6 +158,7 @@ class SettingsRepository(private val context: Context) {
                 put("offline_voices_name", settings.offlineVoicesName)
                 put("use_online_voices", settings.useOnlineVoices)
                 put("use_online_voices_player", settings.useOnlineVoicesPlayer)
+                put("use_online_voices_system_tts", settings.useOnlineVoicesSystemTts)
                 put("rate", settings.rate)
                 put("pitch", settings.pitch)
                 put("max_threads", settings.maxThreads)
