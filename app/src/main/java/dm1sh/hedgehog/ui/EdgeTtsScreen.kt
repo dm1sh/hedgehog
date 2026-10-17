@@ -2219,7 +2219,23 @@ private fun PlayerTabContent(
                     val thumbHeightDp = 40.dp
                     val thumbHeightPx = with(density) { thumbHeightDp.roundToPx() }
                     val maxIndex = (sentences.size - 1).coerceAtLeast(1)
-                    val listFraction = (listState.firstVisibleItemIndex.toFloat() / maxIndex.toFloat()).coerceIn(0f, 1f)
+                    val layoutInfo = listState.layoutInfo
+                    val visibleItems = layoutInfo.visibleItemsInfo
+                    val listFraction = when {
+                        !listState.canScrollBackward -> 0f
+                        !listState.canScrollForward -> 1f
+                        visibleItems.isEmpty() -> 0f
+                        else -> {
+                            val firstItem = visibleItems.first()
+                            val itemFraction = (
+                                listState.firstVisibleItemScrollOffset.toFloat() /
+                                    firstItem.size.coerceAtLeast(1).toFloat()
+                                ).coerceIn(0f, 1f)
+                            val exactFirst = firstItem.index.toFloat() + itemFraction
+                            val maxFirstIndex = (sentences.size - visibleItems.size).coerceAtLeast(1).toFloat()
+                            (exactFirst / maxFirstIndex).coerceIn(0f, 1f)
+                        }
+                    }
                     val activeFraction = if (isDraggingScrollbar) dragFraction else listFraction
                     val availableScrollPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(0)
                     val thumbOffsetY = (activeFraction * availableScrollPx).roundToInt()
@@ -2327,7 +2343,7 @@ private fun PlayerTabContent(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -2339,7 +2355,10 @@ private fun PlayerTabContent(
                     enabled = sentences.isNotEmpty(),
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    modifier = Modifier.width(88.dp)
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(end = 12.dp)
+                        .defaultMinSize(minWidth = 64.dp)
                 ) {
                     Text(
                         text = if (sentences.isEmpty()) "0 / 0" else "${selectedIdx + 1} / ${sentences.size}",
@@ -2347,18 +2366,21 @@ private fun PlayerTabContent(
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
                     )
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     FilledTonalIconButton(
                         onClick = { vm.onPlayerPrevPressed() },
                         enabled = sentences.isNotEmpty() && selectedIdx > 0,
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier.size(44.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.SkipPrevious,
@@ -2369,7 +2391,7 @@ private fun PlayerTabContent(
                     Button(
                         onClick = { vm.onPlayerPlayPausePressed() },
                         enabled = sentences.isNotEmpty(),
-                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
                     ) {
                         Icon(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -2381,7 +2403,7 @@ private fun PlayerTabContent(
                     FilledTonalIconButton(
                         onClick = { vm.onPlayerNextPressed() },
                         enabled = sentences.isNotEmpty() && selectedIdx < sentences.lastIndex,
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier.size(44.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.SkipNext,
@@ -2391,7 +2413,9 @@ private fun PlayerTabContent(
                 }
 
                 Box(
-                    modifier = Modifier.width(88.dp),
+                    modifier = Modifier
+                        .padding(start = 12.dp)
+                        .width(44.dp),
                     contentAlignment = Alignment.CenterEnd
                 ) {
                     if (isSharedText) {
@@ -2422,53 +2446,35 @@ private fun PlayerTabContent(
                         }
                     } else if (hasBookKey) {
                         val isCurrentBookmarked = selectedIdx in bookmarks
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isCurrentBookmarked) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHighest
+                            },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .combinedClickable(
+                                    enabled = sentences.isNotEmpty(),
+                                    onClick = { vm.onTogglePlayerBookmark(selectedIdx) },
+                                    onLongClick = { showBookmarksDialog = true }
+                                )
                         ) {
-                            if (bookmarks.isNotEmpty()) {
-                                IconButton(
-                                    onClick = { showBookmarksDialog = true },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Bookmarks,
-                                        contentDescription = vm.tr("KEY_BOOKMARKS"),
-                                        modifier = Modifier.size(20.dp),
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            }
-                            Surface(
-                                shape = CircleShape,
-                                color = if (isCurrentBookmarked) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerHighest
-                                },
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .combinedClickable(
-                                        enabled = sentences.isNotEmpty(),
-                                        onClick = { vm.onTogglePlayerBookmark(selectedIdx) },
-                                        onLongClick = { showBookmarksDialog = true }
-                                    )
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = if (isCurrentBookmarked) {
-                                            Icons.Filled.Bookmark
-                                        } else {
-                                            Icons.Outlined.BookmarkBorder
-                                        },
-                                        contentDescription = vm.tr("KEY_BOOKMARKS"),
-                                        tint = if (isCurrentBookmarked) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        }
-                                    )
-                                }
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (isCurrentBookmarked) {
+                                        Icons.Filled.Bookmark
+                                    } else {
+                                        Icons.Outlined.BookmarkBorder
+                                    },
+                                    contentDescription = vm.tr("KEY_BOOKMARKS"),
+                                    tint = if (isCurrentBookmarked) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
                             }
                         }
                     }
