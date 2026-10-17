@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
+import dm1sh.hedgehog.service.PlayerNotificationService
 import dm1sh.hedgehog.ui.DopModal
 import dm1sh.hedgehog.ui.EdgeTtsScreen
 import dm1sh.hedgehog.ui.MainTab
@@ -198,6 +199,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(PlayerNotificationService.EXTRA_OPEN_PLAYER_TAB, false) == true) {
+            intent.removeExtra(PlayerNotificationService.EXTRA_OPEN_PLAYER_TAB)
+            viewModel.selectMainTab(MainTab.PLAYER)
+            return
+        }
         val action = intent?.action ?: return
         when (action) {
             Intent.ACTION_SEND -> {

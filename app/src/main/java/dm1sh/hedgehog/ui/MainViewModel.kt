@@ -22,6 +22,7 @@ import dm1sh.hedgehog.localization.LocalizationManager
 import dm1sh.hedgehog.model.AppSettings
 import dm1sh.hedgehog.model.PartStatus
 import dm1sh.hedgehog.service.ForegroundWorkService
+import dm1sh.hedgehog.service.PlayerNotificationService
 import dm1sh.hedgehog.tts.OfflineInstaller
 import dm1sh.hedgehog.tts.OfflineTtsEngine
 import dm1sh.hedgehog.tts.OpusConverter
@@ -52,6 +53,13 @@ import kotlin.math.roundToInt
 enum class MainTab {
     BOOK, PARTS, PLAYER, SETTINGS
 }
+
+data class PlayerSentenceItem(
+    val text: String,
+    val startsNewParagraph: Boolean = false,
+    val startsNewChapter: Boolean = false,
+    val chapterTitle: String? = null
+)
 
 enum class SettingsTab {
     VOICE, BOOK, TOOL, INTERFACE
@@ -158,13 +166,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var editorSnapshotBook: ProcessingFile? = null
 
     // Built-in Player state
-    var playerSentences by mutableStateOf<List<String>>(emptyList())
+    var playerSentences by mutableStateOf<List<PlayerSentenceItem>>(emptyList())
         private set
     val playerSentenceStatuses = mutableStateMapOf<Int, PartStatus>()
     var playerSelectedIndex by mutableIntStateOf(0)
         private set
     var playerIsPlaying by mutableStateOf(false)
         private set
+    var playerBookKey by mutableStateOf<String?>(null)
+        private set
+    var playerIsSharedText by mutableStateOf(false)
+        private set
+    private var lastSharedInput: Pair<String, String?>? = null
+    val playerBookmarks = mutableStateListOf<Int>()
     private val playerRunIdGen = AtomicInteger(0)
     private val playerSessionIdGen = AtomicInteger(0)
     private var playerCoordinatorJob: Job? = null
@@ -191,6 +205,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         OfflineTtsEngine.setMaxJobs(settings.maxThreads)
+        PlayerNotificationService.actionListener = object : PlayerNotificationService.ActionListener {
+            override fun onPrevious() {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onPlayerPrevPressed()
+                }
+            }
+
+            override fun onPlayPause() {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onPlayerPlayPausePressed()
+                }
+            }
+
+            override fun onNext() {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onPlayerNextPressed()
+                }
+            }
+        }
         setupInitialLists()
         loadLexx()
         refreshLoadDirFiles()
@@ -234,6 +267,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             editorLoadCurrentPart()
             takeEditorSnapshot()
+        }
+        if (tab == MainTab.PLAYER && book == null && textAreaText.isNotBlank()) {
+            onEditorSavePressed()
         }
         if (tab == MainTab.BOOK) {
             refreshLoadDirFiles()
@@ -597,6 +633,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         dopModal = DopModal.NONE
+        reprocessBookForCurrentSettings()
         ttsSay(tr("KEY_OK"))
     }
 
@@ -641,6 +678,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         } else {
             lexxRules = emptyList()
+        }
+        reprocessBookForCurrentSettings()
+    }
+
+    fun reprocessBookForCurrentSettings() {
+        if (runWork || isBookLoading) return
+        val shared = lastSharedInput
+        if (playerIsSharedText && shared != null) {
+            onSharedPlainText(
+                sharedText = shared.first,
+                sharedTitle = shared.second,
+                openPlayerTab = false
+            )
+        } else if (filesList.isNotEmpty()) {
+            onOpenBooks(
+                paths = filesList.toList(),
+                announceLoad = false
+            )
         }
     }
 
@@ -750,6 +805,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
+        playerBookKey = null
+        playerIsSharedText = false
+        lastSharedInput = null
+        playerBookmarks.clear()
         isBookLoading = false
         bookLoaded = false
         loadedBooksCount = 0
@@ -784,13 +843,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onOpenBookUris(uris)
     }
 
-    fun onSharedPlainText(sharedText: String, sharedTitle: String? = null) {
+    fun onSharedPlainText(
+        sharedText: String,
+        sharedTitle: String? = null,
+        openPlayerTab: Boolean = true
+    ) {
         val text = sharedText.trim()
         if (text.isEmpty()) return
+        val previousIdx = if (playerIsSharedText && !openPlayerTab) playerSelectedIndex else 0
         stopConversion(announce = false)
         stopPlayerPlayback(clearCache = true)
         clearEditorSnapshot()
-        selectMainTab(MainTab.PLAYER)
+        if (openPlayerTab) {
+            selectMainTab(MainTab.PLAYER)
+        }
         isBookLoading = true
         bookLoaded = false
         statInfoDoneHighlight = false
@@ -799,6 +865,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
+        playerBookKey = null
+        playerIsSharedText = true
+        lastSharedInput = sharedText to sharedTitle
+        playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
         totalPartsCount = 0
@@ -824,9 +894,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
+            val normalizedInput = if (text.contains("<FictionBook", ignoreCase = true)) {
+                TextsConverter.convertFb2ToTxt(text, inlineNotes = settings.inlineNotes)
+            } else {
+                text
+            }
             val createdBook = ProcessingFile(
                 fileName = saveName,
-                text = text,
+                text = normalizedInput,
                 langLexx = activeLexx,
                 lexxRegister = settings.lexxRegister,
                 bookChapter = settings.bookChapter,
@@ -836,7 +911,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 rate = "",
                 pitch = ""
             )
-            val extractedPlayerSentences = splitIntoPlayerSentences(createdBook.allSentences)
+            val extractedPlayerSentences = splitIntoPlayerSentences(
+                parts = createdBook.allSentences,
+                glavs = createdBook.allGlavs
+            )
 
             withContext(Dispatchers.Main) {
                 isBookLoading = false
@@ -853,7 +931,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
-                applyPlayerSentences(extractedPlayerSentences)
+                applyPlayerSentences(
+                    sentences = extractedPlayerSentences,
+                    savedState = if (previousIdx > 0) {
+                        SettingsRepository.PlayerBookState(lastPlayedIndex = previousIdx)
+                    } else null
+                )
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -863,7 +946,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     editorRefreshFields()
                 }
-                ttsSay("${bookLoadedCaption()}. $statStr")
+                if (openPlayerTab) {
+                    ttsSay("${bookLoadedCaption()}. $statStr")
+                }
             }
         }
     }
@@ -886,7 +971,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun onOpenBooks(paths: List<String>) {
+    fun onOpenBooks(paths: List<String>, announceLoad: Boolean = true) {
         if (paths.isEmpty()) {
             isBookLoading = false
             return
@@ -902,6 +987,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
+        playerBookKey = null
+        playerIsSharedText = false
+        lastSharedInput = null
+        playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
         totalPartsCount = 0
@@ -1004,7 +1093,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            val extractedPlayerSentences = splitIntoPlayerSentences(currentBook?.allSentences.orEmpty())
+            val extractedPlayerSentences = splitIntoPlayerSentences(
+                parts = currentBook?.allSentences.orEmpty(),
+                glavs = currentBook?.allGlavs.orEmpty()
+            )
+            val computedBookKey = filesList
+                .map { p ->
+                    val f = File(p)
+                    "${f.name}:${f.length()}"
+                }
+                .joinToString("|")
+                .takeIf { it.isNotEmpty() }
+            val savedPlayerState = computedBookKey?.let { repo.loadPlayerBookState(it) }
 
             withContext(Dispatchers.Main) {
                 isBookLoading = false
@@ -1021,7 +1121,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
-                applyPlayerSentences(extractedPlayerSentences)
+                applyPlayerSentences(
+                    sentences = extractedPlayerSentences,
+                    bookKey = computedBookKey,
+                    savedState = savedPlayerState
+                )
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -1031,7 +1135,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     editorRefreshFields()
                 }
-                ttsSay("${bookLoadedCaption()}. $statStr")
+                if (announceLoad) {
+                    ttsSay("${bookLoadedCaption()}. $statStr")
+                }
             }
         }
     }
@@ -1098,6 +1204,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             book = newBook
             editorPartIndex = 0
         } else {
+            currentBook.langLexx = if (settings.lexxUse) lexxRules else emptyList()
+            currentBook.lexxRegister = settings.lexxRegister
             val k = currentBook.replacePart(editorPartIndex, textAreaText)
             if (k <= 0 && currentBook.allSentences.isEmpty()) {
                 currentBook.allSentences.add("")
@@ -1121,7 +1229,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (finalCount > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
         }
-        applyPlayerSentences(splitIntoPlayerSentences(book?.allSentences.orEmpty()))
+        applyPlayerSentences(
+            sentences = splitIntoPlayerSentences(
+                parts = book?.allSentences.orEmpty(),
+                glavs = book?.allGlavs.orEmpty()
+            ),
+            bookKey = playerBookKey,
+            savedState = playerBookKey?.let {
+                SettingsRepository.PlayerBookState(
+                    lastPlayedIndex = playerSelectedIndex,
+                    bookmarks = playerBookmarks.toList()
+                )
+            }
+        )
         editorLoadCurrentPart()
         takeEditorSnapshot()
         ttsSay(tr("KEY_SAVED"))
@@ -1265,17 +1385,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Built-in Player (per-sentence chunking, parallel synthesis, sequential playback, caching)
-    private fun splitIntoPlayerSentences(parts: List<String>): List<String> {
+    private fun splitIntoPlayerSentences(
+        parts: List<String>,
+        glavs: List<String> = emptyList()
+    ): List<PlayerSentenceItem> {
         if (parts.isEmpty()) return emptyList()
-        val result = ArrayList<String>(parts.size * 16)
-        for (part in parts) {
+        val chapterRegex = try {
+            Regex(
+                settings.regexGlavaCompile.ifEmpty { AppSettings.DEFAULT_REGEX_GLAVA },
+                RegexOption.IGNORE_CASE
+            )
+        } catch (_: Exception) {
+            Regex(AppSettings.DEFAULT_REGEX_GLAVA, RegexOption.IGNORE_CASE)
+        }
+        val leadingNumPrefixRegex = Regex("^\\d{4}\\s*")
+        val result = ArrayList<PlayerSentenceItem>(parts.size * 16)
+        var lastPartGlav = ""
+        var pendingParagraphBreak = false
+        var pendingChapterTitle: String? = null
+        var consecutiveEmptyLines = 0
+
+        fun emitSentence(raw: String) {
+            val s = raw.trim()
+            if (s.isEmpty()) return
+            val isFirstInBook = result.isEmpty()
+            val isNewChapter = pendingChapterTitle != null
+            val isNewParagraph = !isFirstInBook && (pendingParagraphBreak || isNewChapter)
+            result.add(
+                PlayerSentenceItem(
+                    text = s,
+                    startsNewParagraph = isNewParagraph,
+                    startsNewChapter = isNewChapter,
+                    chapterTitle = pendingChapterTitle
+                )
+            )
+            pendingParagraphBreak = false
+            pendingChapterTitle = null
+        }
+
+        for (partIdx in parts.indices) {
+            val part = parts[partIdx]
+            val rawGlav = glavs.getOrNull(partIdx)?.trim().orEmpty()
+            if (rawGlav.isNotEmpty() && rawGlav != lastPartGlav) {
+                lastPartGlav = rawGlav
+                val stripped = rawGlav.replaceFirst(leadingNumPrefixRegex, "").trim()
+                if (stripped.isNotEmpty()) {
+                    pendingChapterTitle = stripped
+                } else if (rawGlav != "0000") {
+                    pendingChapterTitle = rawGlav
+                }
+            }
+
             val len = part.length
             var chunkStart = 0
             var alnumCount = 0
             var lastClauseEnd = -1
             var lastSpace = -1
+            var lineCheckedForChapter = false
             var i = 0
             while (i < len) {
+                if (!lineCheckedForChapter) {
+                    lineCheckedForChapter = true
+                    var lineEnd = part.indexOf('\n', i)
+                    if (lineEnd == -1) lineEnd = len
+                    val rawLine = part.substring(i, lineEnd)
+                    val trimmedLine = rawLine.trim()
+                    if (trimmedLine.isEmpty()) {
+                        consecutiveEmptyLines++
+                    } else {
+                        if (trimmedLine.length < 50 && chapterRegex.containsMatchIn(trimmedLine)) {
+                            pendingChapterTitle = trimmedLine
+                        } else if (consecutiveEmptyLines >= 3 && result.isNotEmpty()) {
+                            pendingChapterTitle = trimmedLine.take(60)
+                        }
+                        consecutiveEmptyLines = 0
+                    }
+                }
+
                 val c = part[i]
                 if (Character.isLetterOrDigit(c)) {
                     alnumCount++
@@ -1292,20 +1478,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val spanLen = i + 1 - chunkStart
                 if (isNewline) {
                     if (alnumCount > 0) {
-                        val s = part.substring(chunkStart, i).trim()
-                        if (s.isNotEmpty()) result.add(s)
+                        emitSentence(part.substring(chunkStart, i))
+                        pendingParagraphBreak = true
+                    } else if (result.isNotEmpty()) {
+                        pendingParagraphBreak = true
                     }
                     chunkStart = i + 1
                     alnumCount = 0
                     lastClauseEnd = -1
                     lastSpace = -1
+                    lineCheckedForChapter = false
                 } else if (isSentenceEndPunct && alnumCount >= 4) {
                     var endIdx = i + 1
                     while (endIdx < len && (part[endIdx] == '"' || part[endIdx] == '»' || part[endIdx] == ')')) {
                         endIdx++
                     }
-                    val s = part.substring(chunkStart, endIdx).trim()
-                    if (s.isNotEmpty()) result.add(s)
+                    emitSentence(part.substring(chunkStart, endIdx))
                     i = endIdx - 1
                     chunkStart = endIdx
                     alnumCount = 0
@@ -1317,8 +1505,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastSpace > chunkStart + 120 -> lastSpace
                         else -> i + 1
                     }
-                    val s = part.substring(chunkStart, splitAt).trim()
-                    if (s.isNotEmpty()) result.add(s)
+                    emitSentence(part.substring(chunkStart, splitAt))
                     chunkStart = splitAt
                     alnumCount = 0
                     lastClauseEnd = -1
@@ -1327,18 +1514,162 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 i++
             }
             if (chunkStart < len && alnumCount > 0) {
-                val tail = part.substring(chunkStart, len).trim()
-                if (tail.isNotEmpty()) result.add(tail)
+                emitSentence(part.substring(chunkStart, len))
+            }
+            if (result.isNotEmpty()) {
+                pendingParagraphBreak = true
             }
         }
         return result
     }
 
-    private fun applyPlayerSentences(sentences: List<String>) {
+    private fun applyPlayerSentences(
+        sentences: List<PlayerSentenceItem>,
+        bookKey: String? = null,
+        savedState: SettingsRepository.PlayerBookState? = null
+    ) {
         stopPlayerPlayback(clearCache = true)
         playerSentences = sentences
         playerSentenceStatuses.clear()
-        playerSelectedIndex = 0
+        playerBookKey = bookKey
+        playerBookmarks.clear()
+        if (savedState != null && sentences.isNotEmpty()) {
+            val validBookmarks = savedState.bookmarks
+                .filter { it in sentences.indices }
+                .distinct()
+                .sorted()
+            playerBookmarks.addAll(validBookmarks)
+            playerSelectedIndex = savedState.lastPlayedIndex.coerceIn(0, sentences.lastIndex)
+        } else {
+            playerSelectedIndex = 0
+        }
+    }
+
+    private fun persistCurrentPlayerBookState() {
+        val key = playerBookKey ?: return
+        val lastIdx = playerSelectedIndex
+        val bookmarksSnapshot = playerBookmarks.toList()
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.savePlayerBookState(key, lastIdx, bookmarksSnapshot)
+        }
+    }
+
+    private fun syncPlayerNotification(forceShow: Boolean = false) {
+        if (playerSentences.isEmpty()) {
+            PlayerNotificationService.dismiss(getApplication())
+            return
+        }
+        if (!playerIsPlaying && !forceShow && !PlayerNotificationService.isNotificationVisible) {
+            return
+        }
+        val bookTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
+        val total = playerSentences.size
+        val current = (playerSelectedIndex + 1).coerceIn(1, total)
+        val pct = ((current.toFloat() / total.toFloat()) * 100f).roundToInt().coerceIn(0, 100)
+        val counter = "$current/$total ($pct%)"
+        val title = if (bookTitle.isNotBlank()) "$bookTitle • $counter" else counter
+        val sentenceText = playerSentences.getOrNull(playerSelectedIndex)?.text.orEmpty()
+        PlayerNotificationService.showOrUpdate(
+            context = getApplication(),
+            title = title,
+            sentenceText = sentenceText,
+            isPlaying = playerIsPlaying,
+            progress = current,
+            max = total,
+            prevLabel = tr("KEY_EDITOR_PREV"),
+            playPauseLabel = tr(if (playerIsPlaying) "KEY_PAUSE" else "KEY_RESUME"),
+            nextLabel = tr("KEY_EDITOR_NEXT")
+        )
+    }
+
+    fun onTogglePlayerBookmark(index: Int = playerSelectedIndex) {
+        if (playerBookKey == null || index !in playerSentences.indices) return
+        if (playerBookmarks.contains(index)) {
+            playerBookmarks.remove(index)
+        } else {
+            playerBookmarks.add(index)
+            playerBookmarks.sort()
+        }
+        persistCurrentPlayerBookState()
+    }
+
+    fun onRemovePlayerBookmark(index: Int) {
+        if (playerBookKey == null) return
+        if (playerBookmarks.remove(index)) {
+            persistCurrentPlayerBookState()
+        }
+    }
+
+    fun getCachedPlayerChunkCount(): Int {
+        var count = 0
+        for (i in playerSentences.indices) {
+            val f = playerCachedFiles[i]
+            if (f != null && f.exists() && f.length() > 0L) {
+                count++
+            }
+        }
+        return count
+    }
+
+    fun defaultSharedPlayerSaveFileName(): String {
+        val rawTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: book?.fileNames?.firstOrNull()?.fileName?.takeIf { it.isNotBlank() }
+            ?: "Text"
+        val cleanStem = File(bookStem(rawTitle)).name.trim().ifEmpty { "Text" }
+        val ext = if (settings.opusOutput) ".opus" else ".mp3"
+        return "$cleanStem$ext"
+    }
+
+    fun saveCachedPlayerChunksToUri(targetUri: Uri) {
+        val totalSentences = playerSentences.size
+        if (totalSentences == 0) return
+        val useOpus = settings.opusOutput
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val baos = java.io.ByteArrayOutputStream()
+                var includedCount = 0
+                for (i in 0 until totalSentences) {
+                    val f = playerCachedFiles[i]
+                    if (f != null && f.exists() && f.length() > 0L) {
+                        baos.write(f.readBytes())
+                        includedCount++
+                    }
+                }
+                val mergedMp3 = baos.toByteArray()
+                if (includedCount == 0 || mergedMp3.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        statInfoDoneHighlight = false
+                        statInfo = tr("KEY_NO_CACHED_CHUNKS")
+                        ttsSay(statInfo)
+                    }
+                    return@launch
+                }
+
+                val finalBytes = if (useOpus) {
+                    OpusConverter.convertMp3ToOpus(mergedMp3) ?: mergedMp3
+                } else {
+                    mergedMp3
+                }
+
+                getApplication<Application>().contentResolver.openOutputStream(targetUri)?.use { out ->
+                    out.write(finalBytes)
+                    out.flush()
+                }
+
+                withContext(Dispatchers.Main) {
+                    statInfoDoneHighlight = true
+                    statInfo = tr("KEY_SAVED")
+                    ttsSay(tr("KEY_SAVED"))
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    statInfoDoneHighlight = false
+                    statInfo = tr("KEY_FD_CANCELLED")
+                    ttsSay(tr("KEY_FD_CANCELLED"))
+                }
+            }
+        }
     }
 
     fun invalidatePlayerCache() {
@@ -1367,6 +1698,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             startPlayerFrom(target)
         } else {
             playerSelectedIndex = target
+            persistCurrentPlayerBookState()
+            syncPlayerNotification()
         }
     }
 
@@ -1377,6 +1710,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             startPlayerFrom(target)
         } else {
             playerSelectedIndex = target
+            persistCurrentPlayerBookState()
+            syncPlayerNotification()
         }
     }
 
@@ -1427,6 +1762,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val targetStart = startIndex.coerceIn(0, playerSentences.lastIndex)
         playerSelectedIndex = targetStart
         playerIsPlaying = true
+        persistCurrentPlayerBookState()
+        syncPlayerNotification(forceShow = true)
 
         val runId = playerRunIdGen.incrementAndGet()
         playerCoordinatorJob?.cancel()
@@ -1477,7 +1814,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
                             continue
                         }
-                        val sentenceText = sentencesSnapshot.getOrNull(claimIdx) ?: continue
+                        val sentenceText = sentencesSnapshot.getOrNull(claimIdx)?.text ?: continue
                         activeSynthCount.incrementAndGet()
                         workerJobs.removeAll { it.isCompleted }
                         val wJob = launch {
@@ -1554,10 +1891,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             var playIdx = targetStart
             while (isActive && playerRunIdGen.get() == runId && playIdx < total) {
+                if (playIdx > targetStart) {
+                    val nextItem = sentencesSnapshot.getOrNull(playIdx)
+                    val transitionPauseMs = when {
+                        nextItem?.startsNewChapter == true -> 1000L
+                        nextItem?.startsNewParagraph == true -> 450L
+                        else -> 0L
+                    }
+                    if (transitionPauseMs > 0L) {
+                        delay(transitionPauseMs)
+                    }
+                    if (!isActive || playerRunIdGen.get() != runId) break
+                }
                 currentPlayIdxAtomic.set(playIdx)
                 withContext(Dispatchers.Main) {
                     if (playerRunIdGen.get() == runId) {
                         playerSelectedIndex = playIdx
+                        persistCurrentPlayerBookState()
+                        syncPlayerNotification(forceShow = true)
                     }
                 }
                 var audioFile = playerCachedFiles[playIdx]
@@ -1579,6 +1930,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.Main) {
                 if (playerRunIdGen.get() == runId) {
                     playerIsPlaying = false
+                    syncPlayerNotification()
                 }
             }
         }
@@ -1668,11 +2020,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopPlayerMediaOnly()
         playerIsPlaying = false
         clearTransientPlayerStatuses()
+        syncPlayerNotification()
     }
 
     fun stopPlayerPlayback(clearCache: Boolean = false) {
         pausePlayerPlayback()
         if (clearCache) {
+            PlayerNotificationService.dismiss(getApplication())
             playerSessionIdGen.incrementAndGet()
             playerSentenceStatuses.clear()
             val filesToDelete = ArrayList(playerCachedFiles.values)
@@ -2610,8 +2964,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        PlayerNotificationService.actionListener = null
         voicePreviewStop()
         stopPlayerPlayback(clearCache = true)
+        PlayerNotificationService.dismiss(getApplication())
         ForegroundWorkService.setActive(getApplication(), false)
         screenReader.shutdown()
     }
