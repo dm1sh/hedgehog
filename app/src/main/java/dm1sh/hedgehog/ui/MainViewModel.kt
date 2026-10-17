@@ -156,12 +156,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var numTextCounter = 0
 
     var textAreaText by mutableStateOf("")
+    var editorChapterTitleText by mutableStateOf("")
+    var editorHasPrevChapter by mutableStateOf(false)
+        private set
+    var editorHasNextChapter by mutableStateOf(false)
+        private set
     var editorPartIndex by mutableIntStateOf(0)
     var editorPartFieldText by mutableStateOf("0")
     var partPreviewActive by mutableStateOf(false)
         private set
 
     private var editorSnapshot: List<String> = emptyList()
+    private var editorSnapshotGlavs: List<String> = emptyList()
     private var editorSnapshotIndex = 0
     private var editorSnapshotBook: ProcessingFile? = null
 
@@ -815,6 +821,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bookTitles.clear()
         partStatuses.clear()
         textAreaText = ""
+        editorChapterTitleText = ""
+        editorHasPrevChapter = false
+        editorHasNextChapter = false
         processedPartsCount = 0
         totalPartsCount = 0
         postprocessedChunksCount = 0
@@ -1176,6 +1185,110 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ttsSay(tr("KEY_EDITOR_CLOSE"))
     }
 
+    private fun findBookBounds(activeBook: ProcessingFile, index: Int): IntRange {
+        var start = 0
+        val lastIdx = activeBook.allSentences.lastIndex
+        for (meta in activeBook.fileNames) {
+            val endExclusive = meta.endSentenceIndex
+            if (endExclusive > 0) {
+                if (index < endExclusive) {
+                    return start until minOf(endExclusive, activeBook.allSentences.size)
+                }
+                start = endExclusive
+            }
+        }
+        return start..lastIdx
+    }
+
+    private fun findChapterBounds(activeBook: ProcessingFile, index: Int): IntRange {
+        if (index !in activeBook.allSentences.indices) return 0..0
+        val bookBounds = findBookBounds(activeBook, index)
+        val targetGlav = activeBook.allGlavs.getOrNull(index)?.trim().orEmpty()
+        var start = index
+        while (start > bookBounds.first &&
+            activeBook.allGlavs.getOrNull(start - 1)?.trim().orEmpty() == targetGlav
+        ) {
+            start--
+        }
+        var end = index
+        while (end < bookBounds.last &&
+            activeBook.allGlavs.getOrNull(end + 1)?.trim().orEmpty() == targetGlav
+        ) {
+            end++
+        }
+        return start..end
+    }
+
+    private fun extractDisplayChapterTitle(rawGlav: String): String {
+        val trimmed = rawGlav.trim()
+        if (trimmed.isEmpty()) return ""
+        return trimmed.replaceFirst(Regex("^\\d{4}\\s*"), "").trim()
+    }
+
+    private fun sanitizeChapterTitleInput(raw: String): String {
+        val sb = StringBuilder()
+        val trimmed = raw.trim()
+        for (c in trimmed) {
+            if (c.code >= 32 && c !in "/\\?%*|\"<>:") {
+                sb.append(c)
+            } else if (sb.isNotEmpty() && sb[sb.length - 1] != ' ') {
+                sb.append(' ')
+            }
+        }
+        return sb.toString().trim()
+    }
+
+    private fun commitCurrentChapterTitleToBook() {
+        val b = book ?: return
+        if (runWork || editorPartIndex !in b.allSentences.indices) return
+        while (b.allGlavs.size < b.allSentences.size) {
+            b.allGlavs.add("")
+        }
+        val bounds = findChapterBounds(b, editorPartIndex)
+        val oldRaw = b.allGlavs.getOrNull(editorPartIndex)?.trim().orEmpty()
+        val currentDisplayed = extractDisplayChapterTitle(oldRaw)
+        val cleanTitle = sanitizeChapterTitleInput(editorChapterTitleText)
+        if (cleanTitle == currentDisplayed) return
+        val prefixMatch = Regex("^(\\d{4})(?:\\s+.*)?$").find(oldRaw)
+        val newRaw = if (prefixMatch != null) {
+            val prefix = prefixMatch.groupValues[1]
+            if (cleanTitle.isNotEmpty()) "$prefix $cleanTitle" else prefix
+        } else {
+            cleanTitle
+        }
+        for (i in bounds) {
+            if (i in b.allGlavs.indices) {
+                b.allGlavs[i] = newRaw
+            }
+        }
+    }
+
+    fun onEditorChapterTitleSubmitted() {
+        if (runWork) return
+        commitCurrentChapterTitleToBook()
+        editorRefreshFields()
+    }
+
+    fun onEditorPrevChapterPressed() {
+        val b = book ?: return
+        if (b.allSentences.isEmpty()) return
+        val idx = editorPartIndex.coerceIn(0, b.allSentences.lastIndex)
+        val bounds = findChapterBounds(b, idx)
+        if (bounds.first <= 0) return
+        val prevBounds = findChapterBounds(b, bounds.first - 1)
+        editorGotoPart(prevBounds.first)
+    }
+
+    fun onEditorNextChapterPressed() {
+        val b = book ?: return
+        if (b.allSentences.isEmpty()) return
+        val idx = editorPartIndex.coerceIn(0, b.allSentences.lastIndex)
+        val bounds = findChapterBounds(b, idx)
+        val nextStart = bounds.last + 1
+        if (nextStart >= b.allSentences.size) return
+        editorGotoPart(nextStart)
+    }
+
     fun onEditorSavePressed() {
         if (runWork) return
         clearEditorSnapshot()
@@ -1203,7 +1316,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             book = newBook
             editorPartIndex = 0
+            commitCurrentChapterTitleToBook()
         } else {
+            commitCurrentChapterTitleToBook()
             currentBook.langLexx = if (settings.lexxUse) lexxRules else emptyList()
             currentBook.lexxRegister = settings.lexxRegister
             val k = currentBook.replacePart(editorPartIndex, textAreaText)
@@ -1283,6 +1398,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (b.allSentences.isEmpty()) return
         if (!runWork && editorPartIndex in b.allSentences.indices) {
             b.allSentences[editorPartIndex] = textAreaText
+            commitCurrentChapterTitleToBook()
         }
         editorPartIndex = newIndex.coerceIn(0, b.allSentences.size - 1)
         editorLoadCurrentPart()
@@ -1294,10 +1410,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (b != null) {
             if (b.allSentences.isEmpty()) {
                 textAreaText = ""
+                editorChapterTitleText = ""
             } else {
                 editorPartIndex = editorPartIndex.coerceIn(0, b.allSentences.size - 1)
                 textAreaText = b.allSentences[editorPartIndex]
+                val rawGlav = b.allGlavs.getOrNull(editorPartIndex).orEmpty()
+                editorChapterTitleText = extractDisplayChapterTitle(rawGlav)
             }
+        } else {
+            editorChapterTitleText = ""
         }
         editorRefreshFields()
     }
@@ -1312,6 +1433,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chunksStatStr = "$postprocessedChunksCount/$totalChunksCount"
         }
         editorPartFieldText = if (count == 0) "0" else (editorPartIndex + 1).toString()
+        if (b != null && count > 0) {
+            val idx = editorPartIndex.coerceIn(0, count - 1)
+            val bounds = findChapterBounds(b, idx)
+            editorHasPrevChapter = bounds.first > 0
+            editorHasNextChapter = bounds.last + 1 < count
+        } else {
+            editorHasPrevChapter = false
+            editorHasNextChapter = false
+        }
     }
 
     private fun computeTotalChunks(activeBook: ProcessingFile? = book): Int {
@@ -1361,6 +1491,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val b = book ?: return
         if (runWork) return
         editorSnapshot = b.allSentences.toList()
+        editorSnapshotGlavs = b.allGlavs.toList()
         editorSnapshotIndex = editorPartIndex
         editorSnapshotBook = b
     }
@@ -1374,12 +1505,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         currentBook.allSentences.clear()
         currentBook.allSentences.addAll(editorSnapshot)
+        currentBook.allGlavs.clear()
+        currentBook.allGlavs.addAll(editorSnapshotGlavs)
         editorPartIndex = editorSnapshotIndex.coerceIn(0, (currentBook.allSentences.size - 1).coerceAtLeast(0))
         clearEditorSnapshot()
     }
 
     private fun clearEditorSnapshot() {
         editorSnapshot = emptyList()
+        editorSnapshotGlavs = emptyList()
         editorSnapshotIndex = 0
         editorSnapshotBook = null
     }
