@@ -1658,8 +1658,14 @@ private fun ConversionActionDock(
                 }
             }
 
+            val saveCaptionKey = when {
+                vm.runWork -> "KEY_STOP"
+                vm.settings.opusOutput -> "KEY_SAVE_OPUS"
+                else -> "KEY_SAVE_MP3"
+            }
             Button(
                 onClick = { vm.onSaveOrStopButtonPressed() },
+                enabled = vm.runWork || (vm.bookLoaded && vm.totalPartsCount > 0),
                 colors = if (vm.runWork) {
                     ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
@@ -1678,7 +1684,7 @@ private fun ConversionActionDock(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = vm.tr(if (vm.runWork) "KEY_STOP" else "KEY_SAVE_MP3"),
+                    text = vm.tr(saveCaptionKey),
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis

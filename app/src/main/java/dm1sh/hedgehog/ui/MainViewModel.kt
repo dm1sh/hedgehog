@@ -1383,7 +1383,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onSaveOrStopButtonPressed() {
         if (runWork || progressBarVisible) {
             stopConversion(announce = true)
-        } else {
+        } else if (bookLoaded && totalPartsCount > 0) {
             startConversion()
         }
     }
