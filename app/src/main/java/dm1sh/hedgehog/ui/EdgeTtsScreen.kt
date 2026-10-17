@@ -99,6 +99,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -108,7 +109,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -116,6 +119,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dm1sh.hedgehog.model.AppSettings
@@ -391,126 +395,160 @@ private fun BookTabContent(
     }
     val activeDropdownExpanded = if (useOnline) vm.voicesDropdownOpen else vm.offlineVoicesDropdownOpen
 
-    Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Spacer(modifier = Modifier.height(2.dp))
+    val density = LocalDensity.current
+    var viewportHeightPx by remember { mutableIntStateOf(0) }
+    var voiceCardHeightPx by remember { mutableIntStateOf(0) }
+    var bookTitlesHeightPx by remember { mutableIntStateOf(0) }
+    var statusHeaderHeightPx by remember { mutableIntStateOf(0) }
 
-        // Group1: Quick Voice & Speed Card
-        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
+    val minGridHeightDp = 104.dp // 5 rows: 5 * 16.dp + 4 * 6.dp
+    val maxGridHeightDp = if (viewportHeightPx > 0 && voiceCardHeightPx > 0) {
+        val viewportDp = with(density) { viewportHeightPx.toDp() }
+        val voiceCardDp = with(density) { voiceCardHeightPx.toDp() }
+        val titlesDp = if (vm.bookTitles.isNotEmpty()) with(density) { bookTitlesHeightPx.toDp() } else 0.dp
+        val statusHeaderDp = if (statusHeaderHeightPx > 0) with(density) { statusHeaderHeightPx.toDp() } else 48.dp
+        val outerGapsDp = if (vm.bookTitles.isNotEmpty()) 58.dp else 46.dp
+        val cardInnerChromeDp = 44.dp // 16.dp top + 16.dp bottom padding + 12.dp spacing above grid
+        val available = viewportDp - voiceCardDp - titlesDp - statusHeaderDp - outerGapsDp - cardInnerChromeDp
+        maxOf(minGridHeightDp, available)
+    } else {
+        minGridHeightDp
+    }
+
+    Box(
+        modifier = modifier.onSizeChanged { viewportHeightPx = it.height }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Spacer(modifier = Modifier.height(2.dp))
+
+            // Group1: Quick Voice & Speed Card
+            OutlinedCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .onSizeChanged { voiceCardHeightPx = it.height }
             ) {
-                ExposedDropdownMenuBox(
-                    expanded = activeDropdownExpanded,
-                    onExpandedChange = {
-                        vm.languagesDropdownOpen = false
-                        vm.uiTtsDropdownOpen = false
-                        if (useOnline) {
-                            vm.offlineVoicesDropdownOpen = false
-                            vm.voicesDropdownOpen = !vm.voicesDropdownOpen
-                            vm.ttsSay(settings.voicesName)
-                        } else {
-                            vm.voicesDropdownOpen = false
-                            vm.offlineVoicesDropdownOpen = !vm.offlineVoicesDropdownOpen
-                            vm.ttsSay(vm.voiceSayText(activeVoiceDisplay))
-                        }
-                    }
-                ) {
-                    OutlinedTextField(
-                        value = activeVoiceDisplay,
-                        onValueChange = {},
-                        readOnly = true,
-                        singleLine = true,
-                        label = {
-                            Text(vm.tr(if (useOnline) "KEY_ONLINE_VOICE" else "KEY_OFFLINE_VOICE"))
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.RecordVoiceOver,
-                                contentDescription = null
-                            )
-                        },
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = activeDropdownExpanded)
-                        },
-                        supportingText = if (!useOnline) {
-                            { Text(vm.tr("KEY_VOICE_OFFLINE")) }
-                        } else null,
-                        colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
-                        modifier = Modifier
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth()
-                    )
-                }
-
-                M3SliderSetting(
-                    label = vm.tr("KEY_SPEED"),
-                    valueText = "${vm.formatSignedValue(settings.rate)}%",
-                    value = settings.rate.toFloat(),
-                    valueRange = -50f..100f,
-                    steps = 29,
-                    onValueChange = { vm.setRate(it.roundToInt()) }
-                )
-            }
-        }
-
-        // Dynamic Area: If a book is loading, show loading indicator; if loaded, show StatusGrid; otherwise show list of files in Load folder
-        when {
-            vm.isBookLoading -> {
-                BookLoadingCard(
-                    vm = vm,
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 220.dp)
-                )
-            }
-            vm.bookLoaded && vm.partStatuses.isNotEmpty() -> {
-                BookStatusGridCard(
-                    vm = vm,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (vm.bookTitles.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    ExposedDropdownMenuBox(
+                        expanded = activeDropdownExpanded,
+                        onExpandedChange = {
+                            vm.languagesDropdownOpen = false
+                            vm.uiTtsDropdownOpen = false
+                            if (useOnline) {
+                                vm.offlineVoicesDropdownOpen = false
+                                vm.voicesDropdownOpen = !vm.voicesDropdownOpen
+                                vm.ttsSay(settings.voicesName)
+                            } else {
+                                vm.voicesDropdownOpen = false
+                                vm.offlineVoicesDropdownOpen = !vm.offlineVoicesDropdownOpen
+                                vm.ttsSay(vm.voiceSayText(activeVoiceDisplay))
+                            }
+                        }
                     ) {
-                        val multiBooks = vm.bookTitles.size > 1
-                        vm.bookTitles.forEachIndexed { idx, title ->
-                            OutlinedTextField(
-                                value = title,
-                                onValueChange = { if (!vm.runWork) vm.updateBookTitle(idx, it) },
-                                readOnly = vm.runWork,
-                                singleLine = true,
-                                label = {
-                                    Text(
-                                        text = if (multiBooks) {
-                                            "${vm.tr("KEY_BOOK")} ${idx + 1}"
-                                        } else {
-                                            vm.tr("KEY_BOOK")
-                                        }
-                                    )
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                        OutlinedTextField(
+                            value = activeVoiceDisplay,
+                            onValueChange = {},
+                            readOnly = true,
+                            singleLine = true,
+                            label = {
+                                Text(vm.tr(if (useOnline) "KEY_ONLINE_VOICE" else "KEY_OFFLINE_VOICE"))
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.RecordVoiceOver,
+                                    contentDescription = null
+                                )
+                            },
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = activeDropdownExpanded)
+                            },
+                            supportingText = if (!useOnline) {
+                                { Text(vm.tr("KEY_VOICE_OFFLINE")) }
+                            } else null,
+                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+                            modifier = Modifier
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                .fillMaxWidth()
+                        )
+                    }
+
+                    M3SliderSetting(
+                        label = vm.tr("KEY_SPEED"),
+                        valueText = "${vm.formatSignedValue(settings.rate)}%",
+                        value = settings.rate.toFloat(),
+                        valueRange = -50f..100f,
+                        steps = 29,
+                        onValueChange = { vm.setRate(it.roundToInt()) }
+                    )
+                }
+            }
+
+            // Dynamic Area: If a book is loading, show loading indicator; if loaded, show StatusGrid; otherwise show list of files in Load folder
+            when {
+                vm.isBookLoading -> {
+                    BookLoadingCard(
+                        vm = vm,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 220.dp)
+                    )
+                }
+                vm.bookLoaded && vm.partStatuses.isNotEmpty() -> {
+                    BookStatusGridCard(
+                        vm = vm,
+                        maxGridHeightDp = maxGridHeightDp,
+                        onHeaderHeightChanged = { statusHeaderHeightPx = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (vm.bookTitles.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onSizeChanged { bookTitlesHeightPx = it.height },
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val multiBooks = vm.bookTitles.size > 1
+                            vm.bookTitles.forEachIndexed { idx, title ->
+                                OutlinedTextField(
+                                    value = title,
+                                    onValueChange = { if (!vm.runWork) vm.updateBookTitle(idx, it) },
+                                    readOnly = vm.runWork,
+                                    singleLine = true,
+                                    label = {
+                                        Text(
+                                            text = if (multiBooks) {
+                                                "${vm.tr("KEY_BOOK")} ${idx + 1}"
+                                            } else {
+                                                vm.tr("KEY_BOOK")
+                                            }
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                         }
                     }
                 }
+                else -> {
+                    LoadFolderFilesCard(
+                        vm = vm,
+                        onRequestNativePicker = onRequestNativePicker,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
-            else -> {
-                LoadFolderFilesCard(
-                    vm = vm,
-                    onRequestNativePicker = onRequestNativePicker,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
 
-        Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+        }
     }
 }
 
@@ -546,6 +584,8 @@ private fun BookLoadingCard(
 @Composable
 private fun BookStatusGridCard(
     vm: MainViewModel,
+    maxGridHeightDp: Dp,
+    onHeaderHeightChanged: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val statusText = when {
@@ -570,89 +610,95 @@ private fun BookStatusGridCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { onHeaderHeightChanged(it.height) },
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (vm.statInfoDoneHighlight) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (vm.statInfoDoneHighlight) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
-                        Surface(
-                            shape = MaterialTheme.shapes.small,
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (vm.statInfoDoneHighlight) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (vm.statInfoDoneHighlight) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                             ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Timer,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = vm.elapsedTimeText,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Timer,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = vm.elapsedTimeText,
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    ) {
-                        Text(
-                            text = vm.statStr,
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        ) {
+                            Text(
+                                text = vm.statStr,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                 }
-            }
 
-            if (vm.progressBarVisible) {
-                val progress = if (vm.progressBarMax > 0) {
-                    (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
-                } else 0f
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(8.dp),
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                )
-            }
+                if (vm.progressBarVisible) {
+                    val progress = if (vm.progressBarMax > 0) {
+                        (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
+                    } else 0f
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp),
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    )
+                }
 
-            HorizontalDivider()
+                HorizontalDivider()
+            }
 
             StatusGridView(
                 statuses = vm.partStatuses,
                 tr = vm::tr,
                 onSpeakTooltip = { vm.ttsSay(it) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 104.dp, max = 280.dp)
+                maxHeightDp = maxGridHeightDp,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }

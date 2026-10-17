@@ -37,7 +37,8 @@ fun StatusGridView(
     statuses: List<PartStatus>,
     tr: (String) -> String,
     onSpeakTooltip: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    maxHeightDp: androidx.compose.ui.unit.Dp = 280.dp
 ) {
     val count = statuses.size
     if (count == 0) return
@@ -67,7 +68,8 @@ fun StatusGridView(
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
     val minRows = 5
     val minViewportHeightDp = boxSizeDp * minRows + boxGapDp * (minRows - 1)
-    val viewportHeightDp = contentHeightDp.coerceIn(minViewportHeightDp, 280.dp)
+    val effectiveMaxHeightDp = maxOf(minViewportHeightDp, maxHeightDp)
+    val viewportHeightDp = contentHeightDp.coerceIn(minViewportHeightDp, effectiveMaxHeightDp)
 
     val scrollState = rememberScrollState()
 
