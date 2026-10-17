@@ -1604,8 +1604,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     statInfoDoneHighlight = false
-                    statInfo = tr("KEY_ERROR")
-                    ttsSay(tr("KEY_ERROR"))
+                    statInfo = tr("KEY_FD_CANCELLED")
+                    ttsSay(tr("KEY_FD_CANCELLED"))
                 }
             }
         }

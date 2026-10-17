@@ -1943,7 +1943,7 @@ private fun PlayerTabContent(
             },
             confirmButton = {
                 TextButton(onClick = { showBookmarksDialog = false }) {
-                    Text(text = vm.tr("KEY_CLOSE"))
+                    Text(text = vm.tr("KEY_CANCEL"))
                 }
             }
         )
@@ -1997,7 +1997,7 @@ private fun PlayerTabContent(
             },
             dismissButton = {
                 TextButton(onClick = { showJumpDialog = false }) {
-                    Text(text = vm.tr("KEY_CLOSE"))
+                    Text(text = vm.tr("KEY_CANCEL"))
                 }
             }
         )
