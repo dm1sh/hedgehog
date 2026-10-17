@@ -141,5 +141,7 @@ KEY_OFFLINE_VOICE,Offline voice,Offline-Stimme,Voz sin conexión,Offline-ääni,
 KEY_SAVE_OPUS,Save to Opus,Speichern als Opus,Guardar en Opus,Tallenna Opukseksi,Enregistrer en Opus,Salva in Opus,Opusに保存,Opus로 저장,Zapisz do Opus,Salvar em Opus,Сохранить в Opus,儲存為 Opus
 KEY_PLAYER,Player,Player,Reproductor,Soitin,Lecteur,Lettore,プレーヤー,플레이어,Odtwarzacz,Reprodutor,Плеер,播放器
 KEY_USE_ONLINE_VOICES_PLAYER,Use online voices for built-in player,Online-Stimmen für integrierten Player verwenden,Usar voces en línea en el reproductor integrado,Käytä online-ääniä sisäänrakennetussa soittimessa,Utiliser les voix en ligne pour le lecteur intégré,Usa voci online per il lettore integrato,内蔵プレーヤーでオンライン音声を使用,내장 플레이어에 온라인 음성 사용,Używaj głosów online w wbudowanym odtwarzaczu,Usar vozes online no reprodutor integrado,Использовать онлайн-голоса во встроенном плеере,內建播放器使用線上語音
+KEY_BOOKMARKS,Bookmarks,Lesezeichen,Marcadores,Kirjanmerkit,Marque-pages,Segnalibri,ブックマーク,북마크,Zakładki, Favoritos,Закладки,書籤
+
 
 

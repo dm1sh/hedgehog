@@ -35,6 +35,9 @@ class SettingsRepository(private val context: Context) {
     private val settingsFile: File
         get() = File(context.filesDir, "settings.json")
 
+    private val playerStatesFile: File
+        get() = File(context.filesDir, "player_book_states.json")
+
     private val voicesJsonFile: File
         get() = File(File(programDir, "Data"), "Voices.json")
 
@@ -525,6 +528,61 @@ class SettingsRepository(private val context: Context) {
             if (destFile.exists() && destFile.length() > 0L) destFile.absolutePath else ""
         } catch (_: Throwable) {
             ""
+        }
+    }
+
+    data class PlayerBookState(
+        val lastPlayedIndex: Int = 0,
+        val bookmarks: List<Int> = emptyList()
+    )
+
+    @Synchronized
+    fun loadPlayerBookState(bookKey: String): PlayerBookState? {
+        if (bookKey.isBlank() || !playerStatesFile.exists()) return null
+        return try {
+            val root = JSONObject(playerStatesFile.readText(Charsets.UTF_8))
+            val booksObj = root.optJSONObject("books") ?: return null
+            val entry = booksObj.optJSONObject(bookKey) ?: return null
+            val lastIdx = entry.optInt("last_played_index", 0).coerceAtLeast(0)
+            val bmArr = entry.optJSONArray("bookmarks") ?: JSONArray()
+            val bookmarks = mutableListOf<Int>()
+            for (i in 0 until bmArr.length()) {
+                val v = bmArr.optInt(i, -1)
+                if (v >= 0) bookmarks.add(v)
+            }
+            PlayerBookState(
+                lastPlayedIndex = lastIdx,
+                bookmarks = bookmarks.distinct().sorted()
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @Synchronized
+    fun savePlayerBookState(bookKey: String, lastPlayedIndex: Int, bookmarks: Collection<Int>) {
+        if (bookKey.isBlank()) return
+        try {
+            val root = if (playerStatesFile.exists()) {
+                try {
+                    JSONObject(playerStatesFile.readText(Charsets.UTF_8))
+                } catch (_: Exception) {
+                    JSONObject()
+                }
+            } else {
+                JSONObject()
+            }
+            val booksObj = root.optJSONObject("books") ?: JSONObject()
+            val bmArray = JSONArray()
+            bookmarks.filter { it >= 0 }.distinct().sorted().forEach { bmArray.put(it) }
+            val entry = JSONObject().apply {
+                put("last_played_index", lastPlayedIndex.coerceAtLeast(0))
+                put("bookmarks", bmArray)
+            }
+            booksObj.put(bookKey, entry)
+            root.put("books", booksObj)
+            playerStatesFile.writeText(root.toString(2), Charsets.UTF_8)
+        } catch (_: Exception) {
         }
     }
 }

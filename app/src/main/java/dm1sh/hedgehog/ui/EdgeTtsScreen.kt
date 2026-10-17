@@ -1,8 +1,10 @@
 package dm1sh.hedgehog.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -34,6 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -48,6 +51,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AudioFile
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteSweep
@@ -1762,6 +1767,7 @@ private fun ConversionActionDock(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlayerTabContent(
     vm: MainViewModel,
@@ -1771,10 +1777,95 @@ private fun PlayerTabContent(
     val statuses = vm.playerSentenceStatuses
     val selectedIdx = vm.playerSelectedIndex
     val isPlaying = vm.playerIsPlaying
-    val listState = rememberLazyListState()
+    val bookmarks = vm.playerBookmarks
+    val hasBookKey = vm.playerBookKey != null
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = selectedIdx.coerceAtLeast(0)
+    )
     val cardFontSize = (vm.settings.fontSize + 1).sp
     var showJumpDialog by remember { mutableStateOf(false) }
     var jumpInputText by remember { mutableStateOf("") }
+    var showBookmarksDialog by remember { mutableStateOf(false) }
+
+    if (showBookmarksDialog) {
+        AlertDialog(
+            onDismissRequest = { showBookmarksDialog = false },
+            title = {
+                Text(text = vm.tr("KEY_BOOKMARKS"))
+            },
+            text = {
+                if (bookmarks.isEmpty()) {
+                    Text(
+                        text = "0",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        itemsIndexed(
+                            items = bookmarks.toList(),
+                            key = { _, bmIdx -> bmIdx }
+                        ) { _, bmIdx ->
+                            val bmText = sentences.getOrNull(bmIdx)?.text.orEmpty()
+                            OutlinedCard(
+                                onClick = {
+                                    showBookmarksDialog = false
+                                    vm.onPlayerCardClicked(bmIdx)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = "#${bmIdx + 1}",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = bmText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { vm.onRemovePlayerBookmark(bmIdx) }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBookmarksDialog = false }) {
+                    Text(text = vm.tr("KEY_CLOSE"))
+                }
+            }
+        )
+    }
 
     if (showJumpDialog && sentences.isNotEmpty()) {
         val commitJump = {
@@ -1830,10 +1921,12 @@ private fun PlayerTabContent(
         )
     }
 
-    LaunchedEffect(selectedIdx, sentences.size) {
+    LaunchedEffect(selectedIdx, sentences.size, vm.playerBookKey) {
         if (selectedIdx in sentences.indices) {
             val visibleItems = listState.layoutInfo.visibleItemsInfo
-            if (visibleItems.isNotEmpty() && visibleItems.none { it.index == selectedIdx }) {
+            if (visibleItems.isEmpty()) {
+                listState.scrollToItem(selectedIdx)
+            } else if (visibleItems.none { it.index == selectedIdx }) {
                 val firstVisible = listState.firstVisibleItemIndex
                 if (kotlin.math.abs(selectedIdx - firstVisible) > 15) {
                     listState.scrollToItem(selectedIdx)
@@ -1981,6 +2074,10 @@ private fun PlayerTabContent(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
                                         Text(
                                             text = "#${idx + 1}",
                                             style = MaterialTheme.typography.labelSmall,
@@ -1991,6 +2088,15 @@ private fun PlayerTabContent(
                                                 MaterialTheme.colorScheme.onSurfaceVariant
                                             }
                                         )
+                                        if (idx in bookmarks) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Bookmark,
+                                                contentDescription = vm.tr("KEY_BOOKMARKS"),
+                                                modifier = Modifier.size(15.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
                                         if (status != PartStatus.OPENED) {
                                             Surface(
                                                 shape = MaterialTheme.shapes.extraSmall,
@@ -2198,7 +2304,63 @@ private fun PlayerTabContent(
                     }
                 }
 
-                Spacer(modifier = Modifier.width(80.dp))
+                Box(
+                    modifier = Modifier.width(88.dp),
+                    contentAlignment = Alignment.CenterEnd
+                ) {
+                    if (hasBookKey) {
+                        val isCurrentBookmarked = selectedIdx in bookmarks
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            if (bookmarks.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { showBookmarksDialog = true },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Bookmarks,
+                                        contentDescription = vm.tr("KEY_BOOKMARKS"),
+                                        modifier = Modifier.size(20.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = if (isCurrentBookmarked) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHighest
+                                },
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .combinedClickable(
+                                        enabled = sentences.isNotEmpty(),
+                                        onClick = { vm.onTogglePlayerBookmark(selectedIdx) },
+                                        onLongClick = { showBookmarksDialog = true }
+                                    )
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = if (isCurrentBookmarked) {
+                                            Icons.Filled.Bookmark
+                                        } else {
+                                            Icons.Outlined.BookmarkBorder
+                                        },
+                                        contentDescription = vm.tr("KEY_BOOKMARKS"),
+                                        tint = if (isCurrentBookmarked) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

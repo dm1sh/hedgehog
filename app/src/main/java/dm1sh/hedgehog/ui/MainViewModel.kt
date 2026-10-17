@@ -172,6 +172,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var playerIsPlaying by mutableStateOf(false)
         private set
+    var playerBookKey by mutableStateOf<String?>(null)
+        private set
+    val playerBookmarks = mutableStateListOf<Int>()
     private val playerRunIdGen = AtomicInteger(0)
     private val playerSessionIdGen = AtomicInteger(0)
     private var playerCoordinatorJob: Job? = null
@@ -757,6 +760,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
+        playerBookKey = null
+        playerBookmarks.clear()
         isBookLoading = false
         bookLoaded = false
         loadedBooksCount = 0
@@ -806,6 +811,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
+        playerBookKey = null
+        playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
         totalPartsCount = 0
@@ -912,6 +919,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
+        playerBookKey = null
+        playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
         totalPartsCount = 0
@@ -1018,6 +1027,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 parts = currentBook?.allSentences.orEmpty(),
                 glavs = currentBook?.allGlavs.orEmpty()
             )
+            val computedBookKey = filesList
+                .map { p ->
+                    val f = File(p)
+                    "${f.name}:${f.length()}"
+                }
+                .joinToString("|")
+                .takeIf { it.isNotEmpty() }
+            val savedPlayerState = computedBookKey?.let { repo.loadPlayerBookState(it) }
 
             withContext(Dispatchers.Main) {
                 isBookLoading = false
@@ -1034,7 +1051,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
-                applyPlayerSentences(extractedPlayerSentences)
+                applyPlayerSentences(
+                    sentences = extractedPlayerSentences,
+                    bookKey = computedBookKey,
+                    savedState = savedPlayerState
+                )
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -1135,10 +1156,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
         }
         applyPlayerSentences(
-            splitIntoPlayerSentences(
+            sentences = splitIntoPlayerSentences(
                 parts = book?.allSentences.orEmpty(),
                 glavs = book?.allGlavs.orEmpty()
-            )
+            ),
+            bookKey = playerBookKey,
+            savedState = playerBookKey?.let {
+                SettingsRepository.PlayerBookState(
+                    lastPlayedIndex = playerSelectedIndex,
+                    bookmarks = playerBookmarks.toList()
+                )
+            }
         )
         editorLoadCurrentPart()
         takeEditorSnapshot()
@@ -1414,11 +1442,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    private fun applyPlayerSentences(sentences: List<PlayerSentenceItem>) {
+    private fun applyPlayerSentences(
+        sentences: List<PlayerSentenceItem>,
+        bookKey: String? = null,
+        savedState: SettingsRepository.PlayerBookState? = null
+    ) {
         stopPlayerPlayback(clearCache = true)
         playerSentences = sentences
         playerSentenceStatuses.clear()
-        playerSelectedIndex = 0
+        playerBookKey = bookKey
+        playerBookmarks.clear()
+        if (savedState != null && sentences.isNotEmpty()) {
+            val validBookmarks = savedState.bookmarks
+                .filter { it in sentences.indices }
+                .distinct()
+                .sorted()
+            playerBookmarks.addAll(validBookmarks)
+            playerSelectedIndex = savedState.lastPlayedIndex.coerceIn(0, sentences.lastIndex)
+        } else {
+            playerSelectedIndex = 0
+        }
+    }
+
+    private fun persistCurrentPlayerBookState() {
+        val key = playerBookKey ?: return
+        val lastIdx = playerSelectedIndex
+        val bookmarksSnapshot = playerBookmarks.toList()
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.savePlayerBookState(key, lastIdx, bookmarksSnapshot)
+        }
+    }
+
+    fun onTogglePlayerBookmark(index: Int = playerSelectedIndex) {
+        if (playerBookKey == null || index !in playerSentences.indices) return
+        if (playerBookmarks.contains(index)) {
+            playerBookmarks.remove(index)
+        } else {
+            playerBookmarks.add(index)
+            playerBookmarks.sort()
+        }
+        persistCurrentPlayerBookState()
+    }
+
+    fun onRemovePlayerBookmark(index: Int) {
+        if (playerBookKey == null) return
+        if (playerBookmarks.remove(index)) {
+            persistCurrentPlayerBookState()
+        }
     }
 
     fun invalidatePlayerCache() {
@@ -1447,6 +1517,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             startPlayerFrom(target)
         } else {
             playerSelectedIndex = target
+            persistCurrentPlayerBookState()
         }
     }
 
@@ -1457,6 +1528,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             startPlayerFrom(target)
         } else {
             playerSelectedIndex = target
+            persistCurrentPlayerBookState()
         }
     }
 
@@ -1507,6 +1579,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val targetStart = startIndex.coerceIn(0, playerSentences.lastIndex)
         playerSelectedIndex = targetStart
         playerIsPlaying = true
+        persistCurrentPlayerBookState()
 
         val runId = playerRunIdGen.incrementAndGet()
         playerCoordinatorJob?.cancel()
@@ -1650,6 +1723,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.Main) {
                     if (playerRunIdGen.get() == runId) {
                         playerSelectedIndex = playIdx
+                        persistCurrentPlayerBookState()
                     }
                 }
                 var audioFile = playerCachedFiles[playIdx]
