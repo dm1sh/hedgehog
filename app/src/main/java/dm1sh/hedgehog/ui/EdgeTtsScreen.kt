@@ -173,7 +173,7 @@ fun EdgeTtsScreen(
                     title = {
                         Column {
                             Text(
-                                text = "Hedgehog",
+                                text = context.getString(dm1sh.hedgehog.R.string.app_name),
                                 style = MaterialTheme.typography.titleLarge,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
