@@ -231,7 +231,7 @@ class SettingsRepository(private val context: Context) {
             } else {
                 onlineVoices = DefaultVoices.ONLINE_VOICES
             }
-            val offArr = obj.optJSONArray("value_offline")
+            val offArr = obj.optJSONArray("value_offline") ?: obj.optJSONArray("values_offline")
             val offList = mutableListOf<String>()
             if (offArr != null) {
                 for (i in 0 until offArr.length()) {

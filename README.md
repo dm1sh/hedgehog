@@ -31,7 +31,26 @@
 ### 1. Choose a Voice (`Book` or `Settings` tab)
 1. Select your preferred **Online voice** (or switch off *Use online voices* in **Settings → Voice settings** to use an **Offline voice**).
 2. Adjust **Speed** and **Pitch** if needed.
-3. To use offline voices without internet, open **Settings → Voice settings** and tap **Get offline voices** once to download the voice models.
+3. To download offline voices from within the app, open **Settings → Voice settings** and tap **Get offline voices**.
+
+#### Installing Offline Voices Manually (Completely Offline Setup)
+If your device has no internet access at all, you can install offline voices manually:
+1. Download the `.zip` archives for the voices you want from the [**`offline-voices` release**](https://github.com/dm1sh/hedgehog/releases/tag/offline-voices).
+2. Extract each archive on your device into:
+   ```text
+   Documents/EdgeTTS/Voices/<voice name>
+   ```
+   *(for example, `Documents/EdgeTTS/Voices/Dmitry`, `Documents/EdgeTTS/Voices/Svetlana`, etc.)*
+3. Open `Documents/EdgeTTS/Data/Voices.json` and add the folder names of the extracted voices to the `values_offline` (or `value_offline`) array, for example:
+   ```json
+   {
+       "value": [...],
+       "values_offline": [
+           "Dmitry",
+           "Svetlana"
+       ]
+   }
+   ```
 
 ### 2. Open a Book (`Book` tab)
 - Tap a book directly from the **Load folder** list on the **Book** tab, or tap **Open books** at the bottom to pick one or more files from your device.
