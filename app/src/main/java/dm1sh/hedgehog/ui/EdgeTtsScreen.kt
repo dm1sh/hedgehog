@@ -1827,7 +1827,7 @@ private fun PlayerTabContent(
                 itemsIndexed(
                     items = sentences,
                     key = { idx, _ -> idx }
-                ) { idx, sentence ->
+                ) { idx, sentenceItem ->
                     val isSelected = idx == selectedIdx
                     val status = statuses[idx] ?: PartStatus.OPENED
                     val cardContainerColor = when {
@@ -1846,63 +1846,102 @@ private fun PlayerTabContent(
                         BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     }
 
-                    OutlinedCard(
-                        onClick = { vm.onPlayerCardClicked(idx) },
-                        shape = MaterialTheme.shapes.medium,
-                        colors = CardDefaults.outlinedCardColors(
-                            containerColor = cardContainerColor,
-                            contentColor = cardContentColor
-                        ),
-                        border = borderStroke,
-                        modifier = Modifier.fillMaxWidth()
+                    val topParagraphPadding = if (idx > 0 && sentenceItem.startsNewParagraph) 8.dp else 0.dp
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = topParagraphPadding),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        if (sentenceItem.startsNewChapter && !sentenceItem.chapterTitle.isNullOrBlank()) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
-                                    text = "#${idx + 1}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isSelected) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                                if (status != PartStatus.OPENED) {
-                                    Surface(
-                                        shape = MaterialTheme.shapes.extraSmall,
-                                        color = status.color.copy(alpha = 0.2f)
-                                    ) {
-                                        Text(
-                                            text = vm.tr(status.trKey),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isSelected) {
-                                                MaterialTheme.colorScheme.onPrimaryContainer
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.MenuBook,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                    Text(
+                                        text = sentenceItem.chapterTitle,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
                                 }
                             }
-                            Text(
-                                text = sentence,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontSize = cardFontSize,
-                                    lineHeight = (vm.settings.fontSize + 8).sp
-                                ),
-                                fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
-                            )
+                        }
+
+                        OutlinedCard(
+                            onClick = { vm.onPlayerCardClicked(idx) },
+                            shape = MaterialTheme.shapes.medium,
+                            colors = CardDefaults.outlinedCardColors(
+                                containerColor = cardContainerColor,
+                                contentColor = cardContentColor
+                            ),
+                            border = borderStroke,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "#${idx + 1}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                    if (status != PartStatus.OPENED) {
+                                        Surface(
+                                            shape = MaterialTheme.shapes.extraSmall,
+                                            color = status.color.copy(alpha = 0.2f)
+                                        ) {
+                                            Text(
+                                                text = vm.tr(status.trKey),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = sentenceItem.text,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = cardFontSize,
+                                        lineHeight = (vm.settings.fontSize + 8).sp
+                                    ),
+                                    fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                                )
+                            }
                         }
                     }
                 }

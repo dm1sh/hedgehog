@@ -53,6 +53,13 @@ enum class MainTab {
     BOOK, PARTS, PLAYER, SETTINGS
 }
 
+data class PlayerSentenceItem(
+    val text: String,
+    val startsNewParagraph: Boolean = false,
+    val startsNewChapter: Boolean = false,
+    val chapterTitle: String? = null
+)
+
 enum class SettingsTab {
     VOICE, BOOK, TOOL, INTERFACE
 }
@@ -158,7 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var editorSnapshotBook: ProcessingFile? = null
 
     // Built-in Player state
-    var playerSentences by mutableStateOf<List<String>>(emptyList())
+    var playerSentences by mutableStateOf<List<PlayerSentenceItem>>(emptyList())
         private set
     val playerSentenceStatuses = mutableStateMapOf<Int, PartStatus>()
     var playerSelectedIndex by mutableIntStateOf(0)
@@ -836,7 +843,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 rate = "",
                 pitch = ""
             )
-            val extractedPlayerSentences = splitIntoPlayerSentences(createdBook.allSentences)
+            val extractedPlayerSentences = splitIntoPlayerSentences(
+                parts = createdBook.allSentences,
+                glavs = createdBook.allGlavs
+            )
 
             withContext(Dispatchers.Main) {
                 isBookLoading = false
@@ -1004,7 +1014,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            val extractedPlayerSentences = splitIntoPlayerSentences(currentBook?.allSentences.orEmpty())
+            val extractedPlayerSentences = splitIntoPlayerSentences(
+                parts = currentBook?.allSentences.orEmpty(),
+                glavs = currentBook?.allGlavs.orEmpty()
+            )
 
             withContext(Dispatchers.Main) {
                 isBookLoading = false
@@ -1121,7 +1134,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (finalCount > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
         }
-        applyPlayerSentences(splitIntoPlayerSentences(book?.allSentences.orEmpty()))
+        applyPlayerSentences(
+            splitIntoPlayerSentences(
+                parts = book?.allSentences.orEmpty(),
+                glavs = book?.allGlavs.orEmpty()
+            )
+        )
         editorLoadCurrentPart()
         takeEditorSnapshot()
         ttsSay(tr("KEY_SAVED"))
@@ -1265,17 +1283,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Built-in Player (per-sentence chunking, parallel synthesis, sequential playback, caching)
-    private fun splitIntoPlayerSentences(parts: List<String>): List<String> {
+    private fun splitIntoPlayerSentences(
+        parts: List<String>,
+        glavs: List<String> = emptyList()
+    ): List<PlayerSentenceItem> {
         if (parts.isEmpty()) return emptyList()
-        val result = ArrayList<String>(parts.size * 16)
-        for (part in parts) {
+        val chapterRegex = try {
+            Regex(
+                settings.regexGlavaCompile.ifEmpty { AppSettings.DEFAULT_REGEX_GLAVA },
+                RegexOption.IGNORE_CASE
+            )
+        } catch (_: Exception) {
+            Regex(AppSettings.DEFAULT_REGEX_GLAVA, RegexOption.IGNORE_CASE)
+        }
+        val leadingNumPrefixRegex = Regex("^\\d{4}\\s*")
+        val result = ArrayList<PlayerSentenceItem>(parts.size * 16)
+        var lastPartGlav = ""
+        var pendingParagraphBreak = false
+        var pendingChapterTitle: String? = null
+
+        fun emitSentence(raw: String) {
+            val s = raw.trim()
+            if (s.isEmpty()) return
+            val isFirstInBook = result.isEmpty()
+            val isNewChapter = pendingChapterTitle != null
+            val isNewParagraph = !isFirstInBook && (pendingParagraphBreak || isNewChapter)
+            result.add(
+                PlayerSentenceItem(
+                    text = s,
+                    startsNewParagraph = isNewParagraph,
+                    startsNewChapter = isNewChapter,
+                    chapterTitle = pendingChapterTitle
+                )
+            )
+            pendingParagraphBreak = false
+            pendingChapterTitle = null
+        }
+
+        for (partIdx in parts.indices) {
+            val part = parts[partIdx]
+            val rawGlav = glavs.getOrNull(partIdx)?.trim().orEmpty()
+            if (rawGlav.isNotEmpty() && rawGlav != lastPartGlav) {
+                lastPartGlav = rawGlav
+                val stripped = rawGlav.replaceFirst(leadingNumPrefixRegex, "").trim()
+                if (stripped.isNotEmpty()) {
+                    pendingChapterTitle = stripped
+                } else if (rawGlav != "0000") {
+                    pendingChapterTitle = rawGlav
+                }
+            }
+
             val len = part.length
             var chunkStart = 0
             var alnumCount = 0
             var lastClauseEnd = -1
             var lastSpace = -1
+            var lineCheckedForChapter = false
             var i = 0
             while (i < len) {
+                if (!lineCheckedForChapter) {
+                    lineCheckedForChapter = true
+                    var lineEnd = part.indexOf('\n', i)
+                    if (lineEnd == -1) lineEnd = len
+                    if (lineEnd - i in 1..90) {
+                        val trimmedLine = part.substring(i, lineEnd).trim()
+                        if (trimmedLine.length in 1..60 && chapterRegex.containsMatchIn(trimmedLine)) {
+                            pendingChapterTitle = trimmedLine
+                        }
+                    }
+                }
+
                 val c = part[i]
                 if (Character.isLetterOrDigit(c)) {
                     alnumCount++
@@ -1292,20 +1369,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val spanLen = i + 1 - chunkStart
                 if (isNewline) {
                     if (alnumCount > 0) {
-                        val s = part.substring(chunkStart, i).trim()
-                        if (s.isNotEmpty()) result.add(s)
+                        emitSentence(part.substring(chunkStart, i))
+                        pendingParagraphBreak = true
+                    } else if (result.isNotEmpty()) {
+                        pendingParagraphBreak = true
                     }
                     chunkStart = i + 1
                     alnumCount = 0
                     lastClauseEnd = -1
                     lastSpace = -1
+                    lineCheckedForChapter = false
                 } else if (isSentenceEndPunct && alnumCount >= 4) {
                     var endIdx = i + 1
                     while (endIdx < len && (part[endIdx] == '"' || part[endIdx] == '»' || part[endIdx] == ')')) {
                         endIdx++
                     }
-                    val s = part.substring(chunkStart, endIdx).trim()
-                    if (s.isNotEmpty()) result.add(s)
+                    emitSentence(part.substring(chunkStart, endIdx))
                     i = endIdx - 1
                     chunkStart = endIdx
                     alnumCount = 0
@@ -1317,8 +1396,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastSpace > chunkStart + 120 -> lastSpace
                         else -> i + 1
                     }
-                    val s = part.substring(chunkStart, splitAt).trim()
-                    if (s.isNotEmpty()) result.add(s)
+                    emitSentence(part.substring(chunkStart, splitAt))
                     chunkStart = splitAt
                     alnumCount = 0
                     lastClauseEnd = -1
@@ -1327,14 +1405,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 i++
             }
             if (chunkStart < len && alnumCount > 0) {
-                val tail = part.substring(chunkStart, len).trim()
-                if (tail.isNotEmpty()) result.add(tail)
+                emitSentence(part.substring(chunkStart, len))
+            }
+            if (result.isNotEmpty()) {
+                pendingParagraphBreak = true
             }
         }
         return result
     }
 
-    private fun applyPlayerSentences(sentences: List<String>) {
+    private fun applyPlayerSentences(sentences: List<PlayerSentenceItem>) {
         stopPlayerPlayback(clearCache = true)
         playerSentences = sentences
         playerSentenceStatuses.clear()
@@ -1477,7 +1557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
                             continue
                         }
-                        val sentenceText = sentencesSnapshot.getOrNull(claimIdx) ?: continue
+                        val sentenceText = sentencesSnapshot.getOrNull(claimIdx)?.text ?: continue
                         activeSynthCount.incrementAndGet()
                         workerJobs.removeAll { it.isCompleted }
                         val wJob = launch {
@@ -1554,6 +1634,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             var playIdx = targetStart
             while (isActive && playerRunIdGen.get() == runId && playIdx < total) {
+                if (playIdx > targetStart) {
+                    val nextItem = sentencesSnapshot.getOrNull(playIdx)
+                    val transitionPauseMs = when {
+                        nextItem?.startsNewChapter == true -> 1000L
+                        nextItem?.startsNewParagraph == true -> 450L
+                        else -> 0L
+                    }
+                    if (transitionPauseMs > 0L) {
+                        delay(transitionPauseMs)
+                    }
+                    if (!isActive || playerRunIdGen.get() != runId) break
+                }
                 currentPlayIdxAtomic.set(playIdx)
                 withContext(Dispatchers.Main) {
                     if (playerRunIdGen.get() == runId) {
