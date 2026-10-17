@@ -22,6 +22,7 @@ import dm1sh.hedgehog.localization.LocalizationManager
 import dm1sh.hedgehog.model.AppSettings
 import dm1sh.hedgehog.model.PartStatus
 import dm1sh.hedgehog.service.ForegroundWorkService
+import dm1sh.hedgehog.service.PlayerNotificationService
 import dm1sh.hedgehog.tts.OfflineInstaller
 import dm1sh.hedgehog.tts.OfflineTtsEngine
 import dm1sh.hedgehog.tts.OpusConverter
@@ -203,6 +204,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         OfflineTtsEngine.setMaxJobs(settings.maxThreads)
+        PlayerNotificationService.actionListener = object : PlayerNotificationService.ActionListener {
+            override fun onPrevious() {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onPlayerPrevPressed()
+                }
+            }
+
+            override fun onPlayPause() {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onPlayerPlayPausePressed()
+                }
+            }
+
+            override fun onNext() {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onPlayerNextPressed()
+                }
+            }
+        }
         setupInitialLists()
         loadLexx()
         refreshLoadDirFiles()
@@ -1478,6 +1498,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun syncPlayerNotification(forceShow: Boolean = false) {
+        if (playerSentences.isEmpty()) {
+            PlayerNotificationService.dismiss(getApplication())
+            return
+        }
+        if (!playerIsPlaying && !forceShow && !PlayerNotificationService.isNotificationVisible) {
+            return
+        }
+        val bookTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
+        val counter = "${playerSelectedIndex + 1}/${playerSentences.size}"
+        val title = if (bookTitle.isNotBlank()) "$bookTitle • $counter" else counter
+        val sentenceText = playerSentences.getOrNull(playerSelectedIndex)?.text.orEmpty()
+        PlayerNotificationService.showOrUpdate(
+            context = getApplication(),
+            title = title,
+            sentenceText = sentenceText,
+            isPlaying = playerIsPlaying,
+            prevLabel = tr("KEY_EDITOR_PREV"),
+            playPauseLabel = tr(if (playerIsPlaying) "KEY_PAUSE" else "KEY_RESUME"),
+            nextLabel = tr("KEY_EDITOR_NEXT")
+        )
+    }
+
     fun onTogglePlayerBookmark(index: Int = playerSelectedIndex) {
         if (playerBookKey == null || index !in playerSentences.indices) return
         if (playerBookmarks.contains(index)) {
@@ -1594,6 +1638,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             playerSelectedIndex = target
             persistCurrentPlayerBookState()
+            syncPlayerNotification()
         }
     }
 
@@ -1605,6 +1650,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             playerSelectedIndex = target
             persistCurrentPlayerBookState()
+            syncPlayerNotification()
         }
     }
 
@@ -1656,6 +1702,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSelectedIndex = targetStart
         playerIsPlaying = true
         persistCurrentPlayerBookState()
+        syncPlayerNotification(forceShow = true)
 
         val runId = playerRunIdGen.incrementAndGet()
         playerCoordinatorJob?.cancel()
@@ -1800,6 +1847,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (playerRunIdGen.get() == runId) {
                         playerSelectedIndex = playIdx
                         persistCurrentPlayerBookState()
+                        syncPlayerNotification(forceShow = true)
                     }
                 }
                 var audioFile = playerCachedFiles[playIdx]
@@ -1821,6 +1869,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.Main) {
                 if (playerRunIdGen.get() == runId) {
                     playerIsPlaying = false
+                    syncPlayerNotification()
                 }
             }
         }
@@ -1910,11 +1959,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopPlayerMediaOnly()
         playerIsPlaying = false
         clearTransientPlayerStatuses()
+        syncPlayerNotification()
     }
 
     fun stopPlayerPlayback(clearCache: Boolean = false) {
         pausePlayerPlayback()
         if (clearCache) {
+            PlayerNotificationService.dismiss(getApplication())
             playerSessionIdGen.incrementAndGet()
             playerSentenceStatuses.clear()
             val filesToDelete = ArrayList(playerCachedFiles.values)
@@ -2852,8 +2903,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        PlayerNotificationService.actionListener = null
         voicePreviewStop()
         stopPlayerPlayback(clearCache = true)
+        PlayerNotificationService.dismiss(getApplication())
         ForegroundWorkService.setActive(getApplication(), false)
         screenReader.shutdown()
     }
