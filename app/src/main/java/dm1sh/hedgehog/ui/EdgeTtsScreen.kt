@@ -1,8 +1,10 @@
 package dm1sh.hedgehog.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -11,11 +13,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -104,9 +109,11 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -125,11 +132,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dm1sh.hedgehog.model.AppSettings
 import dm1sh.hedgehog.model.PartStatus
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -1816,132 +1825,244 @@ private fun PlayerTabContent(
                 }
             }
         } else {
-            LazyColumn(
-                state = listState,
+            val coroutineScope = rememberCoroutineScope()
+            val density = LocalDensity.current
+            var trackHeightPx by remember { mutableIntStateOf(0) }
+            var isDraggingScrollbar by remember { mutableStateOf(false) }
+            var dragFraction by remember { mutableFloatStateOf(0f) }
+
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(vertical = 4.dp)
+                    .weight(1f)
             ) {
-                itemsIndexed(
-                    items = sentences,
-                    key = { idx, _ -> idx }
-                ) { idx, sentenceItem ->
-                    val isSelected = idx == selectedIdx
-                    val status = statuses[idx] ?: PartStatus.OPENED
-                    val cardContainerColor = when {
-                        isSelected -> MaterialTheme.colorScheme.primaryContainer
-                        status == PartStatus.SAVED -> MaterialTheme.colorScheme.surfaceContainerHigh
-                        else -> MaterialTheme.colorScheme.surfaceContainerLow
-                    }
-                    val cardContentColor = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    }
-                    val borderStroke = if (isSelected) {
-                        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-                    } else {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(end = if (sentences.size > 1) 20.dp else 0.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp)
+                ) {
+                    itemsIndexed(
+                        items = sentences,
+                        key = { idx, _ -> idx }
+                    ) { idx, sentenceItem ->
+                        val isSelected = idx == selectedIdx
+                        val status = statuses[idx] ?: PartStatus.OPENED
+                        val cardContainerColor = when {
+                            isSelected -> MaterialTheme.colorScheme.primaryContainer
+                            status == PartStatus.SAVED -> MaterialTheme.colorScheme.surfaceContainerHigh
+                            else -> MaterialTheme.colorScheme.surfaceContainerLow
+                        }
+                        val cardContentColor = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                        val borderStroke = if (isSelected) {
+                            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                        } else {
+                            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        }
 
-                    val topParagraphPadding = if (idx > 0 && sentenceItem.startsNewParagraph) 8.dp else 0.dp
+                        val topParagraphPadding = if (idx > 0 && sentenceItem.startsNewParagraph) 8.dp else 0.dp
 
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = topParagraphPadding),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (sentenceItem.startsNewChapter && !sentenceItem.chapterTitle.isNullOrBlank()) {
-                            Surface(
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = topParagraphPadding),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (sentenceItem.startsNewChapter && !sentenceItem.chapterTitle.isNullOrBlank()) {
+                                Surface(
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.MenuBook,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                        Text(
+                                            text = sentenceItem.chapterTitle,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                }
+                            }
+
+                            OutlinedCard(
+                                onClick = { vm.onPlayerCardClicked(idx) },
+                                shape = MaterialTheme.shapes.medium,
+                                colors = CardDefaults.outlinedCardColors(
+                                    containerColor = cardContainerColor,
+                                    contentColor = cardContentColor
+                                ),
+                                border = borderStroke,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.MenuBook,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "#${idx + 1}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                        )
+                                        if (status != PartStatus.OPENED) {
+                                            Surface(
+                                                shape = MaterialTheme.shapes.extraSmall,
+                                                color = status.color.copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    text = vm.tr(status.trKey),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    },
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
-                                        text = sentenceItem.chapterTitle,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        text = sentenceItem.text,
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            fontSize = cardFontSize,
+                                            lineHeight = (vm.settings.fontSize + 8).sp
+                                        ),
+                                        fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
                                     )
                                 }
                             }
                         }
+                    }
+                }
 
-                        OutlinedCard(
-                            onClick = { vm.onPlayerCardClicked(idx) },
-                            shape = MaterialTheme.shapes.medium,
-                            colors = CardDefaults.outlinedCardColors(
-                                containerColor = cardContainerColor,
-                                contentColor = cardContentColor
-                            ),
-                            border = borderStroke,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "#${idx + 1}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        }
-                                    )
-                                    if (status != PartStatus.OPENED) {
-                                        Surface(
-                                            shape = MaterialTheme.shapes.extraSmall,
-                                            color = status.color.copy(alpha = 0.2f)
-                                        ) {
-                                            Text(
-                                                text = vm.tr(status.trKey),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (isSelected) {
-                                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                                } else {
-                                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                                },
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
+                if (sentences.size > 1) {
+                    val thumbHeightDp = 40.dp
+                    val thumbHeightPx = with(density) { thumbHeightDp.roundToPx() }
+                    val maxIndex = (sentences.size - 1).coerceAtLeast(1)
+                    val listFraction = (listState.firstVisibleItemIndex.toFloat() / maxIndex.toFloat()).coerceIn(0f, 1f)
+                    val activeFraction = if (isDraggingScrollbar) dragFraction else listFraction
+                    val availableScrollPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(0)
+                    val thumbOffsetY = (activeFraction * availableScrollPx).roundToInt()
+
+                    fun scrubToY(yPx: Float) {
+                        if (trackHeightPx <= 0) return
+                        val f = ((yPx - thumbHeightPx / 2f) / availableScrollPx.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+                        dragFraction = f
+                        val targetIdx = (f * maxIndex).roundToInt().coerceIn(0, maxIndex)
+                        coroutineScope.launch {
+                            listState.scrollToItem(targetIdx)
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .width(20.dp)
+                            .padding(vertical = 4.dp)
+                            .onSizeChanged { trackHeightPx = it.height }
+                            .pointerInput(sentences.size) {
+                                detectTapGestures { offset ->
+                                    scrubToY(offset.y)
                                 }
-                                Text(
-                                    text = sentenceItem.text,
-                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                        fontSize = cardFontSize,
-                                        lineHeight = (vm.settings.fontSize + 8).sp
-                                    ),
-                                    fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                            }
+                            .pointerInput(sentences.size) {
+                                detectVerticalDragGestures(
+                                    onDragStart = { offset ->
+                                        isDraggingScrollbar = true
+                                        scrubToY(offset.y)
+                                    },
+                                    onDragEnd = {
+                                        isDraggingScrollbar = false
+                                    },
+                                    onDragCancel = {
+                                        isDraggingScrollbar = false
+                                    },
+                                    onVerticalDrag = { change, _ ->
+                                        change.consume()
+                                        scrubToY(change.position.y)
+                                    }
                                 )
                             }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .fillMaxHeight()
+                                .width(4.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    shape = CircleShape
+                                )
+                        )
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset(0, thumbOffsetY) }
+                                .align(Alignment.TopCenter)
+                                .width(if (isDraggingScrollbar) 10.dp else 8.dp)
+                                .height(thumbHeightDp)
+                                .background(
+                                    color = if (isDraggingScrollbar) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
+                                    },
+                                    shape = CircleShape
+                                )
+                        )
+                    }
+
+                    if (isDraggingScrollbar) {
+                        val previewIdx = (dragFraction * maxIndex).roundToInt().coerceIn(0, maxIndex)
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.inverseSurface,
+                            contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                            tonalElevation = 6.dp,
+                            shadowElevation = 4.dp,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(end = 28.dp)
+                                .offset { IntOffset(0, thumbOffsetY) }
+                        ) {
+                            Text(
+                                text = "#${previewIdx + 1} / ${sentences.size}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
                         }
                     }
                 }
