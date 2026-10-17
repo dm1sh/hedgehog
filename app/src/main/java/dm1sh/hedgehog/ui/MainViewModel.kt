@@ -673,22 +673,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ttsSay(tr("KEY_NO"))
     }
 
-    fun loadLexx() {
-        val path = settings.lexxPath
-        if (path.isNotBlank()) {
-            val file = File(path)
-            lexxRules = if (file.exists() && file.canRead()) {
-                try {
-                    TextsConverter.readTextWithFallback(file.readBytes()).split("\n")
-                } catch (_: Exception) {
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
-        } else {
-            lexxRules = emptyList()
+    private fun readLexxRulesFromPath(path: String): List<String> {
+        if (path.isBlank()) return emptyList()
+        val file = File(path)
+        if (!file.exists() || !file.canRead()) return emptyList()
+        return try {
+            TextsConverter.readTextWithFallback(file.readBytes()).lines()
+        } catch (_: Exception) {
+            emptyList()
         }
+    }
+
+    private fun resolveActiveLexxRules(): List<String> {
+        if (!settings.lexxUse) return emptyList()
+        if (lexxRules.isEmpty() && settings.lexxPath.isNotBlank()) {
+            lexxRules = readLexxRulesFromPath(settings.lexxPath)
+        }
+        return lexxRules
+    }
+
+    fun loadLexx() {
+        lexxRules = readLexxRulesFromPath(settings.lexxPath)
         reprocessBookForCurrentSettings()
     }
 
@@ -907,13 +912,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
+            val activeLexx = resolveActiveLexxRules()
             val isFb2Shared = text.contains("<FictionBook", ignoreCase = true)
-            val normalizedInput = if (isFb2Shared) {
-                TextsConverter.convertFb2ToTxt(text, inlineNotes = settings.inlineNotes)
-            } else {
-                text
-            }
+            val normalizedInput = TextsConverter.preprocessSharedText(
+                rawText = text,
+                inlineNotes = settings.inlineNotes
+            )
             val sharedMeta = if (isFb2Shared) {
                 TextsConverter.extractFb2Metadata(text, saveName)
             } else {
@@ -1028,7 +1032,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             var currentBook: ProcessingFile? = null
-            val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
+            val activeLexx = resolveActiveLexxRules()
 
             fun appendTextEntry(
                 saveName: String,
@@ -1068,7 +1072,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     when (ext) {
                         "txt", "ini" -> {
-                            val text = TextsConverter.readTextWithFallback(file.readBytes())
+                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
+                            val text = TextsConverter.preprocessSharedText(raw, inlineNotes = settings.inlineNotes)
+                            appendTextEntry(baseName, text, "", "", "", BookAudioMetadata(title = baseName))
+                        }
+                        "html", "htm" -> {
+                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
+                            val text = TextsConverter.htmlToText(raw)
                             appendTextEntry(baseName, text, "", "", "", BookAudioMetadata(title = baseName))
                         }
                         "fb2", "xml" -> {
@@ -1085,7 +1095,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     meta
                                 )
                             } else {
-                                appendTextEntry(baseName, raw, "", "", "", BookAudioMetadata(title = baseName))
+                                appendTextEntry(
+                                    baseName,
+                                    TextsConverter.preprocessSharedText(raw, inlineNotes = settings.inlineNotes),
+                                    "",
+                                    "",
+                                    "",
+                                    BookAudioMetadata(title = baseName)
+                                )
                             }
                         }
                         "epub" -> {
@@ -1324,7 +1341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val newBook = ProcessingFile(
                 fileName = defaultTitle,
                 text = seed,
-                langLexx = if (settings.lexxUse) lexxRules else emptyList(),
+                langLexx = resolveActiveLexxRules(),
                 lexxRegister = settings.lexxRegister,
                 bookChapter = settings.bookChapter,
                 glavTextUse = settings.glavTextUse,
@@ -1342,7 +1359,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             commitCurrentChapterTitleToBook()
         } else {
             commitCurrentChapterTitleToBook()
-            currentBook.langLexx = if (settings.lexxUse) lexxRules else emptyList()
+            currentBook.langLexx = resolveActiveLexxRules()
             currentBook.lexxRegister = settings.lexxRegister
             val k = currentBook.replacePart(editorPartIndex, textAreaText)
             if (k <= 0 && currentBook.allSentences.isEmpty()) {
@@ -2522,7 +2539,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val created = ProcessingFile(
                 fileName = defaultTitle,
                 text = seedText,
-                langLexx = if (settings.lexxUse) lexxRules else emptyList(),
+                langLexx = resolveActiveLexxRules(),
                 lexxRegister = settings.lexxRegister,
                 bookChapter = settings.bookChapter,
                 glavTextUse = settings.glavTextUse,

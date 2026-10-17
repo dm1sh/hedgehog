@@ -216,22 +216,37 @@ class MainActivity : ComponentActivity() {
         val action = intent?.action ?: return
         when (action) {
             Intent.ACTION_SEND -> {
-                val streamUri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-                    ?: intent.clipData?.let { clip ->
-                        if (clip.itemCount > 0) clip.getItemAt(0)?.uri else null
-                    }
-                if (streamUri != null) {
-                    viewModel.onSharedUris(listOf(streamUri))
+                val explicitStreamUri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                if (explicitStreamUri != null) {
+                    viewModel.onSharedUris(listOf(explicitStreamUri))
                     return
                 }
                 val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                    ?: intent.getStringExtra(Intent.EXTRA_HTML_TEXT)
                     ?: intent.clipData?.let { clip ->
-                        if (clip.itemCount > 0) clip.getItemAt(0)?.text?.toString() else null
+                        if (clip.itemCount > 0) {
+                            clip.getItemAt(0)?.text?.toString() ?: clip.getItemAt(0)?.htmlText
+                        } else {
+                            null
+                        }
                     }
                 if (!sharedText.isNullOrBlank()) {
                     val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
                         ?: intent.getStringExtra(Intent.EXTRA_TITLE)
                     viewModel.onSharedPlainText(sharedText, subject)
+                    return
+                }
+                val clipUri = intent.clipData?.let { clip ->
+                    if (clip.itemCount > 0) clip.getItemAt(0)?.uri else null
+                }
+                if (clipUri != null) {
+                    viewModel.onSharedUris(listOf(clipUri))
+                }
+            }
+            Intent.ACTION_PROCESS_TEXT -> {
+                val selectedText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
+                if (!selectedText.isNullOrBlank()) {
+                    viewModel.onSharedPlainText(selectedText)
                 }
             }
             Intent.ACTION_SEND_MULTIPLE -> {

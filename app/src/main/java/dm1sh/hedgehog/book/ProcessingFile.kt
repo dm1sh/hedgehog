@@ -75,11 +75,18 @@ class ProcessingFile(
                 '[', '<' -> sb.append('(')
                 ']', '>' -> sb.append(')')
                 '&' -> sb.append(" and ")
-                '•', '\uFEFF' -> {}
-                '\n' -> {
+                '•', '\u00AD', '\u200B', '\u200C', '\u200D', '\u2060', '\uFEFF' -> {}
+                '\t', '\u00A0', '\u1680',
+                '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+                '\u2006', '\u2007', '\u2008', '\u2009', '\u200A',
+                '\u202F', '\u205F', '\u3000' -> sb.append(' ')
+                '\r', '\n' -> {
+                    if (c == '\r' && i + 1 < len && text[i + 1] == '\n') {
+                        i++
+                    }
                     sb.append('\n')
                     var skippedSpaces = 0
-                    while (skippedSpaces < 3 && i + 1 < len && text[i + 1] == ' ') {
+                    while (skippedSpaces < 3 && i + 1 < len && isSpaceLike(text[i + 1])) {
                         i++
                         skippedSpaces++
                     }
@@ -91,19 +98,24 @@ class ProcessingFile(
         return sb.toString()
     }
 
+    private fun isSpaceLike(c: Char): Boolean {
+        return c == ' ' || c == '\t' || c == '\u00A0' || c == '\u202F' || c == '\u2007' ||
+            (c in '\u2000'..'\u200A')
+    }
+
     fun getFixPoints(text: String): List<String> {
         var fixText = normalizeBaseCharacters(text)
 
         if (langLexx.isNotEmpty()) {
             for (rawRule in langLexx) {
                 val rule = rawRule.trimStart('\uFEFF').trimEnd('\r')
-                if (rule.isEmpty()) continue
+                if (rule.isEmpty() || rule.trimStart().startsWith("#")) continue
                 if (rule.startsWith("regex\"") && rule.contains("\"=")) {
-                    val matchArr = rule.replaceFirst("regex\"", "\"").split("=", limit = 2)
-                    if (matchArr.size == 2) {
+                    val matchArr = rule.removePrefix("regex\"").split("\"=", limit = 2)
+                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
                         try {
-                            val r = Regex(matchArr[0].replace("\"", ""))
-                            val repl = matchArr[1].replace("\"", "")
+                            val r = Regex(matchArr[0])
+                            val repl = matchArr[1].removePrefix("\"").removeSuffix("\"")
                                 .replace("\\r", "\r")
                                 .replace("\\n", "\n")
                             fixText = r.replace(fixText, repl)
@@ -111,15 +123,20 @@ class ProcessingFile(
                         }
                     }
                 } else if (rule.startsWith("\"")) {
-                    val matchArr = rule.replace("\"", "").split("=", limit = 2)
+                    val matchArr = if (rule.contains("\"=")) {
+                        rule.removePrefix("\"").split("\"=", limit = 2)
+                    } else {
+                        rule.replace("\"", "").split("=", limit = 2)
+                    }
                     if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
                         val key = matchArr[0]
+                        val repl = matchArr[1].removePrefix("\"").removeSuffix("\"")
                         if (lexxRegister) {
-                            fixText = fixText.replace(key, matchArr[1])
+                            fixText = fixText.replace(key, repl)
                         } else if (fixText.contains(key, ignoreCase = true)) {
                             try {
                                 val escaped = getEscaped(key)
-                                fixText = Regex("(?i)$escaped").replace(fixText, matchArr[1])
+                                fixText = Regex("(?i)$escaped").replace(fixText, Regex.escapeReplacement(repl))
                             } catch (_: Exception) {
                             }
                         }
@@ -128,16 +145,19 @@ class ProcessingFile(
                     val matchArr = rule.split("=", limit = 2)
                     if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
                         val key = matchArr[0]
+                        val repl = matchArr[1]
                         if (lexxRegister) {
-                            fixText = fixText.replace(key, matchArr[1])
+                            fixText = fixText.replace(key, repl)
                         } else if (fixText.contains(key, ignoreCase = true)) {
                             try {
                                 val escaped = getEscaped(key)
                                 fixText = if (escaped.length == 2 && escaped[0] == '\\' && isPunctChar(escaped[1])) {
-                                    Regex("(?i)$escaped").replace(fixText, matchArr[1])
+                                    Regex("(?i)$escaped").replace(fixText, Regex.escapeReplacement(repl))
                                 } else {
-                                    Regex("(?i)(^|\\s|[\\p{P}\\p{S}])$escaped(?=[\\p{P}\\p{S}]|\\s|$)")
-                                        .replace(fixText, "$1${matchArr[1]}")
+                                    val leftPrefix = if (key.first().isWhitespace()) "()" else "(^|\\s|[\\p{P}\\p{S}])"
+                                    val rightLookahead = if (key.last().isWhitespace()) "" else "(?=[\\p{P}\\p{S}]|\\s|$)"
+                                    Regex("(?i)$leftPrefix$escaped$rightLookahead")
+                                        .replace(fixText) { m -> m.groupValues[1] + repl }
                                 }
                             } catch (_: Exception) {
                             }

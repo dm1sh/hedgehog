@@ -19,6 +19,7 @@ import android.speech.tts.Voice
 import android.util.Log
 import dm1sh.hedgehog.MainActivity
 import dm1sh.hedgehog.book.ProcessingFile
+import dm1sh.hedgehog.book.TextsConverter
 import dm1sh.hedgehog.data.SettingsRepository
 import dm1sh.hedgehog.model.AppSettings
 import dm1sh.hedgehog.model.DefaultVoices
@@ -359,9 +360,13 @@ class HedgehogTtsService : TextToSpeechService() {
             emptyList()
         }
         return try {
+            val cleanedText = TextsConverter.preprocessSharedText(
+                rawText = rawText,
+                inlineNotes = settings.inlineNotes
+            )
             val processor = ProcessingFile(
                 fileName = "tts",
-                text = rawText,
+                text = cleanedText,
                 langLexx = lexxRules,
                 lexxRegister = settings.lexxRegister,
                 bookChapter = false,
@@ -371,7 +376,7 @@ class HedgehogTtsService : TextToSpeechService() {
                 rate = "",
                 pitch = ""
             )
-            processor.allSentences.joinToString(" ").ifBlank { rawText }
+            processor.allSentences.joinToString(" ").ifBlank { cleanedText.ifBlank { rawText } }
         } catch (_: Throwable) {
             rawText
         }
@@ -386,7 +391,7 @@ class HedgehogTtsService : TextToSpeechService() {
             if (path == cachedLexxPath && mtime == cachedLexxMtime) {
                 return cachedLexxRules
             }
-            val rules = file.readLines(Charsets.UTF_8)
+            val rules = TextsConverter.readTextWithFallback(file.readBytes()).lines()
             cachedLexxPath = path
             cachedLexxMtime = mtime
             cachedLexxRules = rules
