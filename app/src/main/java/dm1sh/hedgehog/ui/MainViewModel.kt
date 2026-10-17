@@ -1504,30 +1504,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             return@launch
                         }
 
-                        val finalAudioData: ByteArray
-                        val finalExt: String
-                        if (runOpusOutput) {
-                            val opusData = OpusConverter.convertMp3ToOpus(mp3Data)
-                            if (opusData != null && opusData.isNotEmpty()) {
-                                finalAudioData = opusData
-                                finalExt = "opus"
-                            } else {
-                                finalAudioData = mp3Data
-                                finalExt = "mp3"
-                            }
-                        } else {
-                            finalAudioData = mp3Data
-                            finalExt = "mp3"
-                        }
-
                         savePartMp3File(
-                            data = finalAudioData,
+                            data = mp3Data,
                             saveDirBase = runSaveDir,
                             inBookDir = runBookDirCreate,
                             fileName = spec.fileName,
                             glava = spec.glava,
                             fileNum = spec.fileNum,
-                            ext = finalExt
+                            ext = "mp3"
                         )
                         updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
 
@@ -1687,10 +1671,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         opusOutput: Boolean,
         rid: Int
     ) {
-        val ext = if (opusOutput) "opus" else "mp3"
         val addGlavMp3 = settings.bookChapter && settings.glavMp3Use
         var soundGlavaBytes = ByteArray(0)
-        var glavaTempOpusFile: File? = null
         if (addGlavMp3) {
             soundGlavaBytes = try {
                 if (settings.glavMp3Path.isBlank()) {
@@ -1703,131 +1685,116 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Exception) {
                 ByteArray(0)
             }
-            if (opusOutput && soundGlavaBytes.isNotEmpty()) {
-                val glavaOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
-                if (glavaOpus != null && glavaOpus.isNotEmpty()) {
-                    try {
-                        val tmp = File.createTempFile("glava_intro_", ".opus", getApplication<Application>().cacheDir)
-                        tmp.writeBytes(glavaOpus)
-                        glavaTempOpusFile = tmp
-                    } catch (_: Exception) {
-                    }
-                }
-            }
         }
 
-        try {
-            val totalLoadedBooks = loadedBooksCount.coerceAtLeast(1)
-            for ((saveDirBase, byBook) in ml) {
-                val multipleBooks = byBook.size > 1 || totalLoadedBooks > 1
-                for ((bookFolderName, byGlava) in byBook) {
-                    val bookDir = File(saveDirBase, bookFolderName)
-                    val producedFiles = mutableListOf<File>()
+        val totalLoadedBooks = loadedBooksCount.coerceAtLeast(1)
+        for ((saveDirBase, byBook) in ml) {
+            val multipleBooks = byBook.size > 1 || totalLoadedBooks > 1
+            for ((bookFolderName, byGlava) in byBook) {
+                val bookDir = File(saveDirBase, bookFolderName)
+                val producedFiles = mutableListOf<File>()
 
-                    for ((rawGlava, nums) in byGlava) {
+                for ((rawGlava, nums) in byGlava) {
+                    if (runIdGen.get() != rid) return
+                    val glava = rawGlava.trim()
+                    nums.sort()
+                    if (nums.isEmpty()) continue
+
+                    val chunkSize = when {
+                        perFile <= 1 -> 1
+                        perFile >= 100 -> nums.size
+                        else -> perFile
+                    }
+                    val chunks = nums.chunked(chunkSize.coerceAtLeast(1))
+                    val totalChunksForGlava = chunks.size
+
+                    for ((chunkIdx, chunkNums) in chunks.withIndex()) {
                         if (runIdGen.get() != rid) return
-                        val glava = rawGlava.trim()
-                        nums.sort()
-                        if (nums.isEmpty()) continue
-
-                        val chunkSize = when {
-                            perFile <= 1 -> 1
-                            perFile >= 100 -> nums.size
-                            else -> perFile
+                        val partNumberStr = "%04d".format(chunkIdx + 1)
+                        val targetBaseName = if (glava.isEmpty()) {
+                            "c$partNumberStr"
+                        } else if (totalChunksForGlava == 1) {
+                            glava
+                        } else {
+                            "${glava}_c$partNumberStr"
                         }
-                        val chunks = nums.chunked(chunkSize.coerceAtLeast(1))
-                        val totalChunksForGlava = chunks.size
+                        val includeGlavaIntro = addGlavMp3 && chunkIdx == 0
 
-                        for ((chunkIdx, chunkNums) in chunks.withIndex()) {
-                            if (runIdGen.get() != rid) return
-                            val partNumberStr = "%04d".format(chunkIdx + 1)
-                            val targetName = if (glava.isEmpty()) {
-                                "c$partNumberStr.$ext"
-                            } else if (totalChunksForGlava == 1) {
-                                "$glava.$ext"
-                            } else {
-                                "${glava}_c$partNumberStr.$ext"
+                        if (chunkNums.size == 1 && !includeGlavaIntro && !opusOutput) {
+                            val rawFile = File(bookDir, rawPartFileName(glava, chunkNums[0], "mp3"))
+                            val outFile = File(bookDir, "$targetBaseName.mp3")
+                            if (rawFile.exists()) {
+                                moveFileOverwrite(rawFile, outFile)
+                                producedFiles.add(outFile)
                             }
-                            val outFile = File(bookDir, targetName)
-                            val includeGlavaIntro = addGlavMp3 && chunkIdx == 0
-
-                            if (chunkNums.size == 1 && !includeGlavaIntro) {
-                                val rawFile = File(bookDir, rawPartFileName(glava, chunkNums[0], ext))
+                        } else {
+                            val mergeBuffer = ByteArrayOutputStream()
+                            if (includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+                                mergeBuffer.write(soundGlavaBytes)
+                            }
+                            for (num in chunkNums) {
+                                val rawFile = File(bookDir, rawPartFileName(glava, num, "mp3"))
                                 if (rawFile.exists()) {
-                                    moveFileOverwrite(rawFile, outFile)
-                                    producedFiles.add(outFile)
+                                    try {
+                                        mergeBuffer.write(rawFile.readBytes())
+                                    } catch (_: Exception) {
+                                    }
+                                    rawFile.delete()
                                 }
-                            } else if (!opusOutput) {
-                                val mergeBuffer = ByteArrayOutputStream()
-                                if (includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-                                    mergeBuffer.write(soundGlavaBytes)
-                                }
-                                for (num in chunkNums) {
-                                    val rawFile = File(bookDir, rawPartFileName(glava, num, ext))
-                                    if (rawFile.exists()) {
+                            }
+                            val assembledMp3 = mergeBuffer.toByteArray()
+                            if (assembledMp3.isNotEmpty()) {
+                                if (opusOutput) {
+                                    val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3)
+                                    if (opusBytes != null && opusBytes.isNotEmpty()) {
+                                        val outFile = File(bookDir, "$targetBaseName.opus")
                                         try {
-                                            mergeBuffer.write(rawFile.readBytes())
+                                            FileOutputStream(outFile).use { it.write(opusBytes) }
+                                            producedFiles.add(outFile)
                                         } catch (_: Exception) {
                                         }
-                                        rawFile.delete()
-                                    }
-                                }
-                                try {
-                                    FileOutputStream(outFile).use { it.write(mergeBuffer.toByteArray()) }
-                                    producedFiles.add(outFile)
-                                } catch (_: Exception) {
-                                }
-                            } else {
-                                val batchFiles = mutableListOf<File>()
-                                val batchInputPaths = mutableListOf<String>()
-                                if (includeGlavaIntro) {
-                                    glavaTempOpusFile?.let { batchInputPaths.add(it.absolutePath) }
-                                }
-                                for (num in chunkNums) {
-                                    val rawFile = File(bookDir, rawPartFileName(glava, num, ext))
-                                    if (rawFile.exists()) {
-                                        batchFiles.add(rawFile)
-                                        batchInputPaths.add(rawFile.absolutePath)
-                                    }
-                                }
-                                if (batchInputPaths.isNotEmpty()) {
-                                    val tmpOutFile = File(bookDir, "${outFile.name}.merging.opus")
-                                    val mergedOk = OpusConverter.mergeOpusFiles(batchInputPaths, tmpOutFile.absolutePath)
-                                    batchFiles.forEach { it.delete() }
-                                    if (mergedOk && tmpOutFile.exists()) {
-                                        moveFileOverwrite(tmpOutFile, outFile)
-                                        producedFiles.add(outFile)
                                     } else {
-                                        tmpOutFile.delete()
+                                        val outFile = File(bookDir, "$targetBaseName.mp3")
+                                        try {
+                                            FileOutputStream(outFile).use { it.write(assembledMp3) }
+                                            producedFiles.add(outFile)
+                                        } catch (_: Exception) {
+                                        }
+                                    }
+                                } else {
+                                    val outFile = File(bookDir, "$targetBaseName.mp3")
+                                    try {
+                                        FileOutputStream(outFile).use { it.write(assembledMp3) }
+                                        producedFiles.add(outFile)
+                                    } catch (_: Exception) {
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    // Clever saving rules:
-                    // 1. If only a single file is produced for the book, save it at the root of saveDirBase
-                    //    even if "Save to a separate folder" (inBookDir) is on.
-                    // 2. If multiple files are produced, keep them inside bookDir when inBookDir is on
-                    //    OR when multiple books were loaded; otherwise move them to saveDirBase.
-                    if (producedFiles.size == 1) {
-                        val singleOut = File(saveDirBase, "$bookFolderName.$ext")
-                        moveFileOverwrite(producedFiles[0], singleOut)
-                        if (bookDir.exists() && bookDir.listFiles()?.isEmpty() == true) {
-                            bookDir.delete()
-                        }
-                    } else if (producedFiles.size > 1 && !inBookDir && !multipleBooks) {
-                        for (f in producedFiles) {
-                            moveFileOverwrite(f, File(saveDirBase, f.name))
-                        }
-                        if (bookDir.exists() && bookDir.listFiles()?.isEmpty() == true) {
-                            bookDir.delete()
                         }
                     }
                 }
+
+                // Clever saving rules:
+                // 1. If only a single file is produced for the book, save it at the root of saveDirBase
+                //    even if "Save to a separate folder" (inBookDir) is on.
+                // 2. If multiple files are produced, keep them inside bookDir when inBookDir is on
+                //    OR when multiple books were loaded; otherwise move them to saveDirBase.
+                if (producedFiles.size == 1) {
+                    val outExt = producedFiles[0].extension.ifEmpty { if (opusOutput) "opus" else "mp3" }
+                    val singleOut = File(saveDirBase, "$bookFolderName.$outExt")
+                    moveFileOverwrite(producedFiles[0], singleOut)
+                    if (bookDir.exists() && bookDir.listFiles()?.isEmpty() == true) {
+                        bookDir.delete()
+                    }
+                } else if (producedFiles.size > 1 && !inBookDir && !multipleBooks) {
+                    for (f in producedFiles) {
+                        moveFileOverwrite(f, File(saveDirBase, f.name))
+                    }
+                    if (bookDir.exists() && bookDir.listFiles()?.isEmpty() == true) {
+                        bookDir.delete()
+                    }
+                }
             }
-        } finally {
-            glavaTempOpusFile?.delete()
         }
     }
 
