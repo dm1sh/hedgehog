@@ -319,18 +319,18 @@ object SecMsGecGenerator {
         }
     }
 
-    fun reportError() {
+    fun reportError(syncBlocking: Boolean = false) {
         var doSync = false
         synchronized(gecLock) {
             gecErrorCount++
-            if (gecErrorCount >= GEC_ERRORS_BEFORE_SYNC && !gecSyncInProgress) {
+            if ((syncBlocking || gecErrorCount >= GEC_ERRORS_BEFORE_SYNC) && !gecSyncInProgress) {
                 gecSyncInProgress = true
                 gecErrorCount = 0
                 doSync = true
             }
         }
         if (doSync) {
-            Thread {
+            if (syncBlocking) {
                 val skew = fetchServerSkew()
                 synchronized(gecLock) {
                     if (!skew.isNaN()) {
@@ -338,7 +338,17 @@ object SecMsGecGenerator {
                     }
                     gecSyncInProgress = false
                 }
-            }.start()
+            } else {
+                Thread {
+                    val skew = fetchServerSkew()
+                    synchronized(gecLock) {
+                        if (!skew.isNaN()) {
+                            gecClockSkewSeconds = skew
+                        }
+                        gecSyncInProgress = false
+                    }
+                }.start()
+            }
         }
     }
 

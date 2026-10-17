@@ -271,9 +271,7 @@ class HedgehogTtsService : TextToSpeechService() {
             val onlineVoiceName = settings.voicesName.ifBlank { "ru-RU, DmitryNeural" }
 
             val useOnline = settings.useOnlineVoicesSystemTts &&
-                !repo.isVoiceOffline(onlineVoiceName) &&
-                isNetworkAvailable() &&
-                (!hasOfflineVoice || SocketEdgeTtsWorker.isOnlineReachable())
+                !repo.isVoiceOffline(onlineVoiceName)
 
             if (useOnline) {
                 val timeoutMsec = if (settings.restartDelay < 0) 30_000L else (settings.restartDelay * 1000L).coerceAtMost(30_000L)
@@ -286,7 +284,7 @@ class HedgehogTtsService : TextToSpeechService() {
                         lowBitrate = settings.lowBitrate,
                         timeoutMsec = timeoutMsec,
                         isPreview = true,
-                        fallbackToOfflineOnError = hasOfflineVoice,
+                        fallbackToOfflineOnError = false,
                         isPaused = { false },
                         isCancelled = { stopRequested },
                         onStatusUpdate = {}
@@ -300,26 +298,6 @@ class HedgehogTtsService : TextToSpeechService() {
 
                 if (mp3Bytes != null && mp3Bytes.isNotEmpty()) {
                     if (streamMp3ToCallback(mp3Bytes, callback)) {
-                        return
-                    }
-                }
-
-                // Fallback to offline voice if online synthesis failed and an offline voice is installed
-                if (hasOfflineVoice && !stopRequested) {
-                    val voiceDir = File(File(repo.programDir, "Voices"), offlineVoiceName!!)
-                    val pcm = OfflineTtsEngine.synthesizePcmBlocking(
-                        voiceDir = voiceDir.absolutePath,
-                        text = processedText,
-                        rate = rateStr,
-                        pitch = pitchStr,
-                        shouldAbort = { stopRequested }
-                    )
-                    if (stopRequested) {
-                        callback.done()
-                        return
-                    }
-                    if (pcm.isNotEmpty()) {
-                        streamPcmToCallback(pcm, DEFAULT_SAMPLE_RATE, 1, callback)
                         return
                     }
                 }
@@ -437,19 +415,33 @@ class HedgehogTtsService : TextToSpeechService() {
     private fun streamMp3ToCallback(mp3Bytes: ByteArray, callback: SynthesisCallback): Boolean {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
+        var tempFile: File? = null
         return try {
-            extractor.setDataSource(object : MediaDataSource() {
-                override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
-                    if (position >= mp3Bytes.size) return -1
-                    val avail = (mp3Bytes.size - position).toInt()
-                    val toCopy = minOf(size, avail)
-                    System.arraycopy(mp3Bytes, position.toInt(), buffer, offset, toCopy)
-                    return toCopy
-                }
+            var dataSourceReady = false
+            try {
+                extractor.setDataSource(object : MediaDataSource() {
+                    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+                        if (position >= mp3Bytes.size) return -1
+                        val avail = (mp3Bytes.size - position).toInt()
+                        val toCopy = minOf(size, avail)
+                        System.arraycopy(mp3Bytes, position.toInt(), buffer, offset, toCopy)
+                        return toCopy
+                    }
 
-                override fun getSize(): Long = mp3Bytes.size.toLong()
-                override fun close() {}
-            })
+                    override fun getSize(): Long = mp3Bytes.size.toLong()
+                    override fun close() {}
+                })
+                dataSourceReady = extractor.trackCount > 0
+            } catch (_: Throwable) {
+                dataSourceReady = false
+            }
+
+            if (!dataSourceReady) {
+                val f = File.createTempFile("sys_tts_", ".mp3", cacheDir)
+                f.writeBytes(mp3Bytes)
+                tempFile = f
+                extractor.setDataSource(f.absolutePath)
+            }
 
             if (extractor.trackCount <= 0) return false
             extractor.selectTrack(0)
@@ -562,6 +554,10 @@ class HedgehogTtsService : TextToSpeechService() {
             }
             try {
                 extractor.release()
+            } catch (_: Throwable) {
+            }
+            try {
+                tempFile?.delete()
             } catch (_: Throwable) {
             }
         }

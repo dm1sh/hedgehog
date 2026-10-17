@@ -87,7 +87,7 @@ object SocketEdgeTtsWorker {
                 SecMsGecGenerator.systemTrustManager
             )
             .connectionSpecs(listOf(tls12Spec))
-            .connectTimeout(6, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .build()
     }
@@ -99,10 +99,14 @@ object SocketEdgeTtsWorker {
         pitch: String,
         volume: String = "+0%"
     ): String {
+        val escaped = text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
         return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>\n" +
             "<voice name='Microsoft Server Speech Text to Speech Voice ($voice)'>" +
             "<prosody pitch='$pitch' rate='$rate' volume='$volume'>\n" +
-            "$text</prosody></voice></speak>"
+            "$escaped</prosody></voice></speak>"
     }
 
     fun ssmlHeadersPlusData(requestId: String, timestamp: String, ssml: String): String {
@@ -136,6 +140,8 @@ object SocketEdgeTtsWorker {
             "audio-24khz-96kbitrate-mono-mp3"
         }
 
+        var failedAttempts = 0
+
         while (coroutineContext.isActive && !isCancelled()) {
             if (!isPreview && isPaused()) {
                 onStatusUpdate("KEY_PAUSE")
@@ -143,10 +149,6 @@ object SocketEdgeTtsWorker {
                     delay(100)
                 }
                 continue
-            }
-
-            if (fallbackToOfflineOnError && !isOnlineReachable()) {
-                return null
             }
 
             val effectiveTimeout = when {
@@ -185,15 +187,20 @@ object SocketEdgeTtsWorker {
                 continue
             }
 
-            SecMsGecGenerator.reportError()
+            failedAttempts++
+            SecMsGecGenerator.reportError(syncBlocking = failedAttempts == 1)
 
             if (isPreview) {
-                return null
+                if (failedAttempts >= 2) {
+                    return null
+                }
+                delay(300)
+                continue
             }
 
             // If an offline fallback voice is available and the WebSocket could not connect
             // (e.g. internet is off while VPN is on), return null so caller falls back to offline TTS.
-            if (fallbackToOfflineOnError && (!wsOpened.get() || !isOnlineReachable(forceRefresh = true))) {
+            if (fallbackToOfflineOnError && !wsOpened.get() && failedAttempts >= 2) {
                 return null
             }
 

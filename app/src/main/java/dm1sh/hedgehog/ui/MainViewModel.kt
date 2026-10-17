@@ -1897,7 +1897,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startPlayerFrom(startIndex: Int) {
         if (playerSentences.isEmpty()) return
-        val wantOnline = settings.useOnlineVoicesPlayer && isNetworkAvailable()
+        val wantOnline = settings.useOnlineVoicesPlayer
         val offlineVoice = resolveOfflineFallbackVoice()
         if (!wantOnline) {
             if (offlineVoice.isNullOrBlank() || isOfflineUnavailable(listOf(offlineVoice))) {
@@ -1978,11 +1978,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                                 if (isCancelledFn()) return@launch
                                 var mp3Bytes: ByteArray? = null
-                                val hasOfflineFallback = !offlineVoice.isNullOrBlank()
                                 val shouldUseOnline = settings.useOnlineVoicesPlayer &&
-                                    !repo.isVoiceOffline(onlineVoice) &&
-                                    isNetworkAvailable() &&
-                                    (!hasOfflineFallback || SocketEdgeTtsWorker.isOnlineReachable())
+                                    !repo.isVoiceOffline(onlineVoice)
 
                                 if (shouldUseOnline) {
                                     mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
@@ -1993,15 +1990,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         lowBitrate = lowBitrate,
                                         timeoutMsec = timeoutMsec,
                                         isPreview = false,
-                                        fallbackToOfflineOnError = hasOfflineFallback,
+                                        fallbackToOfflineOnError = false,
                                         isPaused = { false },
                                         isCancelled = isCancelledFn,
                                         onStatusUpdate = { key ->
                                             updatePlayerSentenceStatus(claimIdx, PartStatus.fromKey(key), runId)
                                         }
                                     )
-                                }
-                                if ((mp3Bytes == null || mp3Bytes.isEmpty()) && !isCancelledFn()) {
+                                } else if (!isCancelledFn()) {
                                     if (!offlineVoice.isNullOrBlank()) {
                                         val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                                         if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
@@ -2223,9 +2219,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         forceVoice: String? = null,
         forceOnline: Boolean? = null
     ): Boolean {
-        val wantOnline = (forceOnline ?: settings.useOnlineVoices) && isNetworkAvailable()
+        val wantOnline = forceOnline ?: settings.useOnlineVoices
         val chosenVoice = when {
-            forceVoice != null && (wantOnline || !forceOnline!!) -> forceVoice
+            forceVoice != null -> forceVoice
             wantOnline -> settings.voicesName
             else -> resolveOfflineFallbackVoice().orEmpty()
         }
@@ -2252,10 +2248,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         previewJob = viewModelScope.launch(Dispatchers.IO) {
             var mp3Bytes: ByteArray? = null
-            val fallbackOffline = if (repo.isVoiceOffline(chosenVoice)) chosenVoice else resolveOfflineFallbackVoice()
-            val hasOfflineFallback = !fallbackOffline.isNullOrBlank()
-            val useOnlineNow = wantOnline && !repo.isVoiceOffline(chosenVoice) &&
-                (!hasOfflineFallback || SocketEdgeTtsWorker.isOnlineReachable())
+            val useOnlineNow = wantOnline && !repo.isVoiceOffline(chosenVoice)
             if (useOnlineNow) {
                 mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
                     voice = chosenVoice,
@@ -2265,15 +2258,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     lowBitrate = lowBitrate,
                     timeoutMsec = 30_000L,
                     isPreview = true,
-                    fallbackToOfflineOnError = hasOfflineFallback,
+                    fallbackToOfflineOnError = false,
                     isPaused = { false },
                     isCancelled = { !isActive },
                     onStatusUpdate = {}
                 )
-            }
-            if (mp3Bytes == null || mp3Bytes.isEmpty()) {
-                if (!fallbackOffline.isNullOrBlank()) {
-                    val voiceDir = File(File(repo.programDir, "Voices"), fallbackOffline)
+            } else {
+                val offlineVoice = if (repo.isVoiceOffline(chosenVoice)) chosenVoice else resolveOfflineFallbackVoice()
+                if (!offlineVoice.isNullOrBlank()) {
+                    val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                     if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
                         mp3Bytes = OfflineTtsEngine.synthesizePart(
                             context = getApplication(),
@@ -2708,8 +2701,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val hasOfflineFallback = !offlineVoice.isNullOrBlank()
                         val shouldUseOnline = settings.useOnlineVoices &&
                             !repo.isVoiceOffline(spec.voice) &&
-                            isNetworkAvailable() &&
-                            (!hasOfflineFallback || SocketEdgeTtsWorker.isOnlineReachable())
+                            isNetworkAvailable()
                         var mp3Data: ByteArray? = null
                         if (shouldUseOnline) {
                             mp3Data = SocketEdgeTtsWorker.synthesizePart(
