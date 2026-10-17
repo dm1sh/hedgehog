@@ -751,6 +751,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onSharedUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        selectMainTab(MainTab.BOOK)
+        onOpenBookUris(uris)
+    }
+
+    fun onSharedPlainText(sharedText: String, sharedTitle: String? = null) {
+        val text = sharedText.trim()
+        if (text.isEmpty()) return
+        stopConversion(announce = false)
+        clearEditorSnapshot()
+        selectMainTab(MainTab.BOOK)
+        isBookLoading = true
+        bookLoaded = false
+        statInfoDoneHighlight = false
+        statInfo = tr("KEY_LOAD")
+        partStatuses.clear()
+        textAreaText = ""
+        processedPartsCount = 0
+        totalPartsCount = 0
+        postprocessedChunksCount = 0
+        totalChunksCount = 0
+        statStr = "0/0"
+        chunksStatStr = "0/0"
+        resetElapsedLabel()
+        filesList.clear()
+        bookTitles.clear()
+        book = null
+        editorPartIndex = 0
+        editorRefreshFields()
+
+        val saveName = sharedTitle
+            ?.replace(Regex("[\\\\/:*?\"<>|\\r\\n]"), " ")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: run {
+                numTextCounter++
+                "Text ${"%04d".format(numTextCounter)}"
+            }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val activeLexx = if (settings.lexxUse) lexxRules else emptyList()
+            val createdBook = ProcessingFile(
+                fileName = saveName,
+                text = text,
+                langLexx = activeLexx,
+                lexxRegister = settings.lexxRegister,
+                bookChapter = settings.bookChapter,
+                glavTextUse = settings.glavTextUse,
+                regexGlavaPattern = settings.regexGlavaCompile,
+                voice = "",
+                rate = "",
+                pitch = ""
+            )
+
+            withContext(Dispatchers.Main) {
+                isBookLoading = false
+                book = createdBook
+                val count = createdBook.allSentences.size
+                syncBookTitlesFromBook()
+                loadedBooksCount = bookTitles.size.coerceAtLeast(if (count > 0) 1 else 0)
+                bookLoaded = count > 0
+                processedPartsCount = 0
+                totalPartsCount = count
+                postprocessedChunksCount = 0
+                totalChunksCount = computeTotalChunks(createdBook)
+                partStatuses.clear()
+                if (count > 0) {
+                    partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
+                }
+                statStr = "0/$count"
+                chunksStatStr = "0/$totalChunksCount"
+                statInfo = ""
+                editorPartIndex = 0
+                if (settings.showTextAreaPressed) {
+                    editorLoadCurrentPart()
+                } else {
+                    editorRefreshFields()
+                }
+                ttsSay("${bookLoadedCaption()}. $statStr")
+            }
+        }
+    }
+
     fun onOpenBookUris(uris: List<Uri>) {
         if (uris.isEmpty()) return
         isBookLoading = true
@@ -832,16 +916,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val text = TextsConverter.readTextWithFallback(file.readBytes())
                             appendTextEntry(baseName, text, "", "", "")
                         }
-                        "fb2" -> {
+                        "fb2", "xml" -> {
                             val raw = TextsConverter.readTextWithFallback(file.readBytes())
-                            val bookName = TextsConverter.extractFb2BookName(raw, baseName)
-                            appendTextEntry(
-                                bookName,
-                                TextsConverter.convertFb2ToTxt(raw, inlineNotes = settings.inlineNotes),
-                                "",
-                                "",
-                                ""
-                            )
+                            if (ext == "fb2" || raw.contains("<FictionBook", ignoreCase = true)) {
+                                val bookName = TextsConverter.extractFb2BookName(raw, baseName)
+                                appendTextEntry(
+                                    bookName,
+                                    TextsConverter.convertFb2ToTxt(raw, inlineNotes = settings.inlineNotes),
+                                    "",
+                                    "",
+                                    ""
+                                )
+                            } else {
+                                appendTextEntry(baseName, raw, "", "", "")
+                            }
                         }
                         "epub" -> {
                             val bookName = TextsConverter.extractEpubBookName(file.absolutePath, baseName)

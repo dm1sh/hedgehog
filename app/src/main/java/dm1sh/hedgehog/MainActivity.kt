@@ -1,6 +1,7 @@
 package dm1sh.hedgehog
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -15,6 +16,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import dm1sh.hedgehog.ui.DopModal
 import dm1sh.hedgehog.ui.EdgeTtsScreen
 import dm1sh.hedgehog.ui.MainTab
@@ -94,11 +96,20 @@ class MainActivity : ComponentActivity() {
         viewModel.refreshLoadDirFiles()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         requestNeededPermissions()
+        if (savedInstanceState == null) {
+            handleIncomingIntent(intent)
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -183,6 +194,46 @@ class MainActivity : ComponentActivity() {
         }
         if (!viewModel.repo.hasAllFilesAccess()) {
             viewModel.repo.requestAllFilesAccess(this)
+        }
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        when (action) {
+            Intent.ACTION_SEND -> {
+                val streamUri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?: intent.clipData?.let { clip ->
+                        if (clip.itemCount > 0) clip.getItemAt(0)?.uri else null
+                    }
+                if (streamUri != null) {
+                    viewModel.onSharedUris(listOf(streamUri))
+                    return
+                }
+                val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                    ?: intent.clipData?.let { clip ->
+                        if (clip.itemCount > 0) clip.getItemAt(0)?.text?.toString() else null
+                    }
+                if (!sharedText.isNullOrBlank()) {
+                    val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                        ?: intent.getStringExtra(Intent.EXTRA_TITLE)
+                    viewModel.onSharedPlainText(sharedText, subject)
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris = mutableListOf<Uri>()
+                IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?.let { uris.addAll(it) }
+                if (uris.isEmpty()) {
+                    intent.clipData?.let { clip ->
+                        for (i in 0 until clip.itemCount) {
+                            clip.getItemAt(i)?.uri?.let { uris.add(it) }
+                        }
+                    }
+                }
+                if (uris.isNotEmpty()) {
+                    viewModel.onSharedUris(uris)
+                }
+            }
         }
     }
 }
