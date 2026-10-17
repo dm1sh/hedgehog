@@ -174,6 +174,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var playerBookKey by mutableStateOf<String?>(null)
         private set
+    var playerIsSharedText by mutableStateOf(false)
+        private set
     val playerBookmarks = mutableStateListOf<Int>()
     private val playerRunIdGen = AtomicInteger(0)
     private val playerSessionIdGen = AtomicInteger(0)
@@ -761,6 +763,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
         playerBookKey = null
+        playerIsSharedText = false
         playerBookmarks.clear()
         isBookLoading = false
         bookLoaded = false
@@ -812,6 +815,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
         playerBookKey = null
+        playerIsSharedText = true
         playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
@@ -920,6 +924,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerSentenceStatuses.clear()
         playerSelectedIndex = 0
         playerBookKey = null
+        playerIsSharedText = false
         playerBookmarks.clear()
         textAreaText = ""
         processedPartsCount = 0
@@ -1488,6 +1493,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (playerBookKey == null) return
         if (playerBookmarks.remove(index)) {
             persistCurrentPlayerBookState()
+        }
+    }
+
+    fun getCachedPlayerChunkCount(): Int {
+        var count = 0
+        for (i in playerSentences.indices) {
+            val f = playerCachedFiles[i]
+            if (f != null && f.exists() && f.length() > 0L) {
+                count++
+            }
+        }
+        return count
+    }
+
+    fun defaultSharedPlayerSaveFileName(): String {
+        val rawTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: book?.fileNames?.firstOrNull()?.fileName?.takeIf { it.isNotBlank() }
+            ?: "Text"
+        val cleanStem = File(bookStem(rawTitle)).name.trim().ifEmpty { "Text" }
+        val ext = if (settings.opusOutput) ".opus" else ".mp3"
+        return "$cleanStem$ext"
+    }
+
+    fun saveCachedPlayerChunksToUri(targetUri: Uri) {
+        val totalSentences = playerSentences.size
+        if (totalSentences == 0) return
+        val useOpus = settings.opusOutput
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val baos = java.io.ByteArrayOutputStream()
+                var includedCount = 0
+                for (i in 0 until totalSentences) {
+                    val f = playerCachedFiles[i]
+                    if (f != null && f.exists() && f.length() > 0L) {
+                        baos.write(f.readBytes())
+                        includedCount++
+                    }
+                }
+                val mergedMp3 = baos.toByteArray()
+                if (includedCount == 0 || mergedMp3.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        statInfoDoneHighlight = false
+                        statInfo = tr("KEY_NO_CACHED_CHUNKS")
+                        ttsSay(statInfo)
+                    }
+                    return@launch
+                }
+
+                val finalBytes = if (useOpus) {
+                    OpusConverter.convertMp3ToOpus(mergedMp3) ?: mergedMp3
+                } else {
+                    mergedMp3
+                }
+
+                getApplication<Application>().contentResolver.openOutputStream(targetUri)?.use { out ->
+                    out.write(finalBytes)
+                    out.flush()
+                }
+
+                withContext(Dispatchers.Main) {
+                    statInfoDoneHighlight = true
+                    statInfo = tr("KEY_SAVED")
+                    ttsSay(tr("KEY_SAVED"))
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    statInfoDoneHighlight = false
+                    statInfo = tr("KEY_ERROR")
+                    ttsSay(tr("KEY_ERROR"))
+                }
+            }
         }
     }
 

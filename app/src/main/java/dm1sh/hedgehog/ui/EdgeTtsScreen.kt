@@ -1,5 +1,11 @@
 package dm1sh.hedgehog.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -1779,6 +1785,7 @@ private fun PlayerTabContent(
     val isPlaying = vm.playerIsPlaying
     val bookmarks = vm.playerBookmarks
     val hasBookKey = vm.playerBookKey != null
+    val isSharedText = vm.playerIsSharedText
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = selectedIdx.coerceAtLeast(0)
     )
@@ -1786,6 +1793,81 @@ private fun PlayerTabContent(
     var showJumpDialog by remember { mutableStateOf(false) }
     var jumpInputText by remember { mutableStateOf("") }
     var showBookmarksDialog by remember { mutableStateOf(false) }
+    var showPartialCacheWarnDialog by remember { mutableStateOf(false) }
+    var showNoCacheWarnDialog by remember { mutableStateOf(false) }
+    var cachedCountForWarn by remember { mutableIntStateOf(0) }
+
+    val createAudioDocumentLauncher = rememberLauncherForActivityResult(
+        contract = remember {
+            object : ActivityResultContract<Pair<String, String>, Uri?>() {
+                override fun createIntent(context: Context, input: Pair<String, String>): Intent {
+                    return Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = input.first
+                        putExtra(Intent.EXTRA_TITLE, input.second)
+                    }
+                }
+
+                override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+                    return if (resultCode == Activity.RESULT_OK) intent?.data else null
+                }
+            }
+        }
+    ) { targetUri: Uri? ->
+        if (targetUri != null) {
+            vm.saveCachedPlayerChunksToUri(targetUri)
+        }
+    }
+
+    val launchSharedSavePicker = {
+        val mime = if (vm.settings.opusOutput) "audio/ogg" else "audio/mpeg"
+        val suggestedName = vm.defaultSharedPlayerSaveFileName()
+        createAudioDocumentLauncher.launch(mime to suggestedName)
+    }
+
+    if (showNoCacheWarnDialog) {
+        AlertDialog(
+            onDismissRequest = { showNoCacheWarnDialog = false },
+            title = {
+                Text(text = vm.tr(if (vm.settings.opusOutput) "KEY_SAVE_OPUS" else "KEY_SAVE_MP3"))
+            },
+            text = {
+                Text(text = vm.tr("KEY_NO_CACHED_CHUNKS"))
+            },
+            confirmButton = {
+                TextButton(onClick = { showNoCacheWarnDialog = false }) {
+                    Text(text = vm.tr("KEY_OK"))
+                }
+            }
+        )
+    }
+
+    if (showPartialCacheWarnDialog) {
+        AlertDialog(
+            onDismissRequest = { showPartialCacheWarnDialog = false },
+            title = {
+                Text(text = "$cachedCountForWarn / ${sentences.size}")
+            },
+            text = {
+                Text(text = vm.tr("KEY_WARN_NOT_ALL_CACHED"))
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPartialCacheWarnDialog = false
+                        launchSharedSavePicker()
+                    }
+                ) {
+                    Text(text = vm.tr("KEY_OK"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPartialCacheWarnDialog = false }) {
+                    Text(text = vm.tr("KEY_CANCEL"))
+                }
+            }
+        )
+    }
 
     if (showBookmarksDialog) {
         AlertDialog(
@@ -2308,7 +2390,33 @@ private fun PlayerTabContent(
                     modifier = Modifier.width(88.dp),
                     contentAlignment = Alignment.CenterEnd
                 ) {
-                    if (hasBookKey) {
+                    if (isSharedText) {
+                        val saveCaptionKey = if (vm.settings.opusOutput) "KEY_SAVE_OPUS" else "KEY_SAVE_MP3"
+                        FilledTonalIconButton(
+                            onClick = {
+                                val cachedCount = vm.getCachedPlayerChunkCount()
+                                when {
+                                    cachedCount <= 0 -> {
+                                        showNoCacheWarnDialog = true
+                                    }
+                                    cachedCount < sentences.size -> {
+                                        cachedCountForWarn = cachedCount
+                                        showPartialCacheWarnDialog = true
+                                    }
+                                    else -> {
+                                        launchSharedSavePicker()
+                                    }
+                                }
+                            },
+                            enabled = sentences.isNotEmpty(),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.DownloadForOffline,
+                                contentDescription = vm.tr(saveCaptionKey)
+                            )
+                        }
+                    } else if (hasBookKey) {
                         val isCurrentBookmarked = selectedIdx in bookmarks
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
