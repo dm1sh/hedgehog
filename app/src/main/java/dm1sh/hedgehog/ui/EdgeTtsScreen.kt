@@ -861,7 +861,7 @@ private fun LoadFolderFilesCard(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = vm.tr("KEY_OPEN_BOOKS"),
+                            text = vm.tr("KEY_NO_BOOKS_IN_FOLDER"),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -1718,7 +1718,7 @@ private fun ConversionActionDock(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.FolderOpen,
+                        imageVector = Icons.Outlined.FileOpen,
                         contentDescription = vm.tr("KEY_OPEN_BOOKS"),
                         modifier = Modifier.size(18.dp)
                     )
@@ -2054,7 +2054,7 @@ private fun PlayerTabContent(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = vm.tr("KEY_OPEN_BOOKS"),
+                        text = vm.tr("KEY_NO_BOOK_LOADED"),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
