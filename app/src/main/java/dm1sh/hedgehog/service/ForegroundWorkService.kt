@@ -192,10 +192,6 @@ class ForegroundWorkService : Service() {
                 }
                 val bigText = buildString {
                     append(completedLabel)
-                    if (bookTitle.isNotBlank()) {
-                        append("\n")
-                        append(bookTitle)
-                    }
                     if (partsProcessed.isNotBlank()) {
                         append("\n")
                         append(partsProcessed)

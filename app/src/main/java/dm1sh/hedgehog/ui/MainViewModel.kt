@@ -2495,7 +2495,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pauseIdleSince = 0L
         runWork = true
         val currentRunId = runIdGen.incrementAndGet()
-        val notifTitle = activeBook.fileNames.joinToString(", ") { it.fileName }
+        val notifTitle = activeBook.fileNames.map { it.fileName }.distinct().joinToString(", ")
         ForegroundWorkService.setActive(
             context = getApplication(),
             active = true,
@@ -2985,10 +2985,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     updateElapsedLabel()
                     progressBarVisible = false
                     progressBarValue = 0
-                    val msg = "${tr("KEY_WORK_COMPLETED")}. $statInfo $statStr • $chunksStatStr"
                     val completedLabel = tr("KEY_WORK_COMPLETED")
-                    val bookTitle = book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
-                    val processedSummary = "${tr("KEY_PROCESSED")}: $statStr • $chunksStatStr"
+                    val bookTitle = book?.fileNames?.map { it.fileName }?.distinct()?.joinToString(", ").orEmpty()
+                    val processedSummary = "${tr("KEY_PROCESSED")}: $totalPartsCount ${tr("KEY_PARTS_UNIT")} • $totalChunksCount ${tr("KEY_CHAPTERS_UNIT")}"
+                    val msg = "$completedLabel. $processedSummary"
                     ForegroundWorkService.showCompletionNotification(
                         context = getApplication(),
                         bookTitle = bookTitle,
