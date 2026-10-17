@@ -2346,38 +2346,41 @@ private fun PlayerTabContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    onClick = {
-                        jumpInputText = (selectedIdx + 1).toString()
-                        showJumpDialog = true
-                    },
-                    enabled = sentences.isNotEmpty(),
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                Box(
                     modifier = Modifier
-                        .weight(1f, fill = false)
-                        .padding(end = 12.dp)
-                        .defaultMinSize(minWidth = 64.dp)
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    contentAlignment = Alignment.CenterStart
                 ) {
-                    Text(
-                        text = if (sentences.isEmpty()) "0 / 0" else "${selectedIdx + 1} / ${sentences.size}",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                    )
+                    Surface(
+                        onClick = {
+                            jumpInputText = (selectedIdx + 1).toString()
+                            showJumpDialog = true
+                        },
+                        enabled = sentences.isNotEmpty(),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        modifier = Modifier.defaultMinSize(minWidth = 56.dp)
+                    ) {
+                        Text(
+                            text = if (sentences.isEmpty()) "0 / 0" else "${selectedIdx + 1} / ${sentences.size}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                        )
+                    }
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     FilledTonalIconButton(
                         onClick = { vm.onPlayerPrevPressed() },
@@ -2393,7 +2396,7 @@ private fun PlayerTabContent(
                     Button(
                         onClick = { vm.onPlayerPlayPausePressed() },
                         enabled = sentences.isNotEmpty(),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
                     ) {
                         Icon(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -2416,8 +2419,8 @@ private fun PlayerTabContent(
 
                 Box(
                     modifier = Modifier
-                        .padding(start = 12.dp)
-                        .width(44.dp),
+                        .weight(1f)
+                        .padding(start = 8.dp),
                     contentAlignment = Alignment.CenterEnd
                 ) {
                     if (isSharedText) {
