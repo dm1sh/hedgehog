@@ -122,6 +122,7 @@ class SettingsRepository(private val context: Context) {
                 opusOutput = s.optBoolean("opus_output", false),
                 inlineNotes = s.optBoolean("inline_notes", false),
                 embedMetadata = s.optBoolean("embed_metadata", true),
+                filterEmojis = s.optBoolean("filter_emojis", true),
                 voicePreview = s.optBoolean("voice_preview", false),
                 bookChapter = s.optBoolean("book_chapter", false),
                 dopSettingsPressed = s.optBoolean("dop_settings_pressed", false),
@@ -176,6 +177,7 @@ class SettingsRepository(private val context: Context) {
                 put("opus_output", settings.opusOutput)
                 put("inline_notes", settings.inlineNotes)
                 put("embed_metadata", settings.embedMetadata)
+                put("filter_emojis", settings.filterEmojis)
                 put("voice_preview", settings.voicePreview)
                 put("book_chapter", settings.bookChapter)
                 put("dop_settings_pressed", settings.dopSettingsPressed)
@@ -475,18 +477,6 @@ class SettingsRepository(private val context: Context) {
                     }
                     if (canDirectlyReadFile(candidate)) return real
                 }
-            } else if (DocumentsContract.isDocumentUri(context, uri) &&
-                uri.authority == "com.android.providers.downloads.documents"
-            ) {
-                val docId = DocumentsContract.getDocumentId(uri)
-                if (docId.startsWith("raw:")) {
-                    val real = docId.removePrefix("raw:")
-                    val candidate = File(real)
-                    if (fallbackNameFromPath == null) {
-                        fallbackNameFromPath = candidate.name.takeIf { it.isNotBlank() }
-                    }
-                    if (canDirectlyReadFile(candidate)) return real
-                }
             }
         } catch (_: Throwable) {
         }
@@ -527,14 +517,13 @@ class SettingsRepository(private val context: Context) {
                     mime.contains("fictionbook") || mime.contains("fb2") || mime.contains("xml") -> ".fb2"
                     mime.contains("zip") -> ".zip"
                     mime.contains("csv") -> ".csv"
-                    mime.contains("html") -> ".html"
                     mime.contains("audio") || mime.contains("mpeg") -> ".mp3"
                     else -> ".txt"
                 }
                 fileName += ext
             }
 
-            val destDir = File(context.filesDir, "picked_files").apply { mkdirs() }
+            val destDir = File(context.cacheDir, "picked_files").apply { mkdirs() }
             val destFile = File(destDir, fileName)
             val stream = context.contentResolver.openInputStream(uri) ?: return ""
             stream.use { input ->

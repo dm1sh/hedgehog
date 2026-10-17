@@ -360,15 +360,12 @@ class HedgehogTtsService : TextToSpeechService() {
             emptyList()
         }
         return try {
-            val cleanedText = TextsConverter.preprocessSharedText(
-                rawText = rawText,
-                inlineNotes = settings.inlineNotes
-            )
             val processor = ProcessingFile(
                 fileName = "tts",
-                text = cleanedText,
+                text = rawText,
                 langLexx = lexxRules,
                 lexxRegister = settings.lexxRegister,
+                filterEmojis = settings.filterEmojis,
                 bookChapter = false,
                 glavTextUse = false,
                 regexGlavaPattern = settings.regexGlavaCompile,
@@ -376,7 +373,7 @@ class HedgehogTtsService : TextToSpeechService() {
                 rate = "",
                 pitch = ""
             )
-            processor.allSentences.joinToString(" ").ifBlank { cleanedText.ifBlank { rawText } }
+            processor.allSentences.joinToString(" ").ifBlank { rawText }
         } catch (_: Throwable) {
             rawText
         }

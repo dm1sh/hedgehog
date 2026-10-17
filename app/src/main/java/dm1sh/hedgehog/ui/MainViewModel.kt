@@ -913,23 +913,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             val activeLexx = resolveActiveLexxRules()
-            val isFb2Shared = text.contains("<FictionBook", ignoreCase = true)
-            val normalizedInput = TextsConverter.preprocessSharedText(
-                rawText = text,
-                inlineNotes = settings.inlineNotes
-            )
-            val sharedMeta = if (isFb2Shared) {
-                TextsConverter.extractFb2Metadata(text, saveName)
-            } else {
-                BookAudioMetadata(title = saveName)
-            }
+            val sharedMeta = BookAudioMetadata(title = saveName)
             val createdBook = ProcessingFile(
                 fileName = saveName,
-                text = normalizedInput,
+                text = text,
                 langLexx = activeLexx,
                 lexxRegister = settings.lexxRegister,
-                bookChapter = settings.bookChapter,
-                glavTextUse = settings.glavTextUse,
+                filterEmojis = settings.filterEmojis,
+                bookChapter = false,
+                glavTextUse = false,
                 regexGlavaPattern = settings.regexGlavaCompile,
                 voice = "",
                 rate = "",
@@ -938,7 +930,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             val extractedPlayerSentences = splitIntoPlayerSentences(
                 parts = createdBook.allSentences,
-                glavs = createdBook.allGlavs
+                glavs = emptyList(),
+                detectChapters = false
             )
 
             withContext(Dispatchers.Main) {
@@ -1050,6 +1043,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         text = content,
                         langLexx = activeLexx,
                         lexxRegister = settings.lexxRegister,
+                        filterEmojis = settings.filterEmojis,
                         bookChapter = settings.bookChapter,
                         glavTextUse = settings.glavTextUse,
                         regexGlavaPattern = settings.regexGlavaCompile,
@@ -1072,13 +1066,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     when (ext) {
                         "txt", "ini" -> {
-                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
-                            val text = TextsConverter.preprocessSharedText(raw, inlineNotes = settings.inlineNotes)
-                            appendTextEntry(baseName, text, "", "", "", BookAudioMetadata(title = baseName))
-                        }
-                        "html", "htm" -> {
-                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
-                            val text = TextsConverter.htmlToText(raw)
+                            val text = TextsConverter.readTextWithFallback(file.readBytes())
                             appendTextEntry(baseName, text, "", "", "", BookAudioMetadata(title = baseName))
                         }
                         "fb2", "xml" -> {
@@ -1095,14 +1083,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     meta
                                 )
                             } else {
-                                appendTextEntry(
-                                    baseName,
-                                    TextsConverter.preprocessSharedText(raw, inlineNotes = settings.inlineNotes),
-                                    "",
-                                    "",
-                                    "",
-                                    BookAudioMetadata(title = baseName)
-                                )
+                                appendTextEntry(baseName, raw, "", "", "", BookAudioMetadata(title = baseName))
                             }
                         }
                         "epub" -> {
@@ -1343,6 +1324,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = seed,
                 langLexx = resolveActiveLexxRules(),
                 lexxRegister = settings.lexxRegister,
+                filterEmojis = settings.filterEmojis,
                 bookChapter = settings.bookChapter,
                 glavTextUse = settings.glavTextUse,
                 regexGlavaPattern = settings.regexGlavaCompile,
@@ -1361,6 +1343,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             commitCurrentChapterTitleToBook()
             currentBook.langLexx = resolveActiveLexxRules()
             currentBook.lexxRegister = settings.lexxRegister
+            currentBook.filterEmojis = settings.filterEmojis
             val k = currentBook.replacePart(editorPartIndex, textAreaText)
             if (k <= 0 && currentBook.allSentences.isEmpty()) {
                 currentBook.allSentences.add("")
@@ -1387,7 +1370,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         applyPlayerSentences(
             sentences = splitIntoPlayerSentences(
                 parts = book?.allSentences.orEmpty(),
-                glavs = book?.allGlavs.orEmpty()
+                glavs = book?.allGlavs.orEmpty(),
+                detectChapters = !playerIsSharedText
             ),
             bookKey = playerBookKey,
             savedState = playerBookKey?.let {
@@ -1574,7 +1558,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Built-in Player (per-sentence chunking, parallel synthesis, sequential playback, caching)
     private fun splitIntoPlayerSentences(
         parts: List<String>,
-        glavs: List<String> = emptyList()
+        glavs: List<String> = emptyList(),
+        detectChapters: Boolean = true
     ): List<PlayerSentenceItem> {
         if (parts.isEmpty()) return emptyList()
         val chapterRegex = try {
@@ -1616,14 +1601,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         for (partIdx in parts.indices) {
             val part = parts[partIdx]
-            val rawGlav = glavs.getOrNull(partIdx)?.trim().orEmpty()
-            if (rawGlav.isNotEmpty() && rawGlav != lastPartGlav) {
-                lastPartGlav = rawGlav
-                val stripped = rawGlav.replaceFirst(leadingNumPrefixRegex, "").trim()
-                if (stripped.isNotEmpty()) {
-                    pendingChapterTitle = stripped
-                } else if (rawGlav != "0000") {
-                    pendingChapterTitle = rawGlav
+            if (detectChapters) {
+                val rawGlav = glavs.getOrNull(partIdx)?.trim().orEmpty()
+                if (rawGlav.isNotEmpty() && rawGlav != lastPartGlav) {
+                    lastPartGlav = rawGlav
+                    val stripped = rawGlav.replaceFirst(leadingNumPrefixRegex, "").trim()
+                    if (stripped.isNotEmpty()) {
+                        pendingChapterTitle = stripped
+                    } else if (rawGlav != "0000") {
+                        pendingChapterTitle = rawGlav
+                    }
                 }
             }
 
@@ -1635,7 +1622,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var lineCheckedForChapter = false
             var i = 0
             while (i < len) {
-                if (!lineCheckedForChapter) {
+                if (detectChapters && !lineCheckedForChapter) {
                     lineCheckedForChapter = true
                     var lineEnd = part.indexOf('\n', i)
                     if (lineEnd == -1) lineEnd = len
@@ -2541,6 +2528,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = seedText,
                 langLexx = resolveActiveLexxRules(),
                 lexxRegister = settings.lexxRegister,
+                filterEmojis = settings.filterEmojis,
                 bookChapter = settings.bookChapter,
                 glavTextUse = settings.glavTextUse,
                 regexGlavaPattern = settings.regexGlavaCompile,

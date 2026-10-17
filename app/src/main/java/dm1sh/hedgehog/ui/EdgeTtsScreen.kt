@@ -1469,6 +1469,19 @@ private fun BookSettingsGroupContent(
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
+        // Filter out emojis
+        M3SwitchListItem(
+            headline = vm.tr("KEY_FILTER_EMOJIS"),
+            checked = settings.filterEmojis,
+            onCheckedChange = { checked ->
+                vm.updateSettings { it.copy(filterEmojis = checked) }
+                vm.reprocessBookForCurrentSettings()
+                vm.ttsSay("${vm.tr("KEY_FILTER_EMOJIS")} ${vm.tr(if (checked) "KEY_ON" else "KEY_OFF")}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         // Cut by chapters + Chapter Regex Modal Button
         ListItem(
             headlineContent = { Text(vm.tr("KEY_BOOK_CHAPTER")) },

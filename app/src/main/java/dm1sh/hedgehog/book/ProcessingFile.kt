@@ -18,6 +18,7 @@ class ProcessingFile(
     val lastStringsLength: Int = 4200,
     var langLexx: List<String>,
     var lexxRegister: Boolean,
+    var filterEmojis: Boolean = true,
     val bookChapter: Boolean,
     val glavTextUse: Boolean,
     regexGlavaPattern: String,
@@ -62,14 +63,26 @@ class ProcessingFile(
     }
 
     /**
-     * Single-pass character normalization replacing 13 full-book String.replace() passes.
+     * Single-pass character normalization replacing 13 full-book String.replace() passes,
+     * plus optional emoji filtering.
      */
     private fun normalizeBaseCharacters(text: String): String {
         val len = text.length
         val sb = StringBuilder(len + 64)
         var i = 0
         while (i < len) {
-            when (val c = text[i]) {
+            val cp = Character.codePointAt(text, i)
+            val charCount = Character.charCount(cp)
+            if (filterEmojis && isEmojiCodePoint(cp)) {
+                i += charCount
+                continue
+            }
+            if (charCount > 1) {
+                sb.appendCodePoint(cp)
+                i += charCount
+                continue
+            }
+            when (val c = cp.toChar()) {
                 '~', '^', '*', '|' -> sb.append('-')
                 '\\' -> sb.append('/')
                 '[', '<' -> sb.append('(')
@@ -101,6 +114,35 @@ class ProcessingFile(
     private fun isSpaceLike(c: Char): Boolean {
         return c == ' ' || c == '\t' || c == '\u00A0' || c == '\u202F' || c == '\u2007' ||
             (c in '\u2000'..'\u200A')
+    }
+
+    private fun isEmojiCodePoint(cp: Int): Boolean {
+        return cp in 0x1F000..0x1FAFF ||
+            cp in 0x2600..0x27BF ||
+            cp in 0x2300..0x23FF ||
+            cp in 0x2B00..0x2BFF ||
+            cp in 0xFE00..0xFE0F ||
+            cp in 0xE0020..0xE007F ||
+            cp == 0x200D ||
+            cp == 0x20E3 ||
+            cp == 0x00A9 ||
+            cp == 0x00AE ||
+            cp == 0x203C ||
+            cp == 0x2049 ||
+            cp == 0x2122 ||
+            cp == 0x2139 ||
+            cp in 0x2194..0x2199 ||
+            cp in 0x21A9..0x21AA ||
+            cp == 0x24C2 ||
+            cp in 0x25AA..0x25AB ||
+            cp == 0x25B6 ||
+            cp == 0x25C0 ||
+            cp in 0x25FB..0x25FE ||
+            cp in 0x2934..0x2935 ||
+            cp == 0x3030 ||
+            cp == 0x303D ||
+            cp == 0x3297 ||
+            cp == 0x3299
     }
 
     fun getFixPoints(text: String): List<String> {

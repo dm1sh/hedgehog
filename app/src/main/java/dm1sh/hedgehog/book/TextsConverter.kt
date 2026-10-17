@@ -82,7 +82,7 @@ object TextsConverter {
         if (!isValidUtf8(bytes)) {
             return ansiToUtf8(bytes)
         }
-        return String(bytes, Charsets.UTF_8).removePrefix("\uFEFF")
+        return String(bytes, Charsets.UTF_8)
     }
 
     private fun isValidUtf8(bytes: ByteArray): Boolean {
@@ -1263,7 +1263,7 @@ object TextsConverter {
     /**
      * Single-pass HTML-to-text converter replacing 8 regex passes + 23 entity passes.
      */
-    fun htmlToText(rawHtml: String): String {
+    private fun htmlToText(rawHtml: String): String {
         val bodyOpen = rawHtml.indexOf("<body", ignoreCase = true)
         var startIdx = 0
         var endIdx = rawHtml.length
@@ -1443,23 +1443,6 @@ object TextsConverter {
             return null
         }
         return NAMED_ENTITIES[entity]
-    }
-
-    private val HTML_TAG_DETECT_REGEX = Regex(
-        "(?i)</?(?:html|body|p|div|br|span|article|section|h[1-6]|li|ul|ol|blockquote|tr|td|th|a|b|i|em|strong)\\b[^>]*>"
-    )
-
-    fun preprocessSharedText(rawText: String, inlineNotes: Boolean = false): String {
-        if (rawText.isEmpty()) return ""
-        if (rawText.contains("<FictionBook", ignoreCase = true)) {
-            return convertFb2ToTxt(rawText, inlineNotes = inlineNotes)
-        }
-        val htmlCleaned = if (rawText.contains('<') && HTML_TAG_DETECT_REGEX.containsMatchIn(rawText)) {
-            htmlToText(rawText)
-        } else {
-            rawText
-        }
-        return decodeEntities(htmlCleaned)
     }
 
     fun decodeEntities(rawText: String): String {

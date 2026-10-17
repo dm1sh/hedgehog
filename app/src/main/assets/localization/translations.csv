@@ -153,6 +153,8 @@ KEY_OFFLINE_FALLBACK_TOAST,Online voice unavailable — falling back to offline 
 KEY_PARTS_UNIT,parts,Teile,partes,osaa,parties,parti,パート,파트,części,partes,частей,部份
 KEY_CHAPTERS_UNIT,chapters,Kapitel,capítulos,lukua,chapitres,capitoli,章,장,rozdziałów,capítulos,глав,章節
 KEY_EMBED_METADATA,Embed cover and metadata into audio files,Cover und Metadaten in Audiodateien einbetten,Incrustar portada y metadatos en los archivos de audio,Upota kansikuva ja metatiedot äänitiedostoihin,Intégrer la couverture et les métadonnées dans les fichiers audio,Incorpora copertina e metadati nei file audio,音声ファイルに表紙とメタデータを埋め込む,오디오 파일에 표지 및 메타데이터 포함,Osadzaj okładkę i metadane w plikach audio,Incorporar capa e metadados nos arquivos de áudio,Встраивать обложку и метаданные в аудиофайлы,在音訊檔案中嵌入封面與元數據
+KEY_FILTER_EMOJIS,Filter out emojis,Emojis herausfiltern,Filtrar emojis,Suodata emojit pois,Filtrer les émojis,Filtra le emoji,絵文字を除外する,이모지 필터링,Filtruj emotikony,Filtrar emojis,Фильтровать эмодзи,過濾表情符號
+
 
 
 
