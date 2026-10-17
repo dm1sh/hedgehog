@@ -395,15 +395,38 @@ class SettingsRepository(private val context: Context) {
         return defaultDownloadsDir
     }
 
+    private fun canDirectlyReadFile(file: File): Boolean {
+        if (!file.exists() || !file.isFile || !file.canRead()) return false
+        return try {
+            file.inputStream().use { stream ->
+                stream.read()
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     /**
-     * Resolves an Android content:// URI to an absolute filesystem path (matching Globals.resolve_android_path),
-     * or copies it into cacheDir if direct path access is unavailable.
+     * Resolves an Android content:// URI using Storage Access Framework (ContentResolver),
+     * only using a direct filesystem path if opening a FileInputStream actually succeeds,
+     * and otherwise reading via ContentResolver.openInputStream(uri) into cacheDir.
      */
     fun resolveAndroidUriToPath(uri: Uri): String {
         val rawStr = uri.toString()
         if (!rawStr.startsWith("content://")) {
             return uri.path ?: rawStr
         }
+
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: Throwable) {
+        }
+
+        var fallbackNameFromPath: String? = null
         try {
             val decoded = Uri.decode(rawStr)
             var marker = "/document/"
@@ -423,7 +446,9 @@ class SettingsRepository(private val context: Context) {
                 }
                 if (docId.startsWith("raw:")) {
                     val realRaw = docId.substring(4)
-                    if (File(realRaw).exists()) return realRaw
+                    val candidate = File(realRaw)
+                    fallbackNameFromPath = candidate.name.takeIf { it.isNotBlank() }
+                    if (canDirectlyReadFile(candidate)) return realRaw
                 }
                 val colon = docId.indexOf(':')
                 if (colon > 0) {
@@ -435,33 +460,69 @@ class SettingsRepository(private val context: Context) {
                         "/storage/$volume"
                     }
                     val real = if (rel.isNotEmpty()) "$base/$rel" else base
-                    if (File(real).exists()) return real
+                    val candidate = File(real)
+                    if (fallbackNameFromPath == null) {
+                        fallbackNameFromPath = candidate.name.takeIf { it.isNotBlank() }
+                    }
+                    if (canDirectlyReadFile(candidate)) return real
                 }
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
 
-        // Fallback: copy content stream to a temp file in cacheDir with original display name
+        // Open via Storage Access Framework ContentResolver stream
         return try {
-            var fileName = "picked_${System.currentTimeMillis()}"
-            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIdx >= 0) {
-                        fileName = cursor.getString(nameIdx) ?: fileName
+            var displayName: String? = null
+            try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIdx >= 0) {
+                            displayName = cursor.getString(nameIdx)?.takeIf { it.isNotBlank() }
+                        }
                     }
                 }
+            } catch (_: Throwable) {
             }
+
+            var fileName = (displayName ?: fallbackNameFromPath ?: "picked_${System.currentTimeMillis()}")
+                .substringAfterLast('/')
+                .substringAfterLast('\\')
+                .trim()
+            if (fileName.isEmpty()) {
+                fileName = "picked_${System.currentTimeMillis()}"
+            }
+
+            if (!fileName.contains('.')) {
+                val mime = try { context.contentResolver.getType(uri).orEmpty().lowercase() } catch (_: Throwable) { "" }
+                val ext = when {
+                    mime.contains("epub") -> ".epub"
+                    mime.contains("fictionbook") || mime.contains("fb2") || mime.contains("xml") -> ".fb2"
+                    mime.contains("zip") -> ".zip"
+                    mime.contains("csv") -> ".csv"
+                    mime.contains("audio") || mime.contains("mpeg") -> ".mp3"
+                    else -> ".txt"
+                }
+                fileName += ext
+            }
+
             val destDir = File(context.cacheDir, "picked_files").apply { mkdirs() }
             val destFile = File(destDir, fileName)
-            context.contentResolver.openInputStream(uri)?.use { input ->
+            val stream = context.contentResolver.openInputStream(uri) ?: return ""
+            stream.use { input ->
                 destFile.outputStream().use { output ->
                     input.copyTo(output)
                 }
             }
-            destFile.absolutePath
-        } catch (e: Exception) {
-            rawStr
+            if (destFile.exists() && destFile.length() > 0L) destFile.absolutePath else ""
+        } catch (_: Throwable) {
+            ""
         }
     }
 }
