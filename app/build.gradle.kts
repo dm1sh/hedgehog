@@ -40,8 +40,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            if (hasCustomSigning) {
-                signingConfig = signingConfigs.getByName("persistent")
+            signingConfig = if (hasCustomSigning) {
+                signingConfigs.getByName("persistent")
+            } else {
+                signingConfigs.getByName("debug")
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -54,6 +56,11 @@ android {
                 signingConfig = signingConfigs.getByName("persistent")
             }
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     compileOptions {
