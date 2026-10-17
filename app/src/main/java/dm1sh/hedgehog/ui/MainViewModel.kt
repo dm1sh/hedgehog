@@ -1508,7 +1508,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val bookTitle = bookTitles.firstOrNull()?.takeIf { it.isNotBlank() }
             ?: book?.fileNames?.joinToString(", ") { it.fileName }.orEmpty()
-        val counter = "${playerSelectedIndex + 1}/${playerSentences.size}"
+        val total = playerSentences.size
+        val current = (playerSelectedIndex + 1).coerceIn(1, total)
+        val pct = ((current.toFloat() / total.toFloat()) * 100f).roundToInt().coerceIn(0, 100)
+        val counter = "$current/$total ($pct%)"
         val title = if (bookTitle.isNotBlank()) "$bookTitle • $counter" else counter
         val sentenceText = playerSentences.getOrNull(playerSelectedIndex)?.text.orEmpty()
         PlayerNotificationService.showOrUpdate(
@@ -1516,6 +1519,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             title = title,
             sentenceText = sentenceText,
             isPlaying = playerIsPlaying,
+            progress = current,
+            max = total,
             prevLabel = tr("KEY_EDITOR_PREV"),
             playPauseLabel = tr(if (playerIsPlaying) "KEY_PAUSE" else "KEY_RESUME"),
             nextLabel = tr("KEY_EDITOR_NEXT")

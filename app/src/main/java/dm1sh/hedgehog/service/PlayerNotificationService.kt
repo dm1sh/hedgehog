@@ -98,6 +98,8 @@ class PlayerNotificationService : Service() {
         val title = intent?.getStringExtra(EXTRA_TITLE).orEmpty()
         val sentenceText = intent?.getStringExtra(EXTRA_TEXT).orEmpty()
         val isPlaying = intent?.getBooleanExtra(EXTRA_IS_PLAYING, false) ?: false
+        val progress = intent?.getIntExtra(EXTRA_PROGRESS, 0) ?: 0
+        val max = intent?.getIntExtra(EXTRA_MAX, 0) ?: 0
         val prevLabel = intent?.getStringExtra(EXTRA_PREV_LABEL).orEmpty().ifBlank { "Previous" }
         val playPauseLabel = intent?.getStringExtra(EXTRA_PLAY_PAUSE_LABEL).orEmpty().ifBlank {
             if (isPlaying) "Pause" else "Play"
@@ -115,11 +117,19 @@ class PlayerNotificationService : Service() {
         } catch (_: Exception) {
         }
 
-        updateMediaSessionState(title = title, sentenceText = sentenceText, isPlaying = isPlaying)
+        updateMediaSessionState(
+            title = title,
+            sentenceText = sentenceText,
+            isPlaying = isPlaying,
+            progress = progress,
+            max = max
+        )
         val notification = buildPlayerNotification(
             title = title,
             sentenceText = sentenceText,
             isPlaying = isPlaying,
+            progress = progress,
+            max = max,
             prevLabel = prevLabel,
             playPauseLabel = playPauseLabel,
             nextLabel = nextLabel
@@ -149,23 +159,28 @@ class PlayerNotificationService : Service() {
     private fun updateMediaSessionState(
         title: String,
         sentenceText: String,
-        isPlaying: Boolean
+        isPlaying: Boolean,
+        progress: Int,
+        max: Int
     ) {
         val session = mediaSession ?: return
         try {
-            val metadata = MediaMetadata.Builder()
+            val metadataBuilder = MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, sentenceText)
                 .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, title)
                 .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, sentenceText)
-                .build()
-            session.setMetadata(metadata)
+            if (max > 0) {
+                metadataBuilder.putLong(MediaMetadata.METADATA_KEY_DURATION, max.toLong())
+            }
+            session.setMetadata(metadataBuilder.build())
 
             val stateCode = if (isPlaying) {
                 PlaybackState.STATE_PLAYING
             } else {
                 PlaybackState.STATE_PAUSED
             }
+            val pos = if (max > 0) progress.coerceIn(0, max).toLong() else PlaybackState.PLAYBACK_POSITION_UNKNOWN
             val playbackState = PlaybackState.Builder()
                 .setActions(
                     PlaybackState.ACTION_PLAY or
@@ -174,7 +189,7 @@ class PlayerNotificationService : Service() {
                         PlaybackState.ACTION_SKIP_TO_PREVIOUS or
                         PlaybackState.ACTION_SKIP_TO_NEXT
                 )
-                .setState(stateCode, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .setState(stateCode, pos, 0f)
                 .build()
             session.setPlaybackState(playbackState)
         } catch (_: Exception) {
@@ -197,6 +212,8 @@ class PlayerNotificationService : Service() {
         title: String,
         sentenceText: String,
         isPlaying: Boolean,
+        progress: Int,
+        max: Int,
         prevLabel: String,
         playPauseLabel: String,
         nextLabel: String
@@ -258,7 +275,7 @@ class PlayerNotificationService : Service() {
         }
 
         val contentTitle = title.ifBlank { appLabel.toString() }
-        return builder
+        builder
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(contentTitle)
             .setContentText(sentenceText)
@@ -270,7 +287,15 @@ class PlayerNotificationService : Service() {
             .addAction(playPauseAction)
             .addAction(nextAction)
             .setStyle(mediaStyle)
-            .build()
+
+        if (max > 0) {
+            val clamped = progress.coerceIn(0, max)
+            val pct = ((clamped.toFloat() / max.toFloat()) * 100f).toInt().coerceIn(0, 100)
+            builder.setSubText("$clamped/$max ($pct%)")
+            builder.setProgress(max, clamped, false)
+        }
+
+        return builder.build()
     }
 
     interface ActionListener {
@@ -292,6 +317,8 @@ class PlayerNotificationService : Service() {
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_TEXT = "extra_text"
         const val EXTRA_IS_PLAYING = "extra_is_playing"
+        const val EXTRA_PROGRESS = "extra_progress"
+        const val EXTRA_MAX = "extra_max"
         const val EXTRA_PREV_LABEL = "extra_prev_label"
         const val EXTRA_PLAY_PAUSE_LABEL = "extra_play_pause_label"
         const val EXTRA_NEXT_LABEL = "extra_next_label"
@@ -309,6 +336,8 @@ class PlayerNotificationService : Service() {
             title: String,
             sentenceText: String,
             isPlaying: Boolean,
+            progress: Int = 0,
+            max: Int = 0,
             prevLabel: String,
             playPauseLabel: String,
             nextLabel: String
@@ -319,6 +348,8 @@ class PlayerNotificationService : Service() {
                     putExtra(EXTRA_TITLE, title)
                     putExtra(EXTRA_TEXT, sentenceText)
                     putExtra(EXTRA_IS_PLAYING, isPlaying)
+                    putExtra(EXTRA_PROGRESS, progress)
+                    putExtra(EXTRA_MAX, max)
                     putExtra(EXTRA_PREV_LABEL, prevLabel)
                     putExtra(EXTRA_PLAY_PAUSE_LABEL, playPauseLabel)
                     putExtra(EXTRA_NEXT_LABEL, nextLabel)
