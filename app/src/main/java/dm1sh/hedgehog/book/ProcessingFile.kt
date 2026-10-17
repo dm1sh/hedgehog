@@ -197,20 +197,13 @@ class ProcessingFile(
         var glavaNum = 0
         val hardLimit = (lastStringsLength * 1.2).toInt()
         val chapterLabelByNum = HashMap<Int, String>()
-        val usedChapterLabels = HashSet<String>()
 
         fun glavaLabel(num: Int, title: String): String {
             if (!bookChapter) return ""
             chapterLabelByNum[num]?.let { return it }
+            val numStr = "%04d".format(num)
             val cleanTitle = title.trim()
-            val base = if (cleanTitle.isNotEmpty()) cleanTitle else "c%04d".format(num)
-            val resolved = if (usedChapterLabels.add(base)) {
-                base
-            } else {
-                val fallback = "${base}_c${"%04d".format(num)}"
-                usedChapterLabels.add(fallback)
-                fallback
-            }
+            val resolved = if (cleanTitle.isNotEmpty()) "$numStr $cleanTitle" else numStr
             chapterLabelByNum[num] = resolved
             return resolved
         }
