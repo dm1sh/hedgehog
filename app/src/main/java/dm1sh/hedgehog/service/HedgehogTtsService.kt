@@ -284,7 +284,7 @@ class HedgehogTtsService : TextToSpeechService() {
                         lowBitrate = settings.lowBitrate,
                         timeoutMsec = timeoutMsec,
                         isPreview = true,
-                        fallbackToOfflineOnError = false,
+                        fallbackToOfflineOnError = hasOfflineVoice,
                         isPaused = { false },
                         isCancelled = { stopRequested },
                         onStatusUpdate = {}
@@ -302,31 +302,35 @@ class HedgehogTtsService : TextToSpeechService() {
                     }
                 }
 
-                callback.error()
-            } else {
                 if (!hasOfflineVoice) {
-                    Log.w(TAG, "System TTS configured for offline voices, but no offline voice is installed")
                     callback.error()
                     return
                 }
-                val voiceDir = File(File(repo.programDir, "Voices"), offlineVoiceName!!)
-                val pcm = OfflineTtsEngine.synthesizePcmBlocking(
-                    voiceDir = voiceDir.absolutePath,
-                    text = processedText,
-                    rate = rateStr,
-                    pitch = pitchStr,
-                    shouldAbort = { stopRequested }
-                )
-                if (stopRequested) {
-                    callback.done()
-                    return
-                }
-                if (pcm.isEmpty()) {
-                    callback.error()
-                    return
-                }
-                streamPcmToCallback(pcm, DEFAULT_SAMPLE_RATE, 1, callback)
+                OfflineTtsEngine.showFallbackToast(applicationContext)
             }
+
+            if (!hasOfflineVoice) {
+                Log.w(TAG, "System TTS configured for offline voices, but no offline voice is installed")
+                callback.error()
+                return
+            }
+            val voiceDir = File(File(repo.programDir, "Voices"), offlineVoiceName!!)
+            val pcm = OfflineTtsEngine.synthesizePcmBlocking(
+                voiceDir = voiceDir.absolutePath,
+                text = processedText,
+                rate = rateStr,
+                pitch = pitchStr,
+                shouldAbort = { stopRequested }
+            )
+            if (stopRequested) {
+                callback.done()
+                return
+            }
+            if (pcm.isEmpty()) {
+                callback.error()
+                return
+            }
+            streamPcmToCallback(pcm, DEFAULT_SAMPLE_RATE, 1, callback)
         } catch (t: Throwable) {
             Log.e(TAG, "onSynthesizeText failed: ${t.message}", t)
             try {

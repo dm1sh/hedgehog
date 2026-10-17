@@ -1978,6 +1978,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                                 if (isCancelledFn()) return@launch
                                 var mp3Bytes: ByteArray? = null
+                                val hasOfflineFallback = !offlineVoice.isNullOrBlank()
                                 val shouldUseOnline = settings.useOnlineVoicesPlayer &&
                                     !repo.isVoiceOffline(onlineVoice)
 
@@ -1990,17 +1991,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         lowBitrate = lowBitrate,
                                         timeoutMsec = timeoutMsec,
                                         isPreview = false,
-                                        fallbackToOfflineOnError = false,
+                                        fallbackToOfflineOnError = hasOfflineFallback,
                                         isPaused = { false },
                                         isCancelled = isCancelledFn,
                                         onStatusUpdate = { key ->
                                             updatePlayerSentenceStatus(claimIdx, PartStatus.fromKey(key), runId)
                                         }
                                     )
-                                } else if (!isCancelledFn()) {
+                                }
+                                if ((mp3Bytes == null || mp3Bytes.isEmpty()) && !isCancelledFn()) {
                                     if (!offlineVoice.isNullOrBlank()) {
                                         val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                                         if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                                            if (shouldUseOnline) {
+                                                OfflineTtsEngine.showFallbackToast(
+                                                    getApplication(),
+                                                    tr("KEY_OFFLINE_FALLBACK_TOAST")
+                                                )
+                                            }
                                             mp3Bytes = OfflineTtsEngine.synthesizePart(
                                                 context = getApplication(),
                                                 voiceDir = voiceDir,
@@ -2248,6 +2256,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         previewJob = viewModelScope.launch(Dispatchers.IO) {
             var mp3Bytes: ByteArray? = null
+            val offlineVoice = if (repo.isVoiceOffline(chosenVoice)) chosenVoice else resolveOfflineFallbackVoice()
+            val hasOfflineFallback = !offlineVoice.isNullOrBlank()
             val useOnlineNow = wantOnline && !repo.isVoiceOffline(chosenVoice)
             if (useOnlineNow) {
                 mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
@@ -2258,16 +2268,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     lowBitrate = lowBitrate,
                     timeoutMsec = 30_000L,
                     isPreview = true,
-                    fallbackToOfflineOnError = false,
+                    fallbackToOfflineOnError = hasOfflineFallback,
                     isPaused = { false },
                     isCancelled = { !isActive },
                     onStatusUpdate = {}
                 )
-            } else {
-                val offlineVoice = if (repo.isVoiceOffline(chosenVoice)) chosenVoice else resolveOfflineFallbackVoice()
+            }
+            if ((mp3Bytes == null || mp3Bytes.isEmpty()) && isActive) {
                 if (!offlineVoice.isNullOrBlank()) {
                     val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                     if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                        if (useOnlineNow) {
+                            OfflineTtsEngine.showFallbackToast(
+                                getApplication(),
+                                tr("KEY_OFFLINE_FALLBACK_TOAST"),
+                                force = true
+                            )
+                        }
                         mp3Bytes = OfflineTtsEngine.synthesizePart(
                             context = getApplication(),
                             voiceDir = voiceDir,
@@ -2699,9 +2716,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             resolveOfflineFallbackVoice()
                         }
                         val hasOfflineFallback = !offlineVoice.isNullOrBlank()
-                        val shouldUseOnline = settings.useOnlineVoices &&
-                            !repo.isVoiceOffline(spec.voice) &&
-                            isNetworkAvailable()
+                        val wantOnline = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice)
+                        val shouldUseOnline = wantOnline && isNetworkAvailable()
                         var mp3Data: ByteArray? = null
                         if (shouldUseOnline) {
                             mp3Data = SocketEdgeTtsWorker.synthesizePart(
@@ -2724,6 +2740,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             if (!offlineVoice.isNullOrBlank()) {
                                 val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                                 if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                                    if (wantOnline) {
+                                        OfflineTtsEngine.showFallbackToast(
+                                            getApplication(),
+                                            tr("KEY_OFFLINE_FALLBACK_TOAST")
+                                        )
+                                    }
                                     mp3Data = OfflineTtsEngine.synthesizePart(
                                         context = getApplication(),
                                         voiceDir = voiceDir,
