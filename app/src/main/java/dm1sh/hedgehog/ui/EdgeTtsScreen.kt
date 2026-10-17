@@ -1773,6 +1773,62 @@ private fun PlayerTabContent(
     val isPlaying = vm.playerIsPlaying
     val listState = rememberLazyListState()
     val cardFontSize = (vm.settings.fontSize + 1).sp
+    var showJumpDialog by remember { mutableStateOf(false) }
+    var jumpInputText by remember { mutableStateOf("") }
+
+    if (showJumpDialog && sentences.isNotEmpty()) {
+        val commitJump = {
+            val entered = jumpInputText.trim().toIntOrNull()
+            if (entered != null) {
+                val targetIdx = (entered - 1).coerceIn(0, sentences.lastIndex)
+                showJumpDialog = false
+                vm.onPlayerCardClicked(targetIdx)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showJumpDialog = false },
+            title = {
+                Text(text = "${selectedIdx + 1} / ${sentences.size}")
+            },
+            text = {
+                OutlinedTextField(
+                    value = jumpInputText,
+                    onValueChange = { value ->
+                        jumpInputText = value.filter { it.isDigit() }
+                    },
+                    singleLine = true,
+                    label = { Text("1 .. ${sentences.size}") },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { commitJump() }
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { commitJump() },
+                    enabled = jumpInputText.trim().toIntOrNull() != null
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = vm.tr("KEY_RESUME"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showJumpDialog = false }) {
+                    Text(text = vm.tr("KEY_CLOSE"))
+                }
+            }
+        )
+    }
 
     LaunchedEffect(selectedIdx, sentences.size) {
         if (selectedIdx in sentences.indices) {
@@ -2083,12 +2139,25 @@ private fun PlayerTabContent(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = if (sentences.isEmpty()) "0 / 0" else "${selectedIdx + 1} / ${sentences.size}",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(80.dp)
-                )
+                Surface(
+                    onClick = {
+                        jumpInputText = (selectedIdx + 1).toString()
+                        showJumpDialog = true
+                    },
+                    enabled = sentences.isNotEmpty(),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    modifier = Modifier.width(88.dp)
+                ) {
+                    Text(
+                        text = if (sentences.isEmpty()) "0 / 0" else "${selectedIdx + 1} / ${sentences.size}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                    )
+                }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
