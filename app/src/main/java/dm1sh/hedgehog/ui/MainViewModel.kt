@@ -2110,6 +2110,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val runId = playerRunIdGen.incrementAndGet()
         playerCoordinatorJob?.cancel()
+        if (!runWork) {
+            OfflineTtsEngine.cancelAllActive()
+        }
 
         clearTransientPlayerStatuses()
 
@@ -2149,7 +2152,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         nextSynthIdxAtomic.compareAndSet(candidate, candidate + 1)
                         continue
                     }
-                    if (activeSynthCount.get() < maxParallel && candidate < playIdx + maxParallel) {
+                    val currentPlayFile = playerCachedFiles[playIdx]
+                    val firstSentenceReady = currentPlayFile != null && currentPlayFile.exists()
+                    val effectiveMaxParallel = if (firstSentenceReady) maxParallel else 1
+                    if (activeSynthCount.get() < effectiveMaxParallel && candidate < playIdx + effectiveMaxParallel) {
                         val claimIdx = nextSynthIdxAtomic.getAndIncrement()
                         if (claimIdx >= total) continue
                         val alreadyCached = playerCachedFiles[claimIdx]
@@ -2282,6 +2288,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             producerJob.cancel()
+            if (!runWork) {
+                OfflineTtsEngine.releaseIdleSessions()
+            }
             withContext(Dispatchers.Main) {
                 if (playerRunIdGen.get() == runId) {
                     playerIsPlaying = false
@@ -2372,6 +2381,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playerRunIdGen.incrementAndGet()
         playerCoordinatorJob?.cancel()
         playerCoordinatorJob = null
+        if (!runWork) {
+            OfflineTtsEngine.cancelAllActive()
+        }
         stopPlayerMediaOnly()
         playerIsPlaying = false
         clearTransientPlayerStatuses()
@@ -3356,6 +3368,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bookFolderNames: List<String>
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            if (!playerIsPlaying) {
+                OfflineTtsEngine.releaseIdleSessions()
+            }
             for (bookFolderName in bookFolderNames) {
                 val bookDir = File(saveDirBase, bookFolderName)
                 if (bookDir.exists() && bookDir.listFiles()?.isEmpty() == true) {
@@ -3441,6 +3456,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runIdGen.incrementAndGet()
         conversionMasterJob?.cancel(CancellationException("Stopped by user"))
         conversionMasterJob = null
+        if (!playerIsPlaying) {
+            OfflineTtsEngine.cancelAllActive()
+        }
         runWork = false
         workPaused = false
         pauseIdleSince = 0L

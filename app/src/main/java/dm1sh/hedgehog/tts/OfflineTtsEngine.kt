@@ -173,6 +173,10 @@ object OfflineTtsEngine {
             } catch (_: Throwable) {
             }
         }
+        releaseIdleSessions()
+    }
+
+    fun releaseIdleSessions() {
         synchronized(sessionInitLock) {
             drainPoolLocked()
         }
