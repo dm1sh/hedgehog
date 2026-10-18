@@ -409,7 +409,7 @@ private fun printHelp() {
           hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
 
           # Read from stdin / plain text to an audio file
-          echo "Привет, мир!" | hedgehog-cli --offline --offline-voice Dmitry -o hello.mp3
+          echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o hello.mp3
 
           # Download offline voices or list available voices on Linux
           hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices
@@ -770,13 +770,14 @@ private fun loadBooksIntoProcessingFile(
     }
 
     if (opts.inputs.isEmpty() && opts.inlineText.isNullOrBlank()) {
-        readStdin = true
+        System.err.println("Error: No input provided. Pass -i <file>, -i - for stdin, or -t <text>. Use --help for usage.")
+        return null
     }
 
     if (readStdin) {
         val stdinText = System.`in`.bufferedReader(Charsets.UTF_8).readText().trim()
         if (stdinText.isEmpty() && currentBook == null) {
-            System.err.println("Error: No input provided. Pass -i <file>, -t <text>, or pipe text to stdin. Use --help for usage.")
+            System.err.println("Error: Stdin is empty.")
             return null
         }
         if (stdinText.isNotEmpty()) {

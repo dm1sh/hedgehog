@@ -123,7 +123,7 @@ hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lex
 hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
 
 # Read from stdin / plain text to an audio file
-echo "Привет, мир!" | hedgehog-cli --offline --offline-voice Dmitry -o hello.mp3
+echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o hello.mp3
 
 # Download offline voices or list available voices on Linux
 hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices
