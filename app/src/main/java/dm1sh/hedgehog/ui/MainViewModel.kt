@@ -1803,19 +1803,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val totalSentences = playerSentences.size
         if (totalSentences == 0) return
         val useOpus = settings.opusOutput
+        val targetKbps = if (settings.lowBitrate) 48 else 96
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val baos = java.io.ByteArrayOutputStream()
-                var includedCount = 0
+                val cachedFiles = ArrayList<File>(totalSentences)
                 for (i in 0 until totalSentences) {
                     val f = playerCachedFiles[i]
                     if (f != null && f.exists() && f.length() > 0L) {
-                        baos.write(f.readBytes())
-                        includedCount++
+                        cachedFiles.add(f)
                     }
                 }
-                val mergedMp3 = baos.toByteArray()
-                if (includedCount == 0 || mergedMp3.isEmpty()) {
+                if (cachedFiles.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         statInfoDoneHighlight = false
                         statInfo = tr("KEY_NO_CACHED_CHUNKS")
@@ -1834,12 +1832,97 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     resolveOfflineFallbackVoice().orEmpty()
                 }
 
-                val finalBytes = if (useOpus) {
-                    val opus = OpusConverter.convertMp3ToOpus(mergedMp3)
-                    if (opus != null && opus.isNotEmpty()) {
-                        if (embedMeta) {
-                            AudioMetadataTagger.tagOpus(
-                                opusBytes = opus,
+                val allWav = cachedFiles.all { it.extension.equals("wav", ignoreCase = true) }
+                val finalBytes: ByteArray = if (allWav) {
+                    val mergedWav = OfflineTtsEngine.mergeWavFiles(cachedFiles, deleteAfterRead = false)
+                    if (mergedWav.isEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            statInfoDoneHighlight = false
+                            statInfo = tr("KEY_NO_CACHED_CHUNKS")
+                            ttsSay(statInfo)
+                        }
+                        return@launch
+                    }
+                    if (useOpus) {
+                        val opus = OpusConverter.convertMp3ToOpus(mergedWav)
+                        if (opus != null && opus.isNotEmpty()) {
+                            if (embedMeta) {
+                                AudioMetadataTagger.tagOpus(
+                                    opusBytes = opus,
+                                    bookMeta = bookMeta,
+                                    trackTitle = albumTitle,
+                                    albumTitle = albumTitle,
+                                    trackNumber = 1,
+                                    totalTracks = 1,
+                                    voiceName = voiceName
+                                )
+                            } else {
+                                opus
+                            }
+                        } else {
+                            ByteArray(0)
+                        }
+                    } else {
+                        val mp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps)
+                        if (mp3 != null && mp3.isNotEmpty()) {
+                            if (embedMeta) {
+                                AudioMetadataTagger.tagMp3(
+                                    mp3Bytes = mp3,
+                                    bookMeta = bookMeta,
+                                    trackTitle = albumTitle,
+                                    albumTitle = albumTitle,
+                                    trackNumber = 1,
+                                    totalTracks = 1,
+                                    voiceName = voiceName
+                                )
+                            } else {
+                                mp3
+                            }
+                        } else {
+                            ByteArray(0)
+                        }
+                    }
+                } else {
+                    val baos = java.io.ByteArrayOutputStream()
+                    for (f in cachedFiles) {
+                        val raw = f.readBytes()
+                        if (f.extension.equals("wav", ignoreCase = true)) {
+                            val mp3Part = OpusConverter.convertWavToMp3(raw, targetKbps)
+                            if (mp3Part != null && mp3Part.isNotEmpty()) {
+                                baos.write(mp3Part)
+                            }
+                        } else {
+                            baos.write(raw)
+                        }
+                    }
+                    val mergedMp3 = baos.toByteArray()
+                    if (mergedMp3.isEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            statInfoDoneHighlight = false
+                            statInfo = tr("KEY_NO_CACHED_CHUNKS")
+                            ttsSay(statInfo)
+                        }
+                        return@launch
+                    }
+                    if (useOpus) {
+                        val opus = OpusConverter.convertMp3ToOpus(mergedMp3)
+                        if (opus != null && opus.isNotEmpty()) {
+                            if (embedMeta) {
+                                AudioMetadataTagger.tagOpus(
+                                    opusBytes = opus,
+                                    bookMeta = bookMeta,
+                                    trackTitle = albumTitle,
+                                    albumTitle = albumTitle,
+                                    trackNumber = 1,
+                                    totalTracks = 1,
+                                    voiceName = voiceName
+                                )
+                            } else {
+                                opus
+                            }
+                        } else if (embedMeta) {
+                            AudioMetadataTagger.tagMp3(
+                                mp3Bytes = mergedMp3,
                                 bookMeta = bookMeta,
                                 trackTitle = albumTitle,
                                 albumTitle = albumTitle,
@@ -1848,7 +1931,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 voiceName = voiceName
                             )
                         } else {
-                            opus
+                            mergedMp3
                         }
                     } else if (embedMeta) {
                         AudioMetadataTagger.tagMp3(
@@ -1863,18 +1946,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         mergedMp3
                     }
-                } else if (embedMeta) {
-                    AudioMetadataTagger.tagMp3(
-                        mp3Bytes = mergedMp3,
-                        bookMeta = bookMeta,
-                        trackTitle = albumTitle,
-                        albumTitle = albumTitle,
-                        trackNumber = 1,
-                        totalTracks = 1,
-                        voiceName = voiceName
-                    )
-                } else {
-                    mergedMp3
+                }
+
+                if (finalBytes.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        statInfoDoneHighlight = false
+                        statInfo = tr("KEY_NO_CACHED_CHUNKS")
+                        ttsSay(statInfo)
+                    }
+                    return@launch
                 }
 
                 getApplication<Application>().contentResolver.openOutputStream(targetUri)?.use { out ->
@@ -2048,13 +2128,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     !isActive || playerRunIdGen.get() != runId || claimIdx < currentPlayIdxAtomic.get()
                                 }
                                 if (isCancelledFn()) return@launch
-                                var mp3Bytes: ByteArray? = null
+                                var audioBytes: ByteArray? = null
+                                var isOfflineWav = false
                                 val hasOfflineFallback = !offlineVoice.isNullOrBlank()
                                 val shouldUseOnline = settings.useOnlineVoicesPlayer &&
                                     !repo.isVoiceOffline(onlineVoice)
 
                                 if (shouldUseOnline) {
-                                    mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
+                                    audioBytes = SocketEdgeTtsWorker.synthesizePart(
                                         voice = onlineVoice,
                                         pitch = pitchStr,
                                         rate = rateStr,
@@ -2070,7 +2151,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         }
                                     )
                                 }
-                                if ((mp3Bytes == null || mp3Bytes.isEmpty()) && !isCancelledFn()) {
+                                if ((audioBytes == null || audioBytes.isEmpty()) && !isCancelledFn()) {
                                     if (!offlineVoice.isNullOrBlank()) {
                                         val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                                         if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
@@ -2080,7 +2161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                                     tr("KEY_OFFLINE_FALLBACK_TOAST")
                                                 )
                                             }
-                                            mp3Bytes = OfflineTtsEngine.synthesizePart(
+                                            audioBytes = OfflineTtsEngine.synthesizePart(
                                                 context = getApplication(),
                                                 voiceDir = voiceDir,
                                                 text = sentenceText,
@@ -2094,12 +2175,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                                     updatePlayerSentenceStatus(claimIdx, PartStatus.fromKey(key), runId)
                                                 }
                                             )
+                                            isOfflineWav = true
                                         }
                                     }
                                 }
-                                if (mp3Bytes != null && mp3Bytes.isNotEmpty() && !isCancelledFn()) {
-                                    val outFile = File(cacheDir, "player_${sessionId}_$claimIdx.mp3")
-                                    FileOutputStream(outFile).use { it.write(mp3Bytes) }
+                                if (audioBytes != null && audioBytes.isNotEmpty() && !isCancelledFn()) {
+                                    val ext = if (isOfflineWav) "wav" else "mp3"
+                                    val outFile = File(cacheDir, "player_${sessionId}_$claimIdx.$ext")
+                                    FileOutputStream(outFile).use { it.write(audioBytes) }
                                     playerCachedFiles[claimIdx] = outFile
                                     updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
                                 } else {
@@ -2326,12 +2409,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val lowBitrate = settings.lowBitrate
 
         previewJob = viewModelScope.launch(Dispatchers.IO) {
-            var mp3Bytes: ByteArray? = null
+            var audioBytes: ByteArray? = null
+            var isOfflineWav = false
             val offlineVoice = if (repo.isVoiceOffline(chosenVoice)) chosenVoice else resolveOfflineFallbackVoice()
             val hasOfflineFallback = !offlineVoice.isNullOrBlank()
             val useOnlineNow = wantOnline && !repo.isVoiceOffline(chosenVoice)
             if (useOnlineNow) {
-                mp3Bytes = SocketEdgeTtsWorker.synthesizePart(
+                audioBytes = SocketEdgeTtsWorker.synthesizePart(
                     voice = chosenVoice,
                     pitch = pitchStr,
                     rate = rateStr,
@@ -2345,7 +2429,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     onStatusUpdate = {}
                 )
             }
-            if ((mp3Bytes == null || mp3Bytes.isEmpty()) && isActive) {
+            if ((audioBytes == null || audioBytes.isEmpty()) && isActive) {
                 if (!offlineVoice.isNullOrBlank()) {
                     val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                     if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
@@ -2356,7 +2440,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 force = true
                             )
                         }
-                        mp3Bytes = OfflineTtsEngine.synthesizePart(
+                        audioBytes = OfflineTtsEngine.synthesizePart(
                             context = getApplication(),
                             voiceDir = voiceDir,
                             text = previewText,
@@ -2368,26 +2452,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             isCancelled = { !isActive },
                             onStatusUpdate = {}
                         )
+                        isOfflineWav = true
                     }
                 }
             }
 
             withContext(Dispatchers.Main) {
                 restorePreviewStatus()
-                if (mp3Bytes == null || mp3Bytes.isEmpty() || !isActive) {
+                if (audioBytes == null || audioBytes.isEmpty() || !isActive) {
                     partPreviewActive = false
                     return@withContext
                 }
-                playPreviewBytes(mp3Bytes)
+                playPreviewBytes(audioBytes, isWav = isOfflineWav)
             }
         }
         return true
     }
 
-    private fun playPreviewBytes(mp3Bytes: ByteArray) {
+    private fun playPreviewBytes(audioBytes: ByteArray, isWav: Boolean = false) {
         try {
-            val tempFile = File.createTempFile("preview_", ".mp3", getApplication<Application>().cacheDir)
-            tempFile.writeBytes(mp3Bytes)
+            val suffix = if (isWav) ".wav" else ".mp3"
+            val tempFile = File.createTempFile("preview_", suffix, getApplication<Application>().cacheDir)
+            tempFile.writeBytes(audioBytes)
             val mp = MediaPlayer()
             mediaPlayer = mp
             mp.setDataSource(tempFile.absolutePath)
@@ -2799,9 +2885,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val hasOfflineFallback = !offlineVoice.isNullOrBlank()
                         val wantOnline = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice)
                         val shouldUseOnline = wantOnline && isNetworkAvailable()
-                        var mp3Data: ByteArray? = null
+                        var partData: ByteArray? = null
+                        var partExt = "mp3"
                         if (shouldUseOnline) {
-                            mp3Data = SocketEdgeTtsWorker.synthesizePart(
+                            partData = SocketEdgeTtsWorker.synthesizePart(
                                 voice = spec.voice,
                                 pitch = spec.pitch,
                                 rate = spec.rate,
@@ -2817,7 +2904,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             )
                         }
-                        if ((mp3Data == null || mp3Data.isEmpty()) && isActive && runIdGen.get() == currentRunId) {
+                        if ((partData == null || partData.isEmpty()) && isActive && runIdGen.get() == currentRunId) {
                             if (!offlineVoice.isNullOrBlank()) {
                                 val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                                 if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
@@ -2827,7 +2914,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             tr("KEY_OFFLINE_FALLBACK_TOAST")
                                         )
                                     }
-                                    mp3Data = OfflineTtsEngine.synthesizePart(
+                                    partData = OfflineTtsEngine.synthesizePart(
                                         context = getApplication(),
                                         voiceDir = voiceDir,
                                         text = spec.text,
@@ -2841,21 +2928,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             updateStatusBox(spec.index, statusKey, currentRunId)
                                         }
                                     )
+                                    partExt = "wav"
                                 }
                             }
                         }
 
-                        if (!isActive || runIdGen.get() != currentRunId || mp3Data == null || mp3Data.isEmpty()) {
+                        if (!isActive || runIdGen.get() != currentRunId || partData == null || partData.isEmpty()) {
                             return@launch
                         }
 
                         val savedOk = savePartMp3File(
-                            data = mp3Data,
+                            data = partData,
                             saveDirBase = runSaveDir,
                             fileName = spec.fileName,
                             glava = spec.glava,
                             fileNum = spec.fileNum,
-                            ext = "mp3"
+                            ext = partExt
                         )
                         if (!savedOk) {
                             return@launch
@@ -2874,6 +2962,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     inBookDir = runBookDirCreate,
                                     multipleBooks = multipleBooks,
                                     soundGlavaBytes = soundGlavaBytes,
+                                    lowBitrate = runLowBitrate,
                                     opusOutput = runOpusOutput,
                                     embedMetadata = runEmbedMetadata,
                                     rid = currentRunId
@@ -2965,6 +3054,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         inBookDir: Boolean,
         multipleBooks: Boolean,
         soundGlavaBytes: ByteArray,
+        lowBitrate: Boolean,
         opusOutput: Boolean,
         embedMetadata: Boolean,
         rid: Int
@@ -2983,8 +3073,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chunkSpec.targetBaseName
         }
 
-        if (!embedMetadata && chunkSpec.fileNums.size == 1 && !chunkSpec.includeGlavaIntro && !opusOutput) {
-            val rawFile = File(bookDir, rawPartFileName(chunkSpec.glava, chunkSpec.fileNums[0], "mp3"))
+        val targetKbps = if (lowBitrate) 48 else 96
+
+        val partFiles = ArrayList<File>(chunkSpec.fileNums.size)
+        var allWav = true
+        var allMp3 = true
+        for (num in chunkSpec.fileNums) {
+            val wavFile = File(bookDir, rawPartFileName(chunkSpec.glava, num, "wav"))
+            val mp3File = File(bookDir, rawPartFileName(chunkSpec.glava, num, "mp3"))
+            when {
+                wavFile.exists() -> {
+                    partFiles.add(wavFile)
+                    allMp3 = false
+                }
+                mp3File.exists() -> {
+                    partFiles.add(mp3File)
+                    allWav = false
+                }
+            }
+        }
+        if (partFiles.isEmpty()) return false
+
+        if (!embedMetadata && partFiles.size == 1 && allMp3 && !chunkSpec.includeGlavaIntro && !opusOutput) {
+            val rawFile = partFiles[0]
             val outFile = File(outDir, "$finalBaseName.mp3")
             if (rawFile.exists()) {
                 moveFileOverwrite(rawFile, outFile)
@@ -2992,24 +3103,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return false
         }
-
-        val mergeBuffer = ByteArrayOutputStream()
-        if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-            mergeBuffer.write(soundGlavaBytes)
-        }
-        for (num in chunkSpec.fileNums) {
-            if (runIdGen.get() != rid) return false
-            val rawFile = File(bookDir, rawPartFileName(chunkSpec.glava, num, "mp3"))
-            if (rawFile.exists()) {
-                try {
-                    mergeBuffer.write(rawFile.readBytes())
-                } catch (_: Exception) {
-                }
-                rawFile.delete()
-            }
-        }
-        val assembledMp3 = mergeBuffer.toByteArray()
-        if (assembledMp3.isEmpty() || runIdGen.get() != rid) return false
 
         val albumTitle = chunkSpec.bookMetadata.title.ifBlank { chunkSpec.bookFolderName }
         val trackTitle = when {
@@ -3024,6 +3117,116 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             else -> "$albumTitle - ${"%04d".format(chunkSpec.bookChunkNumber)}"
         }
+
+        if (allWav) {
+            val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = true)
+            if (mergedWav.isEmpty() || runIdGen.get() != rid) return false
+
+            if (opusOutput) {
+                var opusBytes = OpusConverter.convertMp3ToOpus(mergedWav)
+                if (runIdGen.get() != rid) return false
+                if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+                    val introOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
+                    if (introOpus != null && introOpus.isNotEmpty()) {
+                        val cacheDir = getApplication<Application>().cacheDir
+                        val introFile = File.createTempFile("intro_", ".opus", cacheDir)
+                        val bodyFile = File.createTempFile("body_", ".opus", cacheDir)
+                        val mergedFile = File.createTempFile("merged_", ".opus", cacheDir)
+                        try {
+                            introFile.writeBytes(introOpus)
+                            bodyFile.writeBytes(opusBytes)
+                            if (OpusConverter.mergeOpusFiles(listOf(introFile.absolutePath, bodyFile.absolutePath), mergedFile.absolutePath) &&
+                                mergedFile.exists() && mergedFile.length() > 0L
+                            ) {
+                                opusBytes = mergedFile.readBytes()
+                            }
+                        } finally {
+                            introFile.delete()
+                            bodyFile.delete()
+                            mergedFile.delete()
+                        }
+                    }
+                }
+                if (opusBytes != null && opusBytes.isNotEmpty()) {
+                    val finalOpus = if (embedMetadata) {
+                        AudioMetadataTagger.tagOpus(
+                            opusBytes = opusBytes,
+                            bookMeta = chunkSpec.bookMetadata,
+                            trackTitle = trackTitle,
+                            albumTitle = albumTitle,
+                            trackNumber = chunkSpec.bookChunkNumber,
+                            totalTracks = chunkSpec.totalChunksForBook,
+                            voiceName = chunkSpec.voice
+                        )
+                    } else {
+                        opusBytes
+                    }
+                    val outFile = File(outDir, "$finalBaseName.opus")
+                    return try {
+                        FileOutputStream(outFile).use { it.write(finalOpus) }
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+            }
+
+            val encodedMp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps)
+            if (encodedMp3 == null || encodedMp3.isEmpty() || runIdGen.get() != rid) return false
+            val assembledMp3 = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+                val buf = ByteArrayOutputStream(soundGlavaBytes.size + encodedMp3.size)
+                buf.write(soundGlavaBytes)
+                buf.write(encodedMp3)
+                buf.toByteArray()
+            } else {
+                encodedMp3
+            }
+            val finalMp3 = if (embedMetadata) {
+                AudioMetadataTagger.tagMp3(
+                    mp3Bytes = assembledMp3,
+                    bookMeta = chunkSpec.bookMetadata,
+                    trackTitle = trackTitle,
+                    albumTitle = albumTitle,
+                    trackNumber = chunkSpec.bookChunkNumber,
+                    totalTracks = chunkSpec.totalChunksForBook,
+                    voiceName = chunkSpec.voice
+                )
+            } else {
+                assembledMp3
+            }
+            val outFile = File(outDir, "$finalBaseName.mp3")
+            return try {
+                FileOutputStream(outFile).use { it.write(finalMp3) }
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        val mergeBuffer = ByteArrayOutputStream()
+        if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+            mergeBuffer.write(soundGlavaBytes)
+        }
+        for (rawFile in partFiles) {
+            if (runIdGen.get() != rid) return false
+            if (rawFile.exists()) {
+                try {
+                    val rawBytes = rawFile.readBytes()
+                    if (rawFile.extension.equals("wav", ignoreCase = true)) {
+                        val mp3Part = OpusConverter.convertWavToMp3(rawBytes, targetKbps)
+                        if (mp3Part != null && mp3Part.isNotEmpty()) {
+                            mergeBuffer.write(mp3Part)
+                        }
+                    } else {
+                        mergeBuffer.write(rawBytes)
+                    }
+                } catch (_: Exception) {
+                }
+                rawFile.delete()
+            }
+        }
+        val assembledMp3 = mergeBuffer.toByteArray()
+        if (assembledMp3.isEmpty() || runIdGen.get() != rid) return false
 
         return if (opusOutput) {
             val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3)
