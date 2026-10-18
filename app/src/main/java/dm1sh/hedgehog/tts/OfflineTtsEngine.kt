@@ -36,6 +36,7 @@ object OfflineTtsEngine {
 
     private val sessionInitLock = Any()
     private val sessionPool = ConcurrentLinkedQueue<CachedSession>()
+    private val activeSessions = ConcurrentHashMap.newKeySet<CachedSession>()
 
     @Volatile
     private var poolVoiceDir: String = ""
@@ -156,10 +157,24 @@ object OfflineTtsEngine {
         return try {
             if (shouldAbort()) return ByteArray(0)
             onProcessingStart()
-            pcmParallel(voiceDir, text, rate, pitch)
+            pcmParallel(voiceDir, text, rate, pitch, shouldAbort)
         } catch (t: Throwable) {
-            System.err.println("$TAG: synthesizePcmBlocking failed: ${t.message}")
+            if (!shouldAbort()) {
+                System.err.println("$TAG: synthesizePcmBlocking failed: ${t.message}")
+            }
             ByteArray(0)
+        }
+    }
+
+    fun cancelAllActive() {
+        for (session in activeSessions) {
+            try {
+                session.synthesizer.StopSpeakingAsync()
+            } catch (_: Throwable) {
+            }
+        }
+        synchronized(sessionInitLock) {
+            drainPoolLocked()
         }
     }
 
@@ -230,26 +245,36 @@ object OfflineTtsEngine {
         }
     }
 
-    private fun pcmParallel(voiceDir: String, text: String, rate: String, pitch: String): ByteArray {
+    private fun pcmParallel(
+        voiceDir: String,
+        text: String,
+        rate: String,
+        pitch: String,
+        shouldAbort: () -> Boolean = { false }
+    ): ByteArray {
         for (attempt in 0..1) {
+            if (shouldAbort()) return ByteArray(0)
             val session = try {
                 borrowSession(voiceDir)
             } catch (t: Throwable) {
-                if (attempt == 1) throw t
+                if (attempt == 1 || shouldAbort()) throw t
                 continue
             }
+            activeSessions.add(session)
             var sessionHealthy = false
             try {
+                if (shouldAbort()) return ByteArray(0)
                 val ssml = buildSsml(session.voice, text, rate, pitch)
                 val result = session.synthesizer.SpeakSsml(ssml)
                 try {
+                    if (shouldAbort()) return ByteArray(0)
                     if (result.reason == ResultReason.SynthesizingAudioCompleted) {
                         val audioData = result.audioData
                         if (audioData != null && audioData.isNotEmpty()) {
                             sessionHealthy = true
                             return stripRiff(audioData)
                         }
-                    } else {
+                    } else if (!shouldAbort()) {
                         val details = SpeechSynthesisCancellationDetails.fromResult(result)
                         System.err.println("$TAG: FAIL reason=${details.reason} code=${details.errorCode} details=${details.errorDetails}")
                     }
@@ -257,9 +282,12 @@ object OfflineTtsEngine {
                     result.close()
                 }
             } catch (t: Throwable) {
-                System.err.println("$TAG: SpeakSsml attempt ${attempt + 1} failed: ${t.message}")
+                if (!shouldAbort()) {
+                    System.err.println("$TAG: SpeakSsml attempt ${attempt + 1} failed: ${t.message}")
+                }
             } finally {
-                if (sessionHealthy) {
+                activeSessions.remove(session)
+                if (sessionHealthy && !shouldAbort()) {
                     returnSession(session)
                 } else {
                     discardSession(session)

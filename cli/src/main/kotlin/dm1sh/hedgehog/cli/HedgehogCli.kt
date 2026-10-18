@@ -10,6 +10,7 @@ import dm1sh.hedgehog.tts.OfflineTtsEngine
 import dm1sh.hedgehog.tts.OpusConverter
 import dm1sh.hedgehog.tts.SecMsGecGenerator
 import dm1sh.hedgehog.tts.SocketEdgeTtsWorker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,7 +26,10 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipFile
@@ -38,6 +42,15 @@ private const val MERGED_PREFIX = "F"
 private const val MAX_SAVE_PATH_LEN = 220
 private val BOOK_EXTENSIONS = setOf("txt", "fb2", "epub", "html", "htm", "xml", "ini", "zip")
 private val TOKEN_VOICE_REGEX = Regex("value=\"(Microsoft Server Speech Text to Speech Voice \\(([^,]+), ([^)]+)\\))\"")
+
+@Volatile
+private var interruptedByUser: Boolean = false
+
+@Volatile
+private var activeCliScopeJob: Job? = null
+
+private val activeTempDirs = ConcurrentHashMap.newKeySet<File>()
+private val cleanupDoneLatch = CountDownLatch(1)
 
 data class CliOptions(
     val inputs: MutableList<String> = mutableListOf(),
@@ -101,36 +114,77 @@ private data class ChunkJobSpec(
     val voice: String
 )
 
-fun main(args: Array<String>) = runBlocking {
-    val opts = parseArgs(args)
-
-    if (opts.showVersion) {
-        val ver = object {}.javaClass.`package`?.implementationVersion ?: "1.3.0"
-        println("hedgehog-cli $ver")
-        return@runBlocking
-    }
-
-    if (opts.showHelp) {
-        printHelp()
-        return@runBlocking
-    }
-
-    if (opts.downloadOfflineVoices) {
-        val code = runDownloadOfflineVoices(opts)
-        if (!opts.listVoices && opts.inputs.isEmpty() && opts.inlineText == null) {
-            exitProcess(code)
+fun main(args: Array<String>) {
+    val shutdownHook = Thread({
+        interruptedByUser = true
+        OfflineTtsEngine.cancelAllActive()
+        activeCliScopeJob?.cancel()
+        try {
+            cleanupDoneLatch.await(1500, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
         }
-    }
-
-    if (opts.listVoices) {
-        runListVoices(opts)
-        if (opts.inputs.isEmpty() && opts.inlineText == null) {
-            return@runBlocking
+        for (dir in activeTempDirs) {
+            try {
+                dir.deleteRecursively()
+            } catch (_: Throwable) {
+            }
         }
+    }, "hedgehog-cli-shutdown")
+    Runtime.getRuntime().addShutdownHook(shutdownHook)
+
+    var exitCode = 0
+    try {
+        runBlocking {
+            activeCliScopeJob = coroutineContext[Job]
+            val opts = parseArgs(args)
+
+            if (opts.showVersion) {
+                val ver = object {}.javaClass.`package`?.implementationVersion ?: "1.3.0"
+                println("hedgehog-cli $ver")
+                return@runBlocking
+            }
+
+            if (opts.showHelp) {
+                printHelp()
+                return@runBlocking
+            }
+
+            if (opts.downloadOfflineVoices) {
+                val code = runDownloadOfflineVoices(opts)
+                if (!opts.listVoices && opts.inputs.isEmpty() && opts.inlineText == null) {
+                    exitCode = code
+                    return@runBlocking
+                }
+            }
+
+            if (opts.listVoices) {
+                runListVoices(opts)
+                if (opts.inputs.isEmpty() && opts.inlineText == null) {
+                    return@runBlocking
+                }
+            }
+
+            exitCode = runConversion(opts)
+        }
+    } catch (_: CancellationException) {
+        exitCode = 130
+    } finally {
+        for (dir in activeTempDirs) {
+            try {
+                dir.deleteRecursively()
+            } catch (_: Throwable) {
+            }
+        }
+        cleanupDoneLatch.countDown()
     }
 
-    val exitCode = runConversion(opts)
-    exitProcess(exitCode)
+    if (!interruptedByUser) {
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook)
+        } catch (_: Throwable) {
+        }
+        exitProcess(exitCode)
+    }
 }
 
 private fun expandPath(raw: String): File {
@@ -984,6 +1038,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
     val totalChunksCount = chunkSpecs.size
     val workTempRoot = Files.createTempDirectory("hedgehog_cli_work_").toFile()
+    activeTempDirs.add(workTempRoot)
 
     if (!opts.quiet) {
         val modeLabel = if (opts.offlineMode) {
@@ -1031,7 +1086,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
     try {
         kotlinx.coroutines.coroutineScope {
             val childJobs = mutableListOf<Job>()
-            while (isActive && savedPartsAtomic.get() < total && failedAtomic.get() == 0) {
+            while (isActive && !interruptedByUser && savedPartsAtomic.get() < total && failedAtomic.get() == 0) {
                 val savedCount = savedPartsAtomic.get()
                 val maxWindow = savedCount + effectiveThreads
                 val nextIdx = launchedAtomic.get()
@@ -1054,14 +1109,14 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                 isPreview = false,
                                 fallbackToOfflineOnError = hasOfflineFallback,
                                 isPaused = { false },
-                                isCancelled = { !isActive || failedAtomic.get() > 0 },
+                                isCancelled = { interruptedByUser || !isActive || failedAtomic.get() > 0 },
                                 onStatusUpdate = {}
                             )
                         }
 
-                        if ((partData == null || partData.isEmpty()) && isActive && failedAtomic.get() == 0) {
+                        if ((partData == null || partData.isEmpty()) && isActive && !interruptedByUser && failedAtomic.get() == 0) {
                             if (offlineInstalled != null && (opts.offlineMode || opts.allowOfflineFallback)) {
-                                if (!opts.offlineMode && !opts.quiet) {
+                                if (!opts.offlineMode && !opts.quiet && !interruptedByUser) {
                                     synchronized(progressPrintLock) {
                                         System.err.println("\nWarning: Online synthesis failed for part ${spec.index + 1}, falling back to offline voice '${offlineInstalled.folderName}'.")
                                     }
@@ -1074,11 +1129,15 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                     lowBitrate = opts.lowBitrate,
                                     isPreview = false,
                                     isPaused = { false },
-                                    isCancelled = { !isActive || failedAtomic.get() > 0 },
+                                    isCancelled = { interruptedByUser || !isActive || failedAtomic.get() > 0 },
                                     onStatusUpdate = {}
                                 )
                                 partExt = "wav"
                             }
+                        }
+
+                        if (interruptedByUser || !isActive) {
+                            return@launch
                         }
 
                         if (partData == null || partData.isEmpty()) {
@@ -1092,10 +1151,12 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         FileOutputStream(partFile).use { it.write(partData) }
 
                         savedPartsAtomic.incrementAndGet()
-                        reportProgress()
+                        if (!interruptedByUser) {
+                            reportProgress()
+                        }
 
                         val chunkSpec = partToChunkMap[spec.index]
-                        if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
+                        if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
                             val outFile = assembleCliChunk(
                                 chunkSpec = chunkSpec,
                                 workTempRoot = workTempRoot,
@@ -1111,8 +1172,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                     outputFiles.add(outFile)
                                 }
                                 postprocessedChunksAtomic.incrementAndGet()
-                                reportProgress()
-                            } else {
+                                if (!interruptedByUser) {
+                                    reportProgress()
+                                }
+                            } else if (!interruptedByUser) {
                                 failedAtomic.incrementAndGet()
                             }
                         }
@@ -1121,27 +1184,50 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 } else {
                     delay(50)
                     val nowElapsed = elapsedMillis()
-                    if (nowElapsed - lastTickReportMs >= 1000L) {
+                    if (!interruptedByUser && nowElapsed - lastTickReportMs >= 1000L) {
                         lastTickReportMs = nowElapsed
                         reportProgress()
                     }
                 }
             }
-            while (childJobs.any { it.isActive }) {
-                delay(50)
-                val nowElapsed = elapsedMillis()
-                if (nowElapsed - lastTickReportMs >= 1000L) {
-                    lastTickReportMs = nowElapsed
-                    reportProgress()
+            if (interruptedByUser) {
+                childJobs.forEach { it.cancel() }
+            } else {
+                while (childJobs.any { it.isActive } && !interruptedByUser) {
+                    delay(50)
+                    val nowElapsed = elapsedMillis()
+                    if (nowElapsed - lastTickReportMs >= 1000L) {
+                        lastTickReportMs = nowElapsed
+                        reportProgress()
+                    }
+                }
+                if (interruptedByUser) {
+                    childJobs.forEach { it.cancel() }
+                } else {
+                    childJobs.forEach { it.join() }
                 }
             }
-            childJobs.forEach { it.join() }
         }
+    } catch (_: CancellationException) {
     } finally {
         workTempRoot.deleteRecursively()
+        activeTempDirs.remove(workTempRoot)
     }
 
     val totalElapsedMs = elapsedMillis()
+    val sortedOutputFiles = synchronized(outputFiles) {
+        outputFiles.sortedBy { it.absolutePath }
+    }
+
+    if (interruptedByUser) {
+        synchronized(progressPrintLock) {
+            System.err.println(
+                "\nInterrupted by user (Ctrl+C) after ${formatClockDuration(totalElapsedMs)} (${formatHumanDuration(totalElapsedMs)}) • " +
+                    "saved ${sortedOutputFiles.size} completed file(s)."
+            )
+        }
+        return 130
+    }
 
     if (!opts.quiet) {
         reportProgress()
@@ -1154,9 +1240,6 @@ private suspend fun runConversion(opts: CliOptions): Int {
     }
 
     if (!opts.quiet) {
-        val sortedOutputFiles = synchronized(outputFiles) {
-            outputFiles.sortedBy { it.absolutePath }
-        }
         System.err.println(
             "Completed in ${formatClockDuration(totalElapsedMs)} (${formatHumanDuration(totalElapsedMs)}) • " +
                 "$total parts • ${sortedOutputFiles.size} file(s)"
@@ -1195,6 +1278,26 @@ private fun formatHumanDuration(elapsedMs: Long): String {
     }
 }
 
+private fun writeOutputAtomically(targetFile: File, data: ByteArray): File? {
+    if (interruptedByUser) return null
+    val parent = targetFile.parentFile ?: File(".")
+    parent.mkdirs()
+    val tmpFile = File(parent, ".${targetFile.name}.${System.nanoTime()}.tmp")
+    return try {
+        FileOutputStream(tmpFile).use { it.write(data) }
+        if (interruptedByUser) {
+            tmpFile.delete()
+            null
+        } else {
+            Files.move(tmpFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            targetFile
+        }
+    } catch (_: Throwable) {
+        tmpFile.delete()
+        null
+    }
+}
+
 private fun assembleCliChunk(
     chunkSpec: ChunkJobSpec,
     workTempRoot: File,
@@ -1205,6 +1308,7 @@ private fun assembleCliChunk(
     multipleBooks: Boolean,
     soundGlavaBytes: ByteArray
 ): File? {
+    if (interruptedByUser) return null
     val bookTempDir = File(workTempRoot, chunkSpec.bookFolderName)
     bookTempDir.mkdirs()
     val outDir = if (chunkSpec.totalChunksForBook == 1 || (!opts.bookDirCreate && !multipleBooks)) {
@@ -1251,8 +1355,7 @@ private fun assembleCliChunk(
     if (targetWavDirect && allWav) {
         val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = true)
         if (mergedWav.isEmpty()) return null
-        FileOutputStream(targetFile).use { it.write(mergedWav) }
-        return targetFile
+        return writeOutputAtomically(targetFile, mergedWav)
     }
 
     val targetKbps = if (opts.lowBitrate) 48 else 96
@@ -1268,11 +1371,11 @@ private fun assembleCliChunk(
 
     if (allWav) {
         val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = true)
-        if (mergedWav.isEmpty()) return null
+        if (mergedWav.isEmpty() || interruptedByUser) return null
 
         if (opts.opusOutput) {
             var opusBytes = OpusConverter.convertMp3ToOpus(mergedWav)
-            if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+            if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty() && !interruptedByUser) {
                 val introOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
                 if (introOpus != null && introOpus.isNotEmpty()) {
                     val introFile = File.createTempFile("intro_", ".opus", bookTempDir)
@@ -1293,7 +1396,7 @@ private fun assembleCliChunk(
                     }
                 }
             }
-            if (opusBytes == null || opusBytes.isEmpty()) return null
+            if (opusBytes == null || opusBytes.isEmpty() || interruptedByUser) return null
             val finalOpus = if (opts.embedMetadata) {
                 AudioMetadataTagger.tagOpus(
                     opusBytes = opusBytes,
@@ -1307,10 +1410,10 @@ private fun assembleCliChunk(
             } else {
                 opusBytes
             }
-            FileOutputStream(targetFile).use { it.write(finalOpus) }
-            return targetFile
+            return writeOutputAtomically(targetFile, finalOpus)
         } else {
             val encodedMp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps) ?: return null
+            if (interruptedByUser) return null
             val assembledMp3 = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
                 val buf = ByteArrayOutputStream(soundGlavaBytes.size + encodedMp3.size)
                 buf.write(soundGlavaBytes)
@@ -1332,8 +1435,7 @@ private fun assembleCliChunk(
             } else {
                 assembledMp3
             }
-            FileOutputStream(targetFile).use { it.write(finalMp3) }
-            return targetFile
+            return writeOutputAtomically(targetFile, finalMp3)
         }
     }
 
@@ -1342,6 +1444,7 @@ private fun assembleCliChunk(
         mergeBuffer.write(soundGlavaBytes)
     }
     for (pFile in partFiles) {
+        if (interruptedByUser) return null
         if (pFile.exists()) {
             val raw = pFile.readBytes()
             pFile.delete()
@@ -1354,10 +1457,11 @@ private fun assembleCliChunk(
         }
     }
     val assembledMp3 = mergeBuffer.toByteArray()
-    if (assembledMp3.isEmpty()) return null
+    if (assembledMp3.isEmpty() || interruptedByUser) return null
 
     if (opts.opusOutput) {
         val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3) ?: return null
+        if (interruptedByUser) return null
         val finalOpus = if (opts.embedMetadata) {
             AudioMetadataTagger.tagOpus(
                 opusBytes = opusBytes,
@@ -1371,8 +1475,7 @@ private fun assembleCliChunk(
         } else {
             opusBytes
         }
-        FileOutputStream(targetFile).use { it.write(finalOpus) }
-        return targetFile
+        return writeOutputAtomically(targetFile, finalOpus)
     } else {
         val finalMp3 = if (opts.embedMetadata) {
             AudioMetadataTagger.tagMp3(
@@ -1387,7 +1490,6 @@ private fun assembleCliChunk(
         } else {
             assembledMp3
         }
-        FileOutputStream(targetFile).use { it.write(finalMp3) }
-        return targetFile
+        return writeOutputAtomically(targetFile, finalMp3)
     }
 }
