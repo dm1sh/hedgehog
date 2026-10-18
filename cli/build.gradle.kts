@@ -8,7 +8,7 @@ plugins {
     application
 }
 
-val cliVersionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.3.0"
+val cliVersionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.3.1"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11
