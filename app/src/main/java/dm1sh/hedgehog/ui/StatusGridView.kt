@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -38,10 +39,13 @@ fun StatusGridView(
     tr: (String) -> String,
     onSpeakTooltip: (String) -> Unit,
     modifier: Modifier = Modifier,
+    offlineFallbackMap: Map<Int, Boolean> = emptyMap(),
     maxHeightDp: androidx.compose.ui.unit.Dp = 280.dp
 ) {
     val count = statuses.size
     if (count == 0) return
+
+    val fallbackOutlineColor = MaterialTheme.colorScheme.onSurface
 
     val density = LocalDensity.current
     val boxesPerRow = 10
@@ -110,7 +114,12 @@ fun StatusGridView(
                                             y = row * rowHeightPx - scrollState.value
                                         )
                                         val st = statuses[idx]
-                                        val msg = "${tr("KEY_STAT_AREA_TEXT_1")}${idx + 1}: ${tr(st.trKey).trim()}"
+                                        val fallbackSuffix = if (offlineFallbackMap[idx] == true) {
+                                            " (${tr("KEY_VOICE_OFFLINE")})"
+                                        } else {
+                                            ""
+                                        }
+                                        val msg = "${tr("KEY_STAT_AREA_TEXT_1")}${idx + 1}: ${tr(st.trKey).trim()}$fallbackSuffix"
                                         onSpeakTooltip(msg)
                                     }
                                 } else {
@@ -123,6 +132,8 @@ fun StatusGridView(
                     }
             ) {
                 val cornerPx = with(density) { 3.dp.toPx() }
+                val strokePx = with(density) { 2.dp.toPx() }
+                val halfStroke = strokePx / 2f
                 val scrollY = scrollState.value.toFloat()
                 val viewH = if (containerHeightPx > 0) containerHeightPx.toFloat() else size.height
                 val firstRow = max(0, (scrollY / rowHeightPx).toInt() - 1)
@@ -141,6 +152,18 @@ fun StatusGridView(
                             size = Size(boxSizePx, boxSizePx),
                             cornerRadius = CornerRadius(cornerPx, cornerPx)
                         )
+                        if (offlineFallbackMap[idx] == true) {
+                            drawRoundRect(
+                                color = fallbackOutlineColor,
+                                topLeft = Offset(x + halfStroke, y + halfStroke),
+                                size = Size(boxSizePx - strokePx, boxSizePx - strokePx),
+                                cornerRadius = CornerRadius(
+                                    max(0f, cornerPx - halfStroke),
+                                    max(0f, cornerPx - halfStroke)
+                                ),
+                                style = Stroke(width = strokePx)
+                            )
+                        }
                         x += cellStepPx
                     }
                 }
@@ -149,7 +172,12 @@ fun StatusGridView(
 
         if (selectedTooltipIndex in 0 until count) {
             val st = statuses[selectedTooltipIndex]
-            val tooltipText = "${tr("KEY_STAT_AREA_TEXT_1")}${selectedTooltipIndex + 1}: ${tr(st.trKey).trim()}"
+            val fallbackSuffix = if (offlineFallbackMap[selectedTooltipIndex] == true) {
+                " (${tr("KEY_VOICE_OFFLINE")})"
+            } else {
+                ""
+            }
+            val tooltipText = "${tr("KEY_STAT_AREA_TEXT_1")}${selectedTooltipIndex + 1}: ${tr(st.trKey).trim()}$fallbackSuffix"
             val tx = tooltipOffsetPx.x.toInt().coerceIn(0, (containerWidthPx - 200).coerceAtLeast(0))
             val ty = (tooltipOffsetPx.y.toInt() - 42).coerceAtLeast(0)
             Surface(

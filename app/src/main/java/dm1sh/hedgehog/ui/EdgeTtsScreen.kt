@@ -60,6 +60,8 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteSweep
@@ -70,6 +72,7 @@ import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.OfflinePin
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.PowerSettingsNew
@@ -223,6 +226,73 @@ fun EdgeTtsScreen(
                         }
                     },
                     actions = {
+                        val isOnlineActive = if (vm.activeMainTab == MainTab.PLAYER) {
+                            vm.settings.useOnlineVoicesPlayer && !vm.repo.isVoiceOffline(vm.settings.voicesName)
+                        } else {
+                            vm.settings.useOnlineVoices && !vm.repo.isVoiceOffline(vm.settings.voicesName)
+                        }
+                        val rawVoiceName = if (isOnlineActive) {
+                            vm.settings.voicesName
+                        } else {
+                            vm.settings.offlineVoicesName.ifBlank { vm.tr("KEY_OFFLINE_UNAVAILABLE") }
+                        }
+                        val chipLabel = if (rawVoiceName == vm.tr("KEY_OFFLINE_UNAVAILABLE")) {
+                            rawVoiceName
+                        } else {
+                            formatShortVoiceName(rawVoiceName)
+                        }
+
+                        Surface(
+                            onClick = { vm.openVoiceSettings() },
+                            shape = CircleShape,
+                            color = if (isOnlineActive) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                            contentColor = if (isOnlineActive) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (isOnlineActive) {
+                                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant
+                                }
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isOnlineActive) {
+                                        Icons.Outlined.Cloud
+                                    } else {
+                                        Icons.Outlined.OfflinePin
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (isOnlineActive) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                                Text(
+                                    text = chipLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
                         IconButton(
                             onClick = {
                                 vm.stopConversion(announce = false)
@@ -711,6 +781,7 @@ private fun BookStatusGridCard(
                 statuses = vm.partStatuses,
                 tr = vm::tr,
                 onSpeakTooltip = { vm.ttsSay(it) },
+                offlineFallbackMap = vm.partOfflineFallbackMap,
                 maxHeightDp = maxGridHeightDp,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -875,6 +946,25 @@ private fun LoadFolderFilesCard(
     }
 }
 
+private fun formatShortVoiceName(voice: String): String {
+    val trimmed = voice.trim()
+    if (trimmed.contains(",")) {
+        val parts = trimmed.split(",", limit = 2).map { it.trim() }
+        if (parts.size == 2) {
+            val lang = parts[0]
+            val name = parts[1].removeSuffix("MultilingualNeural").removeSuffix("Neural")
+            return "$lang • $name"
+        }
+    }
+    val dashMatch = Regex("^([a-zA-Z]{2,3}-[a-zA-Z]{2,4})[-_\\s]+(.+)$").find(trimmed)
+    if (dashMatch != null) {
+        val lang = dashMatch.groupValues[1]
+        val name = dashMatch.groupValues[2].removeSuffix("MultilingualNeural").removeSuffix("Neural")
+        return "$lang • $name"
+    }
+    return trimmed.removeSuffix("MultilingualNeural").removeSuffix("Neural")
+}
+
 private fun formatFileSize(bytes: Long): String {
     return when {
         bytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
@@ -890,8 +980,15 @@ private fun SettingsTabContent(
     onOpenStoragePermissions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val scrollState = rememberScrollState()
+    LaunchedEffect(vm.settingsScrollTrigger) {
+        if (vm.settingsScrollTrigger > 0) {
+            scrollState.animateScrollTo(0)
+        }
+    }
+
     Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
+        modifier = modifier.verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Spacer(modifier = Modifier.height(4.dp))
@@ -2165,20 +2262,46 @@ private fun PlayerTabContent(
                                         }
                                     }
                                         if (status != PartStatus.OPENED) {
-                                            Surface(
-                                                shape = MaterialTheme.shapes.extraSmall,
-                                                color = status.color.copy(alpha = 0.2f)
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
-                                                Text(
-                                                    text = vm.tr(status.trKey),
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = if (isSelected) {
-                                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                                    } else {
-                                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                                    },
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                )
+                                                if (status == PartStatus.SAVED) {
+                                                    val usedOnline = vm.playerSentenceOnlineMap[idx]
+                                                    if (usedOnline != null) {
+                                                        Icon(
+                                                            imageVector = if (usedOnline) {
+                                                                Icons.Outlined.CloudDone
+                                                            } else {
+                                                                Icons.Outlined.OfflinePin
+                                                            },
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(14.dp),
+                                                            tint = if (isSelected) {
+                                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                                            } else if (usedOnline) {
+                                                                MaterialTheme.colorScheme.primary
+                                                            } else {
+                                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                                Surface(
+                                                    shape = MaterialTheme.shapes.extraSmall,
+                                                    color = status.color.copy(alpha = 0.2f)
+                                                ) {
+                                                    Text(
+                                                        text = vm.tr(status.trKey),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = if (isSelected) {
+                                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                                        },
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }

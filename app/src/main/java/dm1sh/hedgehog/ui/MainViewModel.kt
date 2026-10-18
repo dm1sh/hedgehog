@@ -132,6 +132,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var progressBarMax by mutableIntStateOf(1000)
 
     val partStatuses = mutableStateListOf<PartStatus>()
+    val partOfflineFallbackMap = mutableStateMapOf<Int, Boolean>()
+    var settingsScrollTrigger by mutableIntStateOf(0)
+        private set
 
     // Conversion state
     var runWork by mutableStateOf(false)
@@ -179,6 +182,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var playerSentences by mutableStateOf<List<PlayerSentenceItem>>(emptyList())
         private set
     val playerSentenceStatuses = mutableStateMapOf<Int, PartStatus>()
+    val playerSentenceOnlineMap = mutableStateMapOf<Int, Boolean>()
     var playerSelectedIndex by mutableIntStateOf(0)
         private set
     var playerIsPlaying by mutableStateOf(false)
@@ -298,6 +302,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             MainTab.SETTINGS -> "KEY_SETTINGS"
         }
         ttsSay(tr(key))
+    }
+
+    fun openVoiceSettings() {
+        activeSettingsTab = SettingsTab.VOICE
+        if (activeMainTab != MainTab.SETTINGS) {
+            selectMainTab(MainTab.SETTINGS)
+        } else {
+            ttsSay(tr("KEY_SETTINGS_VOICE"))
+        }
+        settingsScrollTrigger++
     }
 
     fun tr(key: String): String {
@@ -819,6 +833,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopPlayerPlayback(clearCache = true)
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
+        playerSentenceOnlineMap.clear()
         playerSelectedIndex = 0
         playerBookKey = null
         playerIsSharedText = false
@@ -829,6 +844,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadedBooksCount = 0
         bookTitles.clear()
         partStatuses.clear()
+        partOfflineFallbackMap.clear()
         textAreaText = ""
         editorChapterTitleText = ""
         editorHasChapters = false
@@ -881,8 +897,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
+        partOfflineFallbackMap.clear()
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
+        playerSentenceOnlineMap.clear()
         playerSelectedIndex = 0
         playerBookKey = null
         playerIsSharedText = true
@@ -946,6 +964,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 postprocessedChunksCount = 0
                 totalChunksCount = computeTotalChunks(createdBook)
                 partStatuses.clear()
+                partOfflineFallbackMap.clear()
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
@@ -1002,8 +1021,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statInfoDoneHighlight = false
         statInfo = tr("KEY_LOAD")
         partStatuses.clear()
+        partOfflineFallbackMap.clear()
         playerSentences = emptyList()
         playerSentenceStatuses.clear()
+        playerSentenceOnlineMap.clear()
         playerSelectedIndex = 0
         playerBookKey = null
         playerIsSharedText = false
@@ -1148,6 +1169,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 postprocessedChunksCount = 0
                 totalChunksCount = computeTotalChunks(currentBook)
                 partStatuses.clear()
+                partOfflineFallbackMap.clear()
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
@@ -1364,6 +1386,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statStr = "0/$finalCount"
         chunksStatStr = "0/$totalChunksCount"
         partStatuses.clear()
+        partOfflineFallbackMap.clear()
         if (finalCount > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(finalCount, PartStatus.OPENED))
         }
@@ -1709,6 +1732,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopPlayerPlayback(clearCache = true)
         playerSentences = sentences
         playerSentenceStatuses.clear()
+        playerSentenceOnlineMap.clear()
         playerBookKey = bookKey
         playerBookmarks.clear()
         if (savedState != null && sentences.isNotEmpty()) {
@@ -1982,6 +2006,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val currentIdx = playerSelectedIndex
         stopPlayerPlayback(clearCache = true)
         playerSentenceStatuses.clear()
+        playerSentenceOnlineMap.clear()
         if (wasPlaying && playerSentences.isNotEmpty()) {
             startPlayerFrom(currentIdx)
         }
@@ -2025,13 +2050,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         startPlayerFrom(index)
     }
 
-    private fun updatePlayerSentenceStatus(index: Int, status: PartStatus, expectedRunId: Int) {
+    private fun updatePlayerSentenceStatus(
+        index: Int,
+        status: PartStatus,
+        expectedRunId: Int,
+        usedOnline: Boolean? = null
+    ) {
         viewModelScope.launch(Dispatchers.Main) {
             if (playerRunIdGen.get() == expectedRunId && index in playerSentences.indices) {
                 if (status == PartStatus.OPENED) {
                     playerSentenceStatuses.remove(index)
-                } else if (playerSentenceStatuses[index] != status) {
-                    playerSentenceStatuses[index] = status
+                    playerSentenceOnlineMap.remove(index)
+                } else {
+                    if (playerSentenceStatuses[index] != status) {
+                        playerSentenceStatuses[index] = status
+                    }
+                    if (usedOnline != null) {
+                        playerSentenceOnlineMap[index] = usedOnline
+                    }
                 }
             }
         }
@@ -2043,6 +2079,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .map { it.key }
         for (idx in toRemove) {
             playerSentenceStatuses.remove(idx)
+            playerSentenceOnlineMap.remove(idx)
         }
     }
 
@@ -2184,7 +2221,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     val outFile = File(cacheDir, "player_${sessionId}_$claimIdx.$ext")
                                     FileOutputStream(outFile).use { it.write(audioBytes) }
                                     playerCachedFiles[claimIdx] = outFile
-                                    updatePlayerSentenceStatus(claimIdx, PartStatus.SAVED, runId)
+                                    updatePlayerSentenceStatus(
+                                        index = claimIdx,
+                                        status = PartStatus.SAVED,
+                                        expectedRunId = runId,
+                                        usedOnline = !isOfflineWav
+                                    )
                                 } else {
                                     updatePlayerSentenceStatus(claimIdx, PartStatus.OPENED, runId)
                                 }
@@ -2341,6 +2383,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (clearCache) {
             playerSessionIdGen.incrementAndGet()
             playerSentenceStatuses.clear()
+            playerSentenceOnlineMap.clear()
             val filesToDelete = ArrayList(playerCachedFiles.values)
             playerCachedFiles.clear()
             viewModelScope.launch(Dispatchers.IO) {
@@ -2645,6 +2688,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         statStr = "0/$totalPartsCount"
         chunksStatStr = "0/$totalChunksCount"
         partStatuses.clear()
+        partOfflineFallbackMap.clear()
         if (total > 0) {
             partStatuses.addAll(java.util.Collections.nCopies(total, PartStatus.OPENED))
         }
@@ -2909,6 +2953,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
                                 if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
                                     if (wantOnline) {
+                                        markPartOfflineFallback(spec.index, currentRunId)
                                         OfflineTtsEngine.showFallbackToast(
                                             getApplication(),
                                             tr("KEY_OFFLINE_FALLBACK_TOAST")
@@ -3013,6 +3058,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (partStatuses[index] != status) {
                     partStatuses[index] = status
                 }
+            }
+        }
+    }
+
+    private fun markPartOfflineFallback(index: Int, expectedRunId: Int) {
+        viewModelScope.launch(Dispatchers.Main) {
+            if (runIdGen.get() == expectedRunId && runWork && index in partStatuses.indices) {
+                partOfflineFallbackMap[index] = true
             }
         }
     }
@@ -3397,6 +3450,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         for (i in partStatuses.indices) {
             partStatuses[i] = PartStatus.OPENED
         }
+        partOfflineFallbackMap.clear()
         processedPartsCount = 0
         postprocessedChunksCount = 0
         totalChunksCount = computeTotalChunks()
