@@ -1,6 +1,5 @@
 package dm1sh.hedgehog.book
 
-import android.util.Base64
 import dm1sh.hedgehog.model.DefaultVoices
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -15,6 +14,8 @@ import java.io.StringReader
 import java.net.URLDecoder
 import java.util.Locale
 import java.util.zip.ZipFile
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 object TextsConverter {
 
@@ -542,9 +543,10 @@ object TextsConverter {
         return CoverBinaryResult(null, "", 0, 0)
     }
 
+    @OptIn(ExperimentalEncodingApi::class)
     private fun decodeBase64Quietly(rawBase64: String): ByteArray? {
         return try {
-            Base64.decode(rawBase64.trim(), Base64.DEFAULT)
+            Base64.Mime.decode(rawBase64.trim())
         } catch (_: Throwable) {
             null
         }

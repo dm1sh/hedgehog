@@ -59,13 +59,16 @@ jobs:
       - name: Cache minimal FFmpeg + libopus JNI libraries
         uses: actions/cache@v4
         with:
-          path: app/src/main/jniLibs
-          key: jni-opus-ffmpeg-v1-${{ hashFiles('app/src/main/cpp/**', 'scripts/build-opus-ffmpeg-android.sh') }}
+          path: |
+            app/src/main/jniLibs
+            cli/src/main/resources/NATIVE
+          key: jni-opus-ffmpeg-v2-${{ hashFiles('app/src/main/cpp/**', 'scripts/build-opus-ffmpeg-android.sh', 'scripts/build-opus-ffmpeg-linux.sh') }}
 
-      - name: Build minimal FFmpeg + libopus JNI libraries
+      - name: Build minimal FFmpeg + libopus JNI libraries (Android & Linux CLI)
         run: |
-          chmod +x scripts/build-opus-ffmpeg-android.sh
+          chmod +x scripts/build-opus-ffmpeg-android.sh scripts/build-opus-ffmpeg-linux.sh
           ./scripts/build-opus-ffmpeg-android.sh
+          ./scripts/build-opus-ffmpeg-linux.sh
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -81,7 +84,7 @@ jobs:
             echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > /tmp/hedgehog-signing.p12
           fi
 
-      - name: Build Release APK
+      - name: Build Release APK and Linux CLI
         env:
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
@@ -89,21 +92,27 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --stacktrace
+        run: ./gradlew assembleRelease :cli:executableCli --stacktrace
 
-      - name: Prepare Release APK
+      - name: Prepare Release Artifacts
         id: apk
         run: |
           set -euo pipefail
           APK_FILE="hedgehog-${{ steps.version.outputs.version_name }}.apk"
+          CLI_FILE="hedgehog-cli"
           cp app/build/outputs/apk/release/app-release.apk "$APK_FILE"
+          cp cli/build/libs/hedgehog-cli "$CLI_FILE"
+          chmod +x "$CLI_FILE"
           echo "apk_file=${APK_FILE}" >> "$GITHUB_OUTPUT"
+          echo "cli_file=${CLI_FILE}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: hedgehog-release-apk
-          path: ${{ steps.apk.outputs.apk_file }}
+          path: |
+            ${{ steps.apk.outputs.apk_file }}
+            ${{ steps.apk.outputs.cli_file }}
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -115,6 +124,7 @@ jobs:
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           IS_PRERELEASE: ${{ steps.version.outputs.is_prerelease }}
           APK_FILE: ${{ steps.apk.outputs.apk_file }}
+          CLI_FILE: ${{ steps.apk.outputs.cli_file }}
         run: |
           set -euo pipefail
           NOTES="Version: ${VERSION_NAME} (versionCode: ${VERSION_CODE})"
@@ -122,16 +132,16 @@ jobs:
             if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
               gh release delete "$RELEASE_TAG" --cleanup-tag --yes
             fi
-            gh release create "$RELEASE_TAG" "$APK_FILE" \
+            gh release create "$RELEASE_TAG" "$APK_FILE" "$CLI_FILE" \
               --target "$GITHUB_SHA" \
               --title "$RELEASE_NAME" \
               --notes "$NOTES" \
               --prerelease
           else
             if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-              gh release upload "$RELEASE_TAG" "$APK_FILE" --clobber
+              gh release upload "$RELEASE_TAG" "$APK_FILE" "$CLI_FILE" --clobber
             else
-              gh release create "$RELEASE_TAG" "$APK_FILE" \
+              gh release create "$RELEASE_TAG" "$APK_FILE" "$CLI_FILE" \
                 --title "$RELEASE_NAME" \
                 --notes "$NOTES" \
                 --generate-notes

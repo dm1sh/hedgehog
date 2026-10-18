@@ -7,6 +7,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/audio_fifo.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/log.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
@@ -69,6 +70,7 @@ int hedgehog_mp3_to_opus_mem(
     *out_data = NULL;
     *out_size = 0;
     if (!in_data || in_size == 0) return -1;
+    av_log_set_level(AV_LOG_ERROR);
 
     int ret = -1;
     AVFormatContext *in_fmt_ctx = NULL;
@@ -310,6 +312,7 @@ cleanup:
  */
 int hedgehog_merge_opus_files(int num_files, const char **input_paths, const char *output_path) {
     if (num_files <= 0 || !input_paths || !output_path) return -1;
+    av_log_set_level(AV_LOG_ERROR);
 
     int ret = -1;
     AVFormatContext *out_fmt_ctx = NULL;

@@ -1,10 +1,11 @@
 package dm1sh.hedgehog.book
 
-import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 data class BookAudioMetadata(
     val title: String = "",
@@ -428,6 +429,7 @@ object AudioMetadataTagger {
         }
     }
 
+    @OptIn(ExperimentalEncodingApi::class)
     private fun buildFlacPictureBlockBase64(
         coverBytes: ByteArray,
         mimeType: String,
@@ -447,7 +449,7 @@ object AudioMetadataTagger {
         buf.putInt(0) // Indexed colors = 0
         buf.putInt(coverBytes.size)
         buf.put(coverBytes)
-        return Base64.encodeToString(buf.array(), Base64.NO_WRAP)
+        return Base64.Default.encode(buf.array())
     }
 
     private fun buildOpusTagsPacket(vendor: String, comments: List<String>): ByteArray {

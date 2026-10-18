@@ -1,6 +1,5 @@
 package dm1sh.hedgehog.tts
 
-import dm1sh.hedgehog.localization.LocalizationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -8,13 +7,14 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
 
 object OfflineInstaller {
 
     private const val SITE = "https://github.com/dm1sh/hedgehog/releases/download/offline-voices/"
-    private val DEFAULT_VOICES = mapOf(
+    val DEFAULT_VOICES = mapOf(
         "Dmitry" to listOf("ru"),
         "Svetlana" to listOf("ru"),
         "Dariya" to listOf("ru"),
@@ -32,28 +32,54 @@ object OfflineInstaller {
         onRegisterVoice: (String) -> Unit,
         onProgress: (fileName: String, downloaded: Long, total: Long) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        val lang = LocalizationManager.localelocaleLanguage(currentLocale)
-        val catalog = fetchCatalog(programDir, onProgress)
+        val lang = currentLocale.replace("-", "_").substringBefore("_").lowercase(Locale.ROOT)
+        val voicesDir = File(programDir, "Voices")
+        installToVoicesDir(
+            voicesDir = voicesDir,
+            requestedVoices = emptyList(),
+            localeFilter = lang,
+            onRegisterVoice = onRegisterVoice,
+            onProgress = onProgress
+        )
+    }
+
+    suspend fun installToVoicesDir(
+        voicesDir: File,
+        requestedVoices: List<String> = emptyList(),
+        localeFilter: String? = null,
+        onRegisterVoice: (String) -> Unit = {},
+        onProgress: (fileName: String, downloaded: Long, total: Long) -> Unit = { _, _, _ -> }
+    ): Boolean = withContext(Dispatchers.IO) {
+        val catalog = fetchCatalog(voicesDir, onProgress)
+        val filterSet = requestedVoices.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.toSet()
         var allOk = true
         for ((voice, langs) in catalog) {
-            if (langs.isEmpty() || langs.contains(lang)) {
-                val ok = installVoice(programDir, voice, onRegisterVoice, onProgress)
+            val matchesRequest = if (filterSet.isNotEmpty()) {
+                voice.lowercase(Locale.ROOT) in filterSet
+            } else if (!localeFilter.isNullOrBlank()) {
+                langs.isEmpty() || langs.contains(localeFilter)
+            } else {
+                true
+            }
+            if (matchesRequest) {
+                val ok = installVoiceInDir(voicesDir, voice, onRegisterVoice, onProgress)
                 allOk = ok && allOk
             }
         }
         allOk
     }
 
-    private fun fetchCatalog(
-        programDir: File,
-        onProgress: (String, Long, Long) -> Unit
+    fun fetchCatalog(
+        baseDir: File,
+        onProgress: (String, Long, Long) -> Unit = { _, _, _ -> }
     ): Map<String, List<String>> {
-        val tempDir = File(programDir, "Temp").apply { mkdirs() }
+        val tempDir = File(baseDir, ".tmp").apply { mkdirs() }
         val jsonFile = File(tempDir, "Voices.json")
         if (downloadFile("Voices.json", SITE + "Voices.json", jsonFile, onProgress)) {
             try {
                 val obj = JSONObject(jsonFile.readText(Charsets.UTF_8))
                 jsonFile.delete()
+                tempDir.delete()
                 val result = linkedMapOf<String, List<String>>()
                 val keys = obj.keys()
                 while (keys.hasNext()) {
@@ -72,18 +98,20 @@ object OfflineInstaller {
                 if (result.isNotEmpty()) return result
             } catch (_: Exception) {
                 jsonFile.delete()
+                tempDir.delete()
             }
+        } else {
+            tempDir.delete()
         }
         return DEFAULT_VOICES
     }
 
-    private fun installVoice(
-        programDir: File,
+    private fun installVoiceInDir(
+        voicesDir: File,
         voice: String,
         onRegisterVoice: (String) -> Unit,
         onProgress: (String, Long, Long) -> Unit
     ): Boolean {
-        val voicesDir = File(programDir, "Voices")
         val voiceDir = File(voicesDir, voice)
         if (!OfflineTtsEngine.voiceInstalled(voiceDir)) {
             if (!voicesDir.exists() && !voicesDir.mkdirs()) return false

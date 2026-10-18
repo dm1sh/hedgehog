@@ -1,17 +1,10 @@
 package dm1sh.hedgehog.tts
 
-import android.content.Context
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import android.widget.Toast
 import com.microsoft.cognitiveservices.speech.EmbeddedSpeechConfig
 import com.microsoft.cognitiveservices.speech.ResultReason
 import com.microsoft.cognitiveservices.speech.SpeechSynthesisCancellationDetails
 import com.microsoft.cognitiveservices.speech.SpeechSynthesisOutputFormat
 import com.microsoft.cognitiveservices.speech.SpeechSynthesizer
-import dm1sh.hedgehog.data.SettingsRepository
-import dm1sh.hedgehog.localization.LocalizationManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -20,7 +13,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.concurrent.atomic.AtomicLong
 
 object OfflineTtsEngine {
 
@@ -30,50 +22,11 @@ object OfflineTtsEngine {
     private const val NOTICE_CHECKSUM = 16
     private const val NOTICE_LIMIT = 8192
     private const val SAMPLE_RATE = 24000
-    private const val FALLBACK_TOAST_COOLDOWN_MSEC = 5_000L
     private val TOKEN_REGEX = Regex("value=\"(Microsoft Server Speech Text to Speech Voice \\(([^,]+), [^)]+\\))\"")
 
     private var maxJobs = 1
     private var semaphore = Semaphore(1)
     private val nativeLock = Any()
-    private val lastFallbackToastMsec = AtomicLong(0L)
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    fun showFallbackToast(context: Context, message: String? = null, force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        val prev = lastFallbackToastMsec.get()
-        if (!force && prev > 0L && now - prev < FALLBACK_TOAST_COOLDOWN_MSEC) {
-            return
-        }
-        if (!force && !lastFallbackToastMsec.compareAndSet(prev, now)) {
-            return
-        }
-        if (force) {
-            lastFallbackToastMsec.set(now)
-        }
-        val appCtx = context.applicationContext
-        val resolvedText = if (!message.isNullOrBlank()) {
-            message
-        } else {
-            try {
-                val repo = SettingsRepository(appCtx)
-                val settings = repo.loadSettings()
-                val loc = LocalizationManager(appCtx)
-                val langs = listOf("AUTO") + loc.loadedLocales
-                val idx = settings.languagesSelect.coerceIn(0, (langs.size - 1).coerceAtLeast(0))
-                loc.setLocale(langs[idx])
-                loc.tr("KEY_OFFLINE_FALLBACK_TOAST")
-            } catch (_: Throwable) {
-                "Online voice unavailable — falling back to offline voice"
-            }
-        }
-        mainHandler.post {
-            try {
-                Toast.makeText(appCtx, resolvedText, Toast.LENGTH_SHORT).show()
-            } catch (_: Throwable) {
-            }
-        }
-    }
 
     private class CachedSession(
         val voiceDir: String,
@@ -109,7 +62,7 @@ object OfflineTtsEngine {
     }
 
     suspend fun synthesizePart(
-        context: Context,
+        context: Any? = null,
         voiceDir: File,
         text: String,
         rate: String,
@@ -174,7 +127,7 @@ object OfflineTtsEngine {
             )
             if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else buildWav(pcmBytes)
         } catch (t: Throwable) {
-            Log.e(TAG, "synthesizeWavBlocking failed: ${t.message}", t)
+            System.err.println("$TAG: synthesizeWavBlocking failed: ${t.message}")
             ByteArray(0)
         }
     }
@@ -194,7 +147,7 @@ object OfflineTtsEngine {
                 pcmLocked(voiceDir, text, rate, pitch)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "synthesizePcmBlocking failed: ${t.message}", t)
+            System.err.println("$TAG: synthesizePcmBlocking failed: ${t.message}")
             ByteArray(0)
         }
     }
@@ -256,13 +209,13 @@ object OfflineTtsEngine {
                         }
                     } else {
                         val details = SpeechSynthesisCancellationDetails.fromResult(result)
-                        Log.e(TAG, "FAIL reason=${details.reason} code=${details.errorCode} details=${details.errorDetails}")
+                        System.err.println("$TAG: FAIL reason=${details.reason} code=${details.errorCode} details=${details.errorDetails}")
                     }
                 } finally {
                     result.close()
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "SpeakSsml attempt ${attempt + 1} failed: ${t.message}")
+                System.err.println("$TAG: SpeakSsml attempt ${attempt + 1} failed: ${t.message}")
             }
             resetSessionLocked()
         }

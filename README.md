@@ -100,6 +100,38 @@ Every push to `main` automatically builds a signed debug APK (`dm1sh.hedgehog_de
 
 ---
 
+## Linux CLI (`hedgehog-cli`)
+
+Hedgehog includes a standalone command-line interface (**`:cli`**) for Linux PCs that shares the same online Edge TTS engine, offline Microsoft Embedded Speech engine, book parsers (`FB2`, `EPUB`, `TXT`, `HTML`, `ZIP`), `.lexx` dictionaries, metadata/cover tagger, and native `libmp3lame` + `libopus` + `FFmpeg` audio encoder.
+
+### Building `hedgehog-cli`
+
+```bash
+./scripts/build-opus-ffmpeg-linux.sh
+./gradlew :cli:executableCli
+```
+
+This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli/build/libs/hedgehog-cli.jar`), which only requires a Java 11+ runtime (`java`) on the host machine.
+
+### CLI Usage Examples
+
+```bash
+# Convert a book using an online voice
+hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lexx --chapters --inline-notes --opus
+
+# Convert text or a book completely offline
+hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
+
+# Read from stdin / plain text to an audio file
+echo "Привет, мир!" | hedgehog-cli --offline --offline-voice Dmitry -o hello.mp3
+
+# Download offline voices or list available voices on Linux
+hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices
+hedgehog-cli --list-voices
+```
+
+---
+
 ## Credits
 
 Hedgehog is a native Android (Kotlin & Jetpack Compose) reimplementation based on the original **EdgeTTS** application ([EdgeTTS topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1089727)).

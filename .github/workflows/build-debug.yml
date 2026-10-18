@@ -23,13 +23,16 @@ jobs:
       - name: Cache minimal FFmpeg + libopus JNI libraries
         uses: actions/cache@v4
         with:
-          path: app/src/main/jniLibs
-          key: jni-opus-ffmpeg-v1-${{ hashFiles('app/src/main/cpp/**', 'scripts/build-opus-ffmpeg-android.sh') }}
+          path: |
+            app/src/main/jniLibs
+            cli/src/main/resources/NATIVE
+          key: jni-opus-ffmpeg-v2-${{ hashFiles('app/src/main/cpp/**', 'scripts/build-opus-ffmpeg-android.sh', 'scripts/build-opus-ffmpeg-linux.sh') }}
 
-      - name: Build minimal FFmpeg + libopus JNI libraries
+      - name: Build minimal FFmpeg + libopus JNI libraries (Android & Linux CLI)
         run: |
-          chmod +x scripts/build-opus-ffmpeg-android.sh
+          chmod +x scripts/build-opus-ffmpeg-android.sh scripts/build-opus-ffmpeg-linux.sh
           ./scripts/build-opus-ffmpeg-android.sh
+          ./scripts/build-opus-ffmpeg-linux.sh
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -45,7 +48,7 @@ jobs:
             echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > /tmp/hedgehog-signing.p12
           fi
 
-      - name: Build Debug APK
+      - name: Build Debug APK and Linux CLI
         env:
           VERSION_CODE: ${{ github.run_number }}
           VERSION_NAME: "1.0.${{ github.run_number }}"
@@ -53,11 +56,18 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug :cli:executableCli --stacktrace
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: hedgehog-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload Linux CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hedgehog-cli
+          path: cli/build/libs/hedgehog-cli
           if-no-files-found: error
