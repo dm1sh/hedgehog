@@ -28,6 +28,9 @@ cd "$WORK_DIR"
 if [[ ! -f opus-1.5.2.tar.gz ]]; then
     curl -sL https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz -o opus-1.5.2.tar.gz
 fi
+if [[ ! -f lame-3.100.tar.gz ]]; then
+    curl -sL https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz -o lame-3.100.tar.gz
+fi
 if [[ ! -f ffmpeg-6.1.2.tar.xz ]]; then
     curl -sL https://ffmpeg.org/releases/ffmpeg-6.1.2.tar.xz -o ffmpeg-6.1.2.tar.xz
 fi
@@ -75,7 +78,25 @@ build_for_abi() {
     make install > /dev/null
     popd > /dev/null
 
-    # 2. Build minimal FFmpeg (only mp3 decoder + libopus encoder + opus muxer)
+    # 2. Build libmp3lame
+    tar -xzf "$WORK_DIR/lame-3.100.tar.gz" -C "$ABI_WORK"
+    pushd "$ABI_WORK/lame-3.100" > /dev/null
+    CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" NM="$NM" STRIP="$STRIP" \
+    CFLAGS="-O2 -fPIC -ffunction-sections -fdata-sections" \
+    ./configure \
+        --host="$HOST_TRIPLE" \
+        --prefix="$PREFIX" \
+        --disable-shared \
+        --enable-static \
+        --with-pic \
+        --disable-frontend \
+        --disable-decoder \
+        --disable-gtktest > "$ABI_WORK/lame_cfg.log" 2>&1
+    make -j"$(nproc)" > /dev/null
+    make install > /dev/null
+    popd > /dev/null
+
+    # 3. Build minimal FFmpeg (mp3/pcm decoders + libopus/libmp3lame encoders + opus/mp3 muxers)
     tar -xJf "$WORK_DIR/ffmpeg-6.1.2.tar.xz" -C "$ABI_WORK"
     pushd "$ABI_WORK/ffmpeg-6.1.2" > /dev/null
     PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" \
@@ -115,23 +136,24 @@ build_for_abi() {
         --enable-avformat \
         --enable-swresample \
         --enable-libopus \
+        --enable-libmp3lame \
         --enable-decoder=mp3,mp3float,pcm_s16le \
-        --enable-encoder=libopus \
+        --enable-encoder=libopus,libmp3lame \
         --enable-demuxer=mp3,wav,s16le,ogg \
-        --enable-muxer=opus,ogg \
+        --enable-muxer=opus,ogg,mp3 \
         --enable-parser=mpegaudio,opus \
         --enable-protocol=file > "$ABI_WORK/ffmpeg_cfg.log" 2>&1
     make -j"$(nproc)" > /dev/null
     make install > /dev/null
     popd > /dev/null
 
-    # 3. Link JNI shared library libhedgehog_opus.so
+    # 4. Link JNI shared library libhedgehog_opus.so
     mkdir -p "$JNILIBS_DIR/$ABI"
     "$CC" -shared -fPIC -O2 -ffunction-sections -fdata-sections \
         -I"$PREFIX/include" \
         "$CPP_SRC" \
         -L"$PREFIX/lib" \
-        -lavformat -lavcodec -lswresample -lavutil -lopus -lm \
+        -lavformat -lavcodec -lswresample -lavutil -lopus -lmp3lame -lm \
         -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384 -s \
         -o "$OUT_SO"
 

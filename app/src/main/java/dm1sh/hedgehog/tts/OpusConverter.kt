@@ -23,6 +23,9 @@ object OpusConverter {
     private external fun nativeConvertMp3ToOpus(mp3Bytes: ByteArray): ByteArray?
 
     @JvmStatic
+    private external fun nativeConvertWavToMp3(wavBytes: ByteArray, kbps: Int): ByteArray?
+
+    @JvmStatic
     private external fun nativeMergeOpusFiles(inputPaths: Array<String>, outputPath: String): Boolean
 
     fun convertMp3ToOpus(mp3Bytes: ByteArray): ByteArray? {
@@ -31,6 +34,16 @@ object OpusConverter {
             nativeConvertMp3ToOpus(mp3Bytes)
         } catch (t: Throwable) {
             Log.e(TAG, "convertMp3ToOpus failed", t)
+            null
+        }
+    }
+
+    fun convertWavToMp3(wavBytes: ByteArray, kbps: Int): ByteArray? {
+        if (!nativeLoaded || wavBytes.isEmpty()) return null
+        return try {
+            nativeConvertWavToMp3(wavBytes, kbps)
+        } catch (t: Throwable) {
+            Log.e(TAG, "convertWavToMp3 failed", t)
             null
         }
     }

@@ -11,6 +11,7 @@
 #include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
+#include <lame/lame.h>
 
 typedef struct {
     const uint8_t *data;
@@ -412,6 +413,122 @@ cleanup:
     return ret;
 }
 
+/*
+ * Encodes an in-memory 16-bit mono WAV (or raw 24kHz s16le PCM) buffer to an in-memory CBR MP3 buffer
+ * using libmp3lame (without Xing/VBR header so frame concatenation stays seamless).
+ */
+int hedgehog_wav_to_mp3_mem(
+    const uint8_t *in_data,
+    size_t in_size,
+    int kbps,
+    uint8_t **out_data,
+    int *out_size
+) {
+    *out_data = NULL;
+    *out_size = 0;
+    if (!in_data || in_size < 2) return -1;
+
+    int sample_rate = 24000;
+    const uint8_t *pcm_ptr = in_data;
+    size_t pcm_bytes = in_size;
+
+    if (in_size >= 44 &&
+        memcmp(in_data, "RIFF", 4) == 0 &&
+        memcmp(in_data + 8, "WAVE", 4) == 0) {
+        size_t pos = 12;
+        int found_data = 0;
+        while (pos + 8 <= in_size) {
+            uint32_t chunk_size =
+                ((uint32_t)in_data[pos + 4]) |
+                (((uint32_t)in_data[pos + 5]) << 8) |
+                (((uint32_t)in_data[pos + 6]) << 16) |
+                (((uint32_t)in_data[pos + 7]) << 24);
+            size_t chunk_data_pos = pos + 8;
+            if (memcmp(in_data + pos, "fmt ", 4) == 0 && chunk_size >= 16 && chunk_data_pos + 8 <= in_size) {
+                uint32_t sr =
+                    ((uint32_t)in_data[chunk_data_pos + 4]) |
+                    (((uint32_t)in_data[chunk_data_pos + 5]) << 8) |
+                    (((uint32_t)in_data[chunk_data_pos + 6]) << 16) |
+                    (((uint32_t)in_data[chunk_data_pos + 7]) << 24);
+                if (sr >= 8000 && sr <= 96000) {
+                    sample_rate = (int)sr;
+                }
+            } else if (memcmp(in_data + pos, "data", 4) == 0) {
+                size_t avail = in_size - chunk_data_pos;
+                pcm_ptr = in_data + chunk_data_pos;
+                pcm_bytes = (chunk_size <= avail) ? (size_t)chunk_size : avail;
+                found_data = 1;
+                break;
+            }
+            size_t step = (size_t)chunk_size + (chunk_size & 1u);
+            if (step > in_size - chunk_data_pos) break;
+            pos = chunk_data_pos + step;
+        }
+        if (!found_data) {
+            pcm_ptr = in_data + 44;
+            pcm_bytes = in_size - 44;
+        }
+    }
+
+    int num_samples = (int)(pcm_bytes / 2);
+    if (num_samples <= 0) return -1;
+
+    int target_kbps = (kbps == 48) ? 48 : 96;
+    lame_global_flags *gfp = lame_init();
+    if (!gfp) return -1;
+
+    lame_set_num_channels(gfp, 1);
+    lame_set_mode(gfp, MONO);
+    lame_set_in_samplerate(gfp, sample_rate);
+    lame_set_out_samplerate(gfp, sample_rate);
+    lame_set_brate(gfp, target_kbps);
+    lame_set_VBR(gfp, vbr_off);
+    lame_set_quality(gfp, 5);
+    lame_set_bWriteVbrTag(gfp, 0);
+
+    if (lame_init_params(gfp) < 0) {
+        lame_close(gfp);
+        return -1;
+    }
+
+    int mp3_cap = num_samples * 5 / 4 + 7200;
+    uint8_t *mp3_buf = (uint8_t *)av_malloc((size_t)mp3_cap);
+    if (!mp3_buf) {
+        lame_close(gfp);
+        return -1;
+    }
+
+    int enc_bytes = lame_encode_buffer(
+        gfp,
+        (const short int *)pcm_ptr,
+        NULL,
+        num_samples,
+        mp3_buf,
+        mp3_cap
+    );
+    if (enc_bytes < 0) {
+        av_free(mp3_buf);
+        lame_close(gfp);
+        return -1;
+    }
+
+    int flush_bytes = lame_encode_flush(gfp, mp3_buf + enc_bytes, mp3_cap - enc_bytes);
+    if (flush_bytes > 0) {
+        enc_bytes += flush_bytes;
+    }
+
+    lame_close(gfp);
+
+    if (enc_bytes <= 0) {
+        av_free(mp3_buf);
+        return -1;
+    }
+
+    *out_data = mp3_buf;
+    *out_size = enc_bytes;
+    return 0;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_dm1sh_hedgehog_tts_OpusConverter_nativeConvertMp3ToOpus(
     JNIEnv *env,
@@ -431,6 +548,40 @@ Java_dm1sh_hedgehog_tts_OpusConverter_nativeConvertMp3ToOpus(
     int rc = hedgehog_mp3_to_opus_mem((const uint8_t *)in_ptr, (size_t)len, &out_buf, &out_len);
 
     (*env)->ReleaseByteArrayElements(env, mp3_bytes, in_ptr, JNI_ABORT);
+
+    if (rc != 0 || !out_buf || out_len <= 0) {
+        if (out_buf) av_free(out_buf);
+        return NULL;
+    }
+
+    jbyteArray result = (*env)->NewByteArray(env, out_len);
+    if (result) {
+        (*env)->SetByteArrayRegion(env, result, 0, out_len, (const jbyte *)out_buf);
+    }
+    av_free(out_buf);
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dm1sh_hedgehog_tts_OpusConverter_nativeConvertWavToMp3(
+    JNIEnv *env,
+    jclass clazz,
+    jbyteArray wav_bytes,
+    jint kbps
+) {
+    (void)clazz;
+    if (!wav_bytes) return NULL;
+    jsize len = (*env)->GetArrayLength(env, wav_bytes);
+    if (len <= 0) return NULL;
+
+    jbyte *in_ptr = (*env)->GetByteArrayElements(env, wav_bytes, NULL);
+    if (!in_ptr) return NULL;
+
+    uint8_t *out_buf = NULL;
+    int out_len = 0;
+    int rc = hedgehog_wav_to_mp3_mem((const uint8_t *)in_ptr, (size_t)len, (int)kbps, &out_buf, &out_len);
+
+    (*env)->ReleaseByteArrayElements(env, wav_bytes, in_ptr, JNI_ABORT);
 
     if (rc != 0 || !out_buf || out_len <= 0) {
         if (out_buf) av_free(out_buf);
