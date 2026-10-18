@@ -17,6 +17,7 @@ import androidx.lifecycle.viewModelScope
 import dm1sh.hedgehog.accessibility.ScreenReaderTts
 import dm1sh.hedgehog.book.AudioMetadataTagger
 import dm1sh.hedgehog.book.BookAudioMetadata
+import dm1sh.hedgehog.book.BookConversionIndex
 import dm1sh.hedgehog.book.ProcessingFile
 import dm1sh.hedgehog.book.TextsConverter
 import dm1sh.hedgehog.data.SettingsRepository
@@ -2873,6 +2874,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         targetBaseName = targetBaseName,
                         includeGlavaIntro = addGlavMp3 && chunkIdx == 0,
                         fileNums = chunkParts.map { it.fileNum },
+                        partIndices = chunkParts.map { it.index },
+                        partTexts = chunkParts.map { it.text },
                         remainingParts = AtomicInteger(chunkParts.size),
                         bookMetadata = firstPart.metadata,
                         voice = firstPart.voice
@@ -2921,6 +2924,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         conversionMasterJob = viewModelScope.launch(Dispatchers.IO) {
             val childJobs = mutableListOf<Job>()
+            val bookIndices = HashMap<String, BookConversionIndex>()
+            val bookRemainingChunks = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+            val uniqueChunkSpecs = partToChunkMap.filterNotNull().distinct()
+            val preCompletedParts = HashSet<Int>()
+
+            for (cSpec in uniqueChunkSpecs) {
+                val bName = cSpec.bookFolderName
+                if (!bookIndices.containsKey(bName)) {
+                    val bDir = File(runSaveDir, bName)
+                    bDir.mkdirs()
+                    bookIndices[bName] = BookConversionIndex.load(bDir)
+                    bookRemainingChunks[bName] = AtomicInteger(cSpec.totalChunksForBook)
+                }
+            }
+
+            for (cSpec in uniqueChunkSpecs) {
+                val bName = cSpec.bookFolderName
+                val bDir = File(runSaveDir, bName)
+                val outDir = if (cSpec.totalChunksForBook == 1 || (!runBookDirCreate && !multipleBooks)) {
+                    File(runSaveDir)
+                } else {
+                    bDir
+                }
+                val finalBaseName = if (cSpec.totalChunksForBook == 1) {
+                    cSpec.bookFolderName
+                } else {
+                    cSpec.targetBaseName
+                }
+                val ext = if (runOpusOutput) "opus" else "mp3"
+                val targetFile = File(outDir, "$finalBaseName.$ext")
+                val bIndex = bookIndices[bName] ?: continue
+                if (bIndex.isChapterReusable(cSpec.targetBaseName, cSpec.partTexts, targetFile)) {
+                    for (num in cSpec.fileNums) {
+                        File(bDir, rawPartFileName(cSpec.glava, num, "wav")).delete()
+                        File(bDir, rawPartFileName(cSpec.glava, num, "mp3")).delete()
+                    }
+                    cSpec.remainingParts.set(0)
+                    preCompletedParts.addAll(cSpec.partIndices)
+                    for (pIdx in cSpec.partIndices) {
+                        updateStatusBox(pIdx, "KEY_SAVED", currentRunId)
+                    }
+                    val doneParts = savedPartsAtomic.addAndGet(cSpec.partIndices.size)
+                    val doneChunks = postprocessedChunksAtomic.incrementAndGet()
+                    if (bookRemainingChunks[bName]?.decrementAndGet() == 0) {
+                        bIndex.deleteIndexFile()
+                    }
+                    publishConversionProgress(doneParts, doneChunks)
+                }
+            }
 
             while (isActive && launchedAtomic.get() < total) {
                 if (workPaused) {
@@ -2932,8 +2984,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val nextIdx = launchedAtomic.get()
                 if (nextIdx < maxWindow && nextIdx < total) {
                     launchedAtomic.incrementAndGet()
+                    if (preCompletedParts.contains(nextIdx)) {
+                        continue
+                    }
                     val spec = specs[nextIdx]
+                    val bookFolderName = File(bookStem(spec.fileName)).name.trim().ifEmpty { "Book" }
+                    val bookDir = File(runSaveDir, bookFolderName)
+                    val bookIndex = bookIndices[bookFolderName]
+                    val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
+                    val reusablePartFile = bookIndex?.getReusablePart(partKey, spec.text, bookDir)
+
+                    if (reusablePartFile != null) {
+                        updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
+                        val doneParts = savedPartsAtomic.incrementAndGet()
+                        publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
+                        val chunkSpec = partToChunkMap.getOrNull(spec.index)
+                        if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
+                            val job = launch {
+                                val chunkAssembled = assembleChunk(
+                                    chunkSpec = chunkSpec,
+                                    saveDirBase = runSaveDir,
+                                    inBookDir = runBookDirCreate,
+                                    multipleBooks = multipleBooks,
+                                    soundGlavaBytes = soundGlavaBytes,
+                                    lowBitrate = runLowBitrate,
+                                    opusOutput = runOpusOutput,
+                                    embedMetadata = runEmbedMetadata,
+                                    bookIndex = bookIndex,
+                                    rid = currentRunId
+                                )
+                                if (chunkAssembled && runIdGen.get() == currentRunId) {
+                                    if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
+                                        bookIndex.deleteIndexFile()
+                                    }
+                                    val doneChunks = postprocessedChunksAtomic.incrementAndGet()
+                                    publishConversionProgress(savedPartsAtomic.get(), doneChunks)
+                                }
+                            }
+                            childJobs.add(job)
+                        }
+                        continue
+                    }
+
                     val job = launch {
+                        File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "wav")).delete()
+                        File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "mp3")).delete()
+
                         val offlineVoice = if (repo.isVoiceOffline(spec.voice)) {
                             spec.voice
                         } else {
@@ -2995,17 +3091,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             return@launch
                         }
 
-                        val savedOk = savePartMp3File(
+                        val savedPartFile = savePartMp3File(
                             data = partData,
                             saveDirBase = runSaveDir,
                             fileName = spec.fileName,
                             glava = spec.glava,
                             fileNum = spec.fileNum,
-                            ext = partExt
-                        )
-                        if (!savedOk) {
-                            return@launch
-                        }
+                            ext = partExt,
+                            shouldAbort = { !isActive || runIdGen.get() != currentRunId }
+                        ) ?: return@launch
+                        bookIndex?.recordPart(partKey, spec.text, savedPartFile.name, partExt)
                         updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
 
                         val doneParts = savedPartsAtomic.incrementAndGet()
@@ -3022,9 +3117,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 lowBitrate = runLowBitrate,
                                 opusOutput = runOpusOutput,
                                 embedMetadata = runEmbedMetadata,
+                                bookIndex = bookIndex,
                                 rid = currentRunId
                             )
                             if (chunkAssembled && runIdGen.get() == currentRunId) {
+                                if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
+                                    bookIndex?.deleteIndexFile()
+                                }
                                 val doneChunks = postprocessedChunksAtomic.incrementAndGet()
                                 publishConversionProgress(savedPartsAtomic.get(), doneChunks)
                             }
@@ -3057,6 +3156,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val targetBaseName: String,
         val includeGlavaIntro: Boolean,
         val fileNums: List<String>,
+        val partIndices: List<Int>,
+        val partTexts: List<String>,
         val remainingParts: AtomicInteger,
         val bookMetadata: BookAudioMetadata,
         val voice: String
@@ -3096,20 +3197,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         fileName: String,
         glava: String,
         fileNum: String,
-        ext: String = "mp3"
-    ): Boolean {
+        ext: String = "mp3",
+        shouldAbort: () -> Boolean = { false }
+    ): File? {
         val bookFolderName = File(bookStem(fileName)).name.trim().ifEmpty { "Book" }
         val bookDir = File(saveDirBase, bookFolderName)
         if (bookDir.exists() || bookDir.mkdirs()) {
             val outFile = File(bookDir, rawPartFileName(glava, fileNum, ext))
-            try {
-                FileOutputStream(outFile).use { it.write(data) }
-                return true
-            } catch (e: Exception) {
-                e.printStackTrace()
+            if (BookConversionIndex.writeBytesAtomically(outFile, data, shouldAbort)) {
+                return outFile
             }
         }
-        return false
+        return null
+    }
+
+    private fun finalizeAppChunkOutput(
+        outFile: File,
+        data: ByteArray,
+        partFiles: List<File>,
+        chunkSpec: ChunkJobSpec,
+        bookIndex: BookConversionIndex?,
+        rid: Int
+    ): Boolean {
+        val savedOk = BookConversionIndex.writeBytesAtomically(
+            targetFile = outFile,
+            data = data,
+            shouldAbort = { runIdGen.get() != rid }
+        )
+        if (!savedOk) return false
+        val mergedPartKeys = chunkSpec.fileNums.map { BookConversionIndex.partKey(chunkSpec.glava, it) }
+        for (pFile in partFiles) {
+            try {
+                pFile.delete()
+            } catch (_: Throwable) {
+            }
+        }
+        bookIndex?.recordChapterCompleted(
+            chapterKey = chunkSpec.targetBaseName,
+            partTexts = chunkSpec.partTexts,
+            targetFileName = outFile.name,
+            mergedPartKeys = mergedPartKeys
+        )
+        return true
     }
 
     private fun assembleChunk(
@@ -3121,6 +3250,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         lowBitrate: Boolean,
         opusOutput: Boolean,
         embedMetadata: Boolean,
+        bookIndex: BookConversionIndex?,
         rid: Int
     ): Boolean {
         if (runIdGen.get() != rid) return false
@@ -3162,8 +3292,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val rawFile = partFiles[0]
             val outFile = File(outDir, "$finalBaseName.mp3")
             if (rawFile.exists()) {
-                moveFileOverwrite(rawFile, outFile)
-                return outFile.exists()
+                val bytes = try {
+                    rawFile.readBytes()
+                } catch (_: Exception) {
+                    return false
+                }
+                return finalizeAppChunkOutput(outFile, bytes, partFiles, chunkSpec, bookIndex, rid)
             }
             return false
         }
@@ -3183,7 +3317,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (allWav) {
-            val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = true)
+            val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = false)
             if (mergedWav.isEmpty() || runIdGen.get() != rid) return false
 
             if (opusOutput) {
@@ -3226,12 +3360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         opusBytes
                     }
                     val outFile = File(outDir, "$finalBaseName.opus")
-                    return try {
-                        FileOutputStream(outFile).use { it.write(finalOpus) }
-                        true
-                    } catch (_: Exception) {
-                        false
-                    }
+                    return finalizeAppChunkOutput(outFile, finalOpus, partFiles, chunkSpec, bookIndex, rid)
                 }
             }
 
@@ -3259,12 +3388,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 assembledMp3
             }
             val outFile = File(outDir, "$finalBaseName.mp3")
-            return try {
-                FileOutputStream(outFile).use { it.write(finalMp3) }
-                true
-            } catch (_: Exception) {
-                false
-            }
+            return finalizeAppChunkOutput(outFile, finalMp3, partFiles, chunkSpec, bookIndex, rid)
         }
 
         val mergeBuffer = ByteArrayOutputStream()
@@ -3286,7 +3410,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } catch (_: Exception) {
                 }
-                rawFile.delete()
             }
         }
         val assembledMp3 = mergeBuffer.toByteArray()
@@ -3310,12 +3433,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     opusBytes
                 }
                 val outFile = File(outDir, "$finalBaseName.opus")
-                try {
-                    FileOutputStream(outFile).use { it.write(finalOpus) }
-                    true
-                } catch (_: Exception) {
-                    false
-                }
+                finalizeAppChunkOutput(outFile, finalOpus, partFiles, chunkSpec, bookIndex, rid)
             } else {
                 val finalMp3 = if (embedMetadata) {
                     AudioMetadataTagger.tagMp3(
@@ -3331,12 +3449,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     assembledMp3
                 }
                 val outFile = File(outDir, "$finalBaseName.mp3")
-                try {
-                    FileOutputStream(outFile).use { it.write(finalMp3) }
-                    true
-                } catch (_: Exception) {
-                    false
-                }
+                finalizeAppChunkOutput(outFile, finalMp3, partFiles, chunkSpec, bookIndex, rid)
             }
         } else {
             val finalMp3 = if (embedMetadata) {
@@ -3353,12 +3466,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 assembledMp3
             }
             val outFile = File(outDir, "$finalBaseName.mp3")
-            try {
-                FileOutputStream(outFile).use { it.write(finalMp3) }
-                true
-            } catch (_: Exception) {
-                false
-            }
+            finalizeAppChunkOutput(outFile, finalMp3, partFiles, chunkSpec, bookIndex, rid)
         }
     }
 

@@ -34,6 +34,7 @@ sourceSets {
                 "dm1sh/hedgehog/cli/**",
                 "dm1sh/hedgehog/model/DefaultVoices.kt",
                 "dm1sh/hedgehog/book/AudioMetadataTagger.kt",
+                "dm1sh/hedgehog/book/BookConversionIndex.kt",
                 "dm1sh/hedgehog/book/ProcessingFile.kt",
                 "dm1sh/hedgehog/book/TextsConverter.kt",
                 "dm1sh/hedgehog/tts/SecMsGecGenerator.kt",

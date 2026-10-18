@@ -2,6 +2,7 @@ package dm1sh.hedgehog.cli
 
 import dm1sh.hedgehog.book.AudioMetadataTagger
 import dm1sh.hedgehog.book.BookAudioMetadata
+import dm1sh.hedgehog.book.BookConversionIndex
 import dm1sh.hedgehog.book.ProcessingFile
 import dm1sh.hedgehog.book.TextsConverter
 import dm1sh.hedgehog.model.DefaultVoices
@@ -109,6 +110,8 @@ private data class ChunkJobSpec(
     val targetBaseName: String,
     val includeGlavaIntro: Boolean,
     val fileNums: List<String>,
+    val partIndices: List<Int>,
+    val partTexts: List<String>,
     val remainingParts: AtomicInteger,
     val bookMetadata: BookAudioMetadata,
     val voice: String
@@ -1020,6 +1023,8 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 targetBaseName = targetBaseName,
                 includeGlavaIntro = (cIdx == 0 && glava.isNotEmpty() && soundGlavaBytes.isNotEmpty()),
                 fileNums = cParts.map { it.fileNum },
+                partIndices = cParts.map { it.index },
+                partTexts = cParts.map { it.text },
                 remainingParts = AtomicInteger(cParts.size),
                 bookMetadata = bookMeta,
                 voice = bookVoice
@@ -1032,8 +1037,32 @@ private suspend fun runConversion(opts: CliOptions): Int {
     }
 
     val totalChunksCount = chunkSpecs.size
-    val workTempRoot = Files.createTempDirectory("hedgehog_cli_work_").toFile()
-    activeTempDirs.add(workTempRoot)
+
+    val bookWorkDirs = HashMap<String, File>()
+    val bookIndices = HashMap<String, BookConversionIndex>()
+    val bookRemainingChunks = ConcurrentHashMap<String, AtomicInteger>()
+
+    for (cSpec in chunkSpecs) {
+        val bName = cSpec.bookFolderName
+        if (!bookWorkDirs.containsKey(bName)) {
+            val wDir = resolveCliBookOutDir(
+                saveDirFile = saveDirFile,
+                bookFolderName = bName,
+                totalChunksForBook = cSpec.totalChunksForBook,
+                bookDirCreate = opts.bookDirCreate,
+                multipleBooks = multipleBooks
+            )
+            wDir.mkdirs()
+            bookWorkDirs[bName] = wDir
+            val idxFileName = if (multipleBooks && wDir == saveDirFile) {
+                ".${bName}.hedgehog_index.json"
+            } else {
+                BookConversionIndex.INDEX_FILE_NAME
+            }
+            bookIndices[bName] = BookConversionIndex.load(wDir, idxFileName)
+            bookRemainingChunks[bName] = AtomicInteger(cSpec.totalChunksForBook)
+        }
+    }
 
     if (!opts.quiet) {
         val modeLabel = if (opts.offlineMode) {
@@ -1058,6 +1087,37 @@ private suspend fun runConversion(opts: CliOptions): Int {
     val outputFiles = mutableListOf<File>()
     val timeoutMsec = if (opts.timeoutSec <= 0) Long.MAX_VALUE else opts.timeoutSec * 1000L
     val startTimeNanos = System.nanoTime()
+    val preCompletedParts = HashSet<Int>()
+
+    for (cSpec in chunkSpecs) {
+        val bName = cSpec.bookFolderName
+        val wDir = bookWorkDirs[bName] ?: saveDirFile
+        val bIndex = bookIndices[bName] ?: continue
+        val targetFile = resolveCliChunkTargetFile(
+            chunkSpec = cSpec,
+            outDir = wDir,
+            explicitOutFile = explicitOutFile,
+            targetWavDirect = targetWavDirect,
+            opts = opts,
+            multipleBooks = multipleBooks
+        )
+        if (bIndex.isChapterReusable(cSpec.targetBaseName, cSpec.partTexts, targetFile)) {
+            for (fileNum in cSpec.fileNums) {
+                File(wDir, rawPartFileName(cSpec.glava, fileNum, "wav")).delete()
+                File(wDir, rawPartFileName(cSpec.glava, fileNum, "mp3")).delete()
+            }
+            cSpec.remainingParts.set(0)
+            preCompletedParts.addAll(cSpec.partIndices)
+            savedPartsAtomic.addAndGet(cSpec.partIndices.size)
+            postprocessedChunksAtomic.incrementAndGet()
+            synchronized(outputFiles) {
+                outputFiles.add(targetFile)
+            }
+            if (bookRemainingChunks[bName]?.decrementAndGet() == 0) {
+                bIndex.deleteIndexFile()
+            }
+        }
+    }
 
     fun elapsedMillis(): Long = ((System.nanoTime() - startTimeNanos) / 1_000_000L).coerceAtLeast(0L)
 
@@ -1087,11 +1147,61 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 val nextIdx = launchedAtomic.get()
                 if (nextIdx < maxWindow && nextIdx < total) {
                     launchedAtomic.incrementAndGet()
+                    if (preCompletedParts.contains(nextIdx)) {
+                        continue
+                    }
                     val spec = specs[nextIdx]
+                    val bookFolderName = File(bookStem(spec.fileName)).name.trim().ifEmpty { "Book" }
+                    val bookWorkDir = bookWorkDirs[bookFolderName] ?: saveDirFile
+                    val bookIndex = bookIndices[bookFolderName]
+                    val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
+                    val reusablePartFile = bookIndex?.getReusablePart(partKey, spec.text, bookWorkDir)
+
+                    if (reusablePartFile != null) {
+                        savedPartsAtomic.incrementAndGet()
+                        if (!interruptedByUser) {
+                            reportProgress()
+                        }
+                        val chunkSpec = partToChunkMap[spec.index]
+                        if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
+                            val job = launch(Dispatchers.IO) {
+                                val outFile = assembleCliChunk(
+                                    chunkSpec = chunkSpec,
+                                    bookWorkDir = bookWorkDir,
+                                    bookIndex = bookIndex,
+                                    explicitOutFile = explicitOutFile,
+                                    targetWavDirect = targetWavDirect,
+                                    opts = opts,
+                                    multipleBooks = multipleBooks,
+                                    soundGlavaBytes = soundGlavaBytes
+                                )
+                                if (outFile != null) {
+                                    synchronized(outputFiles) {
+                                        outputFiles.add(outFile)
+                                    }
+                                    postprocessedChunksAtomic.incrementAndGet()
+                                    if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
+                                        bookIndex.deleteIndexFile()
+                                    }
+                                    if (!interruptedByUser) {
+                                        reportProgress()
+                                    }
+                                } else if (!interruptedByUser) {
+                                    failedAtomic.incrementAndGet()
+                                }
+                            }
+                            childJobs.add(job)
+                        }
+                        continue
+                    }
+
                     val job = launch(Dispatchers.IO) {
                         var partData: ByteArray? = null
                         var partExt = "mp3"
                         val hasOfflineFallback = opts.allowOfflineFallback && offlineInstalled != null
+
+                        File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, "wav")).delete()
+                        File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, "mp3")).delete()
 
                         if (!opts.offlineMode) {
                             partData = SocketEdgeTtsWorker.synthesizePart(
@@ -1140,10 +1250,20 @@ private suspend fun runConversion(opts: CliOptions): Int {
                             return@launch
                         }
 
-                        val bookTempDir = File(workTempRoot, File(bookStem(spec.fileName)).name.trim().ifEmpty { "Book" })
-                        bookTempDir.mkdirs()
-                        val partFile = File(bookTempDir, rawPartFileName(spec.glava, spec.fileNum, partExt))
-                        FileOutputStream(partFile).use { it.write(partData) }
+                        bookWorkDir.mkdirs()
+                        val partFile = File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, partExt))
+                        val savedOk = BookConversionIndex.writeBytesAtomically(
+                            targetFile = partFile,
+                            data = partData,
+                            shouldAbort = { interruptedByUser || !isActive }
+                        )
+                        if (!savedOk) {
+                            if (!interruptedByUser && isActive) {
+                                failedAtomic.incrementAndGet()
+                            }
+                            return@launch
+                        }
+                        bookIndex?.recordPart(partKey, spec.text, partFile.name, partExt)
 
                         savedPartsAtomic.incrementAndGet()
                         if (!interruptedByUser) {
@@ -1154,8 +1274,8 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
                             val outFile = assembleCliChunk(
                                 chunkSpec = chunkSpec,
-                                workTempRoot = workTempRoot,
-                                saveDirFile = saveDirFile,
+                                bookWorkDir = bookWorkDir,
+                                bookIndex = bookIndex,
                                 explicitOutFile = explicitOutFile,
                                 targetWavDirect = targetWavDirect,
                                 opts = opts,
@@ -1167,6 +1287,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                     outputFiles.add(outFile)
                                 }
                                 postprocessedChunksAtomic.incrementAndGet()
+                                if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
+                                    bookIndex?.deleteIndexFile()
+                                }
                                 if (!interruptedByUser) {
                                     reportProgress()
                                 }
@@ -1205,9 +1328,6 @@ private suspend fun runConversion(opts: CliOptions): Int {
             }
         }
     } catch (_: CancellationException) {
-    } finally {
-        workTempRoot.deleteRecursively()
-        activeTempDirs.remove(workTempRoot)
     }
 
     val totalElapsedMs = elapsedMillis()
@@ -1274,30 +1394,79 @@ private fun formatHumanDuration(elapsedMs: Long): String {
     }
 }
 
-private fun writeOutputAtomically(targetFile: File, data: ByteArray): File? {
-    if (interruptedByUser) return null
-    val parent = targetFile.parentFile ?: File(".")
-    parent.mkdirs()
-    val tmpFile = File(parent, ".${targetFile.name}.${System.nanoTime()}.tmp")
-    return try {
-        FileOutputStream(tmpFile).use { it.write(data) }
-        if (interruptedByUser) {
-            tmpFile.delete()
-            null
-        } else {
-            Files.move(tmpFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            targetFile
-        }
-    } catch (_: Throwable) {
-        tmpFile.delete()
-        null
+private fun resolveCliBookOutDir(
+    saveDirFile: File,
+    bookFolderName: String,
+    totalChunksForBook: Int,
+    bookDirCreate: Boolean,
+    multipleBooks: Boolean
+): File {
+    return if (totalChunksForBook == 1 || (!bookDirCreate && !multipleBooks)) {
+        saveDirFile
+    } else {
+        File(saveDirFile, bookFolderName)
     }
+}
+
+private fun resolveCliChunkTargetFile(
+    chunkSpec: ChunkJobSpec,
+    outDir: File,
+    explicitOutFile: File?,
+    targetWavDirect: Boolean,
+    opts: CliOptions,
+    multipleBooks: Boolean
+): File {
+    val finalBaseName = if (chunkSpec.totalChunksForBook == 1) {
+        chunkSpec.bookFolderName
+    } else {
+        chunkSpec.targetBaseName
+    }
+    val ext = when {
+        targetWavDirect -> "wav"
+        opts.opusOutput -> "opus"
+        else -> "mp3"
+    }
+    return if (explicitOutFile != null && chunkSpec.totalChunksForBook == 1 && !multipleBooks) {
+        explicitOutFile.parentFile?.mkdirs()
+        explicitOutFile
+    } else {
+        File(outDir, "$finalBaseName.$ext")
+    }
+}
+
+private fun finalizeCliChunkOutput(
+    targetFile: File,
+    data: ByteArray,
+    partFilesToDelete: List<File>,
+    chunkSpec: ChunkJobSpec,
+    bookIndex: BookConversionIndex?
+): File? {
+    val savedOk = BookConversionIndex.writeBytesAtomically(
+        targetFile = targetFile,
+        data = data,
+        shouldAbort = { interruptedByUser }
+    )
+    if (!savedOk) return null
+    val mergedPartKeys = chunkSpec.fileNums.map { BookConversionIndex.partKey(chunkSpec.glava, it) }
+    for (pFile in partFilesToDelete) {
+        try {
+            pFile.delete()
+        } catch (_: Throwable) {
+        }
+    }
+    bookIndex?.recordChapterCompleted(
+        chapterKey = chunkSpec.targetBaseName,
+        partTexts = chunkSpec.partTexts,
+        targetFileName = targetFile.name,
+        mergedPartKeys = mergedPartKeys
+    )
+    return targetFile
 }
 
 private fun assembleCliChunk(
     chunkSpec: ChunkJobSpec,
-    workTempRoot: File,
-    saveDirFile: File,
+    bookWorkDir: File,
+    bookIndex: BookConversionIndex?,
     explicitOutFile: File?,
     targetWavDirect: Boolean,
     opts: CliOptions,
@@ -1305,39 +1474,22 @@ private fun assembleCliChunk(
     soundGlavaBytes: ByteArray
 ): File? {
     if (interruptedByUser) return null
-    val bookTempDir = File(workTempRoot, chunkSpec.bookFolderName)
-    bookTempDir.mkdirs()
-    val outDir = if (chunkSpec.totalChunksForBook == 1 || (!opts.bookDirCreate && !multipleBooks)) {
-        saveDirFile
-    } else {
-        File(saveDirFile, chunkSpec.bookFolderName)
-    }
-    outDir.mkdirs()
+    bookWorkDir.mkdirs()
 
-    val finalBaseName = if (chunkSpec.totalChunksForBook == 1) {
-        chunkSpec.bookFolderName
-    } else {
-        chunkSpec.targetBaseName
-    }
-
-    val ext = when {
-        targetWavDirect -> "wav"
-        opts.opusOutput -> "opus"
-        else -> "mp3"
-    }
-
-    val targetFile = if (explicitOutFile != null && chunkSpec.totalChunksForBook == 1 && !multipleBooks) {
-        explicitOutFile.parentFile?.mkdirs()
-        explicitOutFile
-    } else {
-        File(outDir, "$finalBaseName.$ext")
-    }
+    val targetFile = resolveCliChunkTargetFile(
+        chunkSpec = chunkSpec,
+        outDir = bookWorkDir,
+        explicitOutFile = explicitOutFile,
+        targetWavDirect = targetWavDirect,
+        opts = opts,
+        multipleBooks = multipleBooks
+    )
 
     val partFiles = ArrayList<File>(chunkSpec.fileNums.size)
     var allWav = true
     for (fileNum in chunkSpec.fileNums) {
-        val wavFile = File(bookTempDir, rawPartFileName(chunkSpec.glava, fileNum, "wav"))
-        val mp3File = File(bookTempDir, rawPartFileName(chunkSpec.glava, fileNum, "mp3"))
+        val wavFile = File(bookWorkDir, rawPartFileName(chunkSpec.glava, fileNum, "wav"))
+        val mp3File = File(bookWorkDir, rawPartFileName(chunkSpec.glava, fileNum, "mp3"))
         if (wavFile.exists()) {
             partFiles.add(wavFile)
         } else if (mp3File.exists()) {
@@ -1349,9 +1501,9 @@ private fun assembleCliChunk(
     if (partFiles.isEmpty()) return null
 
     if (targetWavDirect && allWav) {
-        val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = true)
+        val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = false)
         if (mergedWav.isEmpty()) return null
-        return writeOutputAtomically(targetFile, mergedWav)
+        return finalizeCliChunkOutput(targetFile, mergedWav, partFiles, chunkSpec, bookIndex)
     }
 
     val targetKbps = if (opts.lowBitrate) 48 else 96
@@ -1366,7 +1518,7 @@ private fun assembleCliChunk(
     }
 
     if (allWav) {
-        val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = true)
+        val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = false)
         if (mergedWav.isEmpty() || interruptedByUser) return null
 
         if (opts.opusOutput) {
@@ -1374,9 +1526,9 @@ private fun assembleCliChunk(
             if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty() && !interruptedByUser) {
                 val introOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
                 if (introOpus != null && introOpus.isNotEmpty()) {
-                    val introFile = File.createTempFile("intro_", ".opus", bookTempDir)
-                    val bodyFile = File.createTempFile("body_", ".opus", bookTempDir)
-                    val mergedFile = File.createTempFile("merged_", ".opus", bookTempDir)
+                    val introFile = File.createTempFile(".intro_", ".opus", bookWorkDir)
+                    val bodyFile = File.createTempFile(".body_", ".opus", bookWorkDir)
+                    val mergedFile = File.createTempFile(".merged_", ".opus", bookWorkDir)
                     try {
                         introFile.writeBytes(introOpus)
                         bodyFile.writeBytes(opusBytes)
@@ -1406,7 +1558,7 @@ private fun assembleCliChunk(
             } else {
                 opusBytes
             }
-            return writeOutputAtomically(targetFile, finalOpus)
+            return finalizeCliChunkOutput(targetFile, finalOpus, partFiles, chunkSpec, bookIndex)
         } else {
             val encodedMp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps) ?: return null
             if (interruptedByUser) return null
@@ -1431,7 +1583,7 @@ private fun assembleCliChunk(
             } else {
                 assembledMp3
             }
-            return writeOutputAtomically(targetFile, finalMp3)
+            return finalizeCliChunkOutput(targetFile, finalMp3, partFiles, chunkSpec, bookIndex)
         }
     }
 
@@ -1443,7 +1595,6 @@ private fun assembleCliChunk(
         if (interruptedByUser) return null
         if (pFile.exists()) {
             val raw = pFile.readBytes()
-            pFile.delete()
             val bytes = if (pFile.extension.equals("wav", ignoreCase = true)) {
                 OpusConverter.convertWavToMp3(raw, targetKbps) ?: return null
             } else {
@@ -1471,7 +1622,7 @@ private fun assembleCliChunk(
         } else {
             opusBytes
         }
-        return writeOutputAtomically(targetFile, finalOpus)
+        return finalizeCliChunkOutput(targetFile, finalOpus, partFiles, chunkSpec, bookIndex)
     } else {
         val finalMp3 = if (opts.embedMetadata) {
             AudioMetadataTagger.tagMp3(
@@ -1486,6 +1637,6 @@ private fun assembleCliChunk(
         } else {
             assembledMp3
         }
-        return writeOutputAtomically(targetFile, finalMp3)
+        return finalizeCliChunkOutput(targetFile, finalMp3, partFiles, chunkSpec, bookIndex)
     }
 }
