@@ -126,8 +126,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var postprocessedChunksCount by mutableIntStateOf(0)
     var totalChunksCount by mutableIntStateOf(0)
     var elapsedTimeText by mutableStateOf("")
+    var etaTimeText by mutableStateOf("")
     var elapsedVisible by mutableStateOf(false)
     var workFinished by mutableStateOf(true)
+
+    private val newlySynthesizedPartsAtomic = AtomicInteger(0)
+    private val assembledChaptersCountAtomic = AtomicInteger(0)
+    private val totalChapterAssembleMsAtomic = java.util.concurrent.atomic.AtomicLong(0L)
 
     var progressBarVisible by mutableStateOf(false)
     var progressBarValue by mutableIntStateOf(0)
@@ -2893,6 +2898,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val savedPartsAtomic = AtomicInteger(0)
         val postprocessedChunksAtomic = AtomicInteger(0)
         val launchedAtomic = AtomicInteger(0)
+        newlySynthesizedPartsAtomic.set(0)
+        assembledChaptersCountAtomic.set(0)
+        totalChapterAssembleMsAtomic.set(0L)
+        etaTimeText = ""
 
         suspend fun publishConversionProgress(doneParts: Int, doneChunks: Int) {
             withContext(Dispatchers.Main) {
@@ -2901,6 +2910,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     postprocessedChunksCount = doneChunks
                     statStr = "$doneParts/$totalPartsCount"
                     chunksStatStr = "$doneChunks/$totalChunksCount"
+                    updateElapsedLabel()
                     val composite = computeCompositeProgress(
                         doneParts = doneParts,
                         totalParts = totalPartsCount,
@@ -2911,9 +2921,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     progressBarValue = (composite * 1000f).roundToInt().coerceIn(0, 1000)
                     val pct = (composite * 100f).roundToInt().coerceIn(0, 100)
                     val statusLabel = tr(if (workPaused) "KEY_PAUSE" else "KEY_PROCESSED")
+                    val etaSuffix = if (etaTimeText.isNotEmpty()) " • ~${etaTimeText}" else ""
                     ForegroundWorkService.updateProgress(
                         context = getApplication(),
-                        text = "$statusLabel $statStr • $chunksStatStr ($pct%)",
+                        text = "$statusLabel $statStr • $chunksStatStr ($pct%)$etaSuffix",
                         progress = progressBarValue,
                         max = progressBarMax,
                         title = notifTitle
@@ -3001,6 +3012,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val chunkSpec = partToChunkMap.getOrNull(spec.index)
                         if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
                             val job = launch {
+                                val chunkStartNs = System.nanoTime()
                                 val chunkAssembled = assembleChunk(
                                     chunkSpec = chunkSpec,
                                     saveDirBase = runSaveDir,
@@ -3013,7 +3025,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     bookIndex = bookIndex,
                                     rid = currentRunId
                                 )
+                                val chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
                                 if (chunkAssembled && runIdGen.get() == currentRunId) {
+                                    totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
+                                    assembledChaptersCountAtomic.incrementAndGet()
                                     if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
                                         bookIndex.deleteIndexFile()
                                     }
@@ -3103,11 +3118,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         bookIndex?.recordPart(partKey, spec.text, savedPartFile.name, partExt)
                         updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
 
+                        newlySynthesizedPartsAtomic.incrementAndGet()
                         val doneParts = savedPartsAtomic.incrementAndGet()
                         publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
 
                         val chunkSpec = partToChunkMap.getOrNull(spec.index)
                         if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
+                            val chunkStartNs = System.nanoTime()
                             val chunkAssembled = assembleChunk(
                                 chunkSpec = chunkSpec,
                                 saveDirBase = runSaveDir,
@@ -3120,7 +3137,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 bookIndex = bookIndex,
                                 rid = currentRunId
                             )
+                            val chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
                             if (chunkAssembled && runIdGen.get() == currentRunId) {
+                                totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
+                                assembledChaptersCountAtomic.incrementAndGet()
                                 if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
                                     bookIndex?.deleteIndexFile()
                                 }
@@ -3599,16 +3619,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun updateElapsedLabel() {
-        val now = if (workPaused && pauseIdleSince > 0L) pauseIdleSince else System.currentTimeMillis()
-        val totalSec = ((now - workStartMsec).coerceAtLeast(0L)) / 1000L
-        val h = totalSec / 3600L
-        val m = (totalSec / 60L) % 60L
-        val s = totalSec % 60L
-        elapsedTimeText = if (h > 0L) {
+    private fun formatDurationSeconds(totalSec: Long): String {
+        val clamped = totalSec.coerceAtLeast(0L)
+        val h = clamped / 3600L
+        val m = (clamped / 60L) % 60L
+        val s = clamped % 60L
+        return if (h > 0L) {
             "%d:%02d:%02d".format(h, m, s)
         } else {
             "%d:%02d".format(m, s)
+        }
+    }
+
+    private fun computeCombinedEtaMillis(elapsedMs: Long): Long {
+        val remParts = (totalPartsCount - processedPartsCount).coerceAtLeast(0)
+        val remChunks = (totalChunksCount - postprocessedChunksCount).coerceAtLeast(0)
+        if (remParts == 0 && remChunks == 0) return 0L
+
+        val synthParts = newlySynthesizedPartsAtomic.get()
+        val assembledChunks = assembledChaptersCountAtomic.get()
+        val assembledChunksMs = totalChapterAssembleMsAtomic.get()
+
+        if (synthParts <= 0 && assembledChunks <= 0) return -1L
+
+        val avgPartMs = if (synthParts > 0) {
+            elapsedMs.toDouble() / synthParts.toDouble()
+        } else {
+            0.0
+        }
+        val partsEtaMs = if (remParts > 0 && avgPartMs > 0.0) {
+            (avgPartMs * remParts.toDouble()).toLong()
+        } else {
+            0L
+        }
+
+        val chaptersEtaMs = when {
+            remChunks == 0 -> 0L
+            assembledChunks > 0 -> {
+                val avgChunkMs = (assembledChunksMs.toDouble() / assembledChunks.toDouble()).coerceAtLeast(50.0)
+                (avgChunkMs * remChunks.toDouble()).toLong()
+            }
+            avgPartMs > 0.0 -> {
+                val avgPartsPerChunk = totalPartsCount.toDouble() / totalChunksCount.coerceAtLeast(1).toDouble()
+                (avgPartMs * 0.08 * avgPartsPerChunk * remChunks.toDouble()).toLong()
+            }
+            else -> 0L
+        }
+
+        return (partsEtaMs + chaptersEtaMs).coerceAtLeast(0L)
+    }
+
+    private fun updateElapsedLabel() {
+        val now = if (workPaused && pauseIdleSince > 0L) pauseIdleSince else System.currentTimeMillis()
+        val elapsedMs = (now - workStartMsec).coerceAtLeast(0L)
+        val totalSec = elapsedMs / 1000L
+        elapsedTimeText = formatDurationSeconds(totalSec)
+        if (runWork && !workFinished) {
+            val etaMs = computeCombinedEtaMillis(elapsedMs)
+            etaTimeText = if (etaMs > 0L) formatDurationSeconds(etaMs / 1000L) else ""
+        } else {
+            etaTimeText = ""
         }
     }
 
@@ -3616,6 +3686,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         workFinished = true
         elapsedVisible = false
         elapsedTimeText = ""
+        etaTimeText = ""
     }
 
     private fun bookStem(name: String): String {

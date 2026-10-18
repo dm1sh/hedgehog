@@ -33,9 +33,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.ZipFile
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.system.exitProcess
 
 private const val DEFAULT_CHAPTER_REGEX = "глава |раздел |эпизод |рассказ |chapter "
@@ -1248,6 +1250,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
     val savedPartsAtomic = AtomicInteger(0)
     val postprocessedChunksAtomic = AtomicInteger(0)
+    val newlySynthesizedPartsAtomic = AtomicInteger(0)
+    val assembledChaptersCountAtomic = AtomicInteger(0)
+    val totalChapterAssembleMsAtomic = AtomicLong(0L)
     val launchedAtomic = AtomicInteger(0)
     val failedAtomic = AtomicInteger(0)
     val progressPrintLock = Any()
@@ -1288,6 +1293,44 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
     fun elapsedMillis(): Long = ((System.nanoTime() - startTimeNanos) / 1_000_000L).coerceAtLeast(0L)
 
+    fun computeCombinedEtaMillis(doneParts: Int, doneChunks: Int, elapsedMs: Long): Long {
+        val remParts = (total - doneParts).coerceAtLeast(0)
+        val remChunks = (totalChunksCount - doneChunks).coerceAtLeast(0)
+        if (remParts == 0 && remChunks == 0) return 0L
+
+        val synthParts = newlySynthesizedPartsAtomic.get()
+        val assembledChunks = assembledChaptersCountAtomic.get()
+        val assembledChunksMs = totalChapterAssembleMsAtomic.get()
+
+        if (synthParts <= 0 && assembledChunks <= 0) return -1L
+
+        val avgPartMs = if (synthParts > 0) {
+            elapsedMs.toDouble() / synthParts.toDouble()
+        } else {
+            0.0
+        }
+        val partsEtaMs = if (remParts > 0 && avgPartMs > 0.0) {
+            (avgPartMs * remParts.toDouble()).roundToLong()
+        } else {
+            0L
+        }
+
+        val chaptersEtaMs = when {
+            remChunks == 0 -> 0L
+            assembledChunks > 0 -> {
+                val avgChunkMs = (assembledChunksMs.toDouble() / assembledChunks.toDouble()).coerceAtLeast(50.0)
+                (avgChunkMs * remChunks.toDouble()).roundToLong()
+            }
+            avgPartMs > 0.0 -> {
+                val avgPartsPerChunk = total.toDouble() / totalChunksCount.coerceAtLeast(1).toDouble()
+                (avgPartMs * 0.08 * avgPartsPerChunk * remChunks.toDouble()).roundToLong()
+            }
+            else -> 0L
+        }
+
+        return (partsEtaMs + chaptersEtaMs).coerceAtLeast(0L)
+    }
+
     fun reportProgress() {
         if (opts.quiet) return
         val doneParts = savedPartsAtomic.get()
@@ -1295,9 +1338,12 @@ private suspend fun runConversion(opts: CliOptions): Int {
         val pRatio = doneParts.toDouble() / total.toDouble()
         val cRatio = doneChunks.toDouble() / totalChunksCount.coerceAtLeast(1).toDouble()
         val pct = ((0.5 * (pRatio + cRatio)) * 100.0).roundToInt().coerceIn(0, 100)
-        val elapsedStr = formatClockDuration(elapsedMillis())
+        val elapsedMs = elapsedMillis()
+        val elapsedStr = formatClockDuration(elapsedMs)
+        val etaMs = computeCombinedEtaMillis(doneParts, doneChunks, elapsedMs)
+        val etaStr = if (etaMs >= 0L) formatClockDuration(etaMs) else "--:--"
         synchronized(progressPrintLock) {
-            System.err.print("\rProgress: parts $doneParts/$total • chapters $doneChunks/$totalChunksCount ($pct%) • Elapsed: $elapsedStr   ")
+            System.err.print("\rProgress: parts $doneParts/$total • chapters $doneChunks/$totalChunksCount ($pct%) • Elapsed: $elapsedStr • ETA: $etaStr   ")
             System.err.flush()
         }
     }
@@ -1332,6 +1378,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         val chunkSpec = partToChunkMap[spec.index]
                         if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
                             val job = launch(Dispatchers.IO) {
+                                val chunkStartNs = System.nanoTime()
                                 val outFile = assembleCliChunk(
                                     chunkSpec = chunkSpec,
                                     bookWorkDir = bookWorkDir,
@@ -1342,7 +1389,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                     multipleBooks = multipleBooks,
                                     soundGlavaBytes = soundGlavaBytes
                                 )
+                                val chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
                                 if (outFile != null) {
+                                    totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
+                                    assembledChaptersCountAtomic.incrementAndGet()
                                     synchronized(outputFiles) {
                                         outputFiles.add(outFile)
                                     }
@@ -1432,6 +1482,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         }
                         bookIndex?.recordPart(partKey, spec.text, partFile.name, partExt)
 
+                        newlySynthesizedPartsAtomic.incrementAndGet()
                         savedPartsAtomic.incrementAndGet()
                         if (!interruptedByUser) {
                             reportProgress()
@@ -1439,6 +1490,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
                         val chunkSpec = partToChunkMap[spec.index]
                         if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
+                            val chunkStartNs = System.nanoTime()
                             val outFile = assembleCliChunk(
                                 chunkSpec = chunkSpec,
                                 bookWorkDir = bookWorkDir,
@@ -1449,7 +1501,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                 multipleBooks = multipleBooks,
                                 soundGlavaBytes = soundGlavaBytes
                             )
+                            val chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
                             if (outFile != null) {
+                                totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
+                                assembledChaptersCountAtomic.incrementAndGet()
                                 synchronized(outputFiles) {
                                     outputFiles.add(outFile)
                                 }
@@ -1505,7 +1560,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
     if (interruptedByUser) {
         synchronized(progressPrintLock) {
             System.err.println(
-                "\nInterrupted by user (Ctrl+C) after ${formatClockDuration(totalElapsedMs)} (${formatHumanDuration(totalElapsedMs)}) • " +
+                "\nInterrupted by user (Ctrl+C) after ${formatClockDuration(totalElapsedMs)} • " +
                     "saved ${sortedOutputFiles.size} completed file(s)."
             )
         }
@@ -1518,13 +1573,13 @@ private suspend fun runConversion(opts: CliOptions): Int {
     }
 
     if (failedAtomic.get() > 0) {
-        System.err.println("Error: Synthesis or encoding failed after ${formatHumanDuration(totalElapsedMs)}.")
+        System.err.println("Error: Synthesis or encoding failed after ${formatClockDuration(totalElapsedMs)}.")
         return 1
     }
 
     if (!opts.quiet) {
         System.err.println(
-            "Completed in ${formatClockDuration(totalElapsedMs)} (${formatHumanDuration(totalElapsedMs)}) • " +
+            "Completed in ${formatClockDuration(totalElapsedMs)} • " +
                 "$total parts • ${sortedOutputFiles.size} file(s)"
         )
         for (f in sortedOutputFiles) {

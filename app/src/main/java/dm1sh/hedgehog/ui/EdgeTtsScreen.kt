@@ -182,7 +182,8 @@ fun EdgeTtsScreen(
                 vm.statInfo.isNotBlank() -> {
                     if (vm.runWork && vm.totalPartsCount > 0) {
                         val elapsedSuffix = if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
-                            " • ${vm.elapsedTimeText}"
+                            val etaPart = if (vm.etaTimeText.isNotEmpty()) " (~${vm.etaTimeText})" else ""
+                            " • ${vm.elapsedTimeText}$etaPart"
                         } else {
                             ""
                         }
@@ -708,7 +709,11 @@ private fun BookStatusGridCard(
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = vm.elapsedTimeText,
+                                        text = if (vm.etaTimeText.isNotEmpty()) {
+                                            "${vm.elapsedTimeText} • ~${vm.etaTimeText}"
+                                        } else {
+                                            vm.elapsedTimeText
+                                        },
                                         style = MaterialTheme.typography.labelMedium
                                     )
                                 }
