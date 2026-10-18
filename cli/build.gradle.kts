@@ -65,7 +65,8 @@ val fatJar = tasks.register<Jar>("fatJar") {
         attributes(
             "Main-Class" to "dm1sh.hedgehog.cli.HedgehogCliKt",
             "Implementation-Title" to "hedgehog-cli",
-            "Implementation-Version" to cliVersionName
+            "Implementation-Version" to cliVersionName,
+            "Enable-Native-Access" to "ALL-UNNAMED"
         )
     }
 
@@ -92,7 +93,13 @@ tasks.register("executableCli") {
     doLast {
         val jarFile = fatJar.get().archiveFile.get().asFile
         val outBin = File(jarFile.parentFile, "hedgehog-cli")
-        val stub = "#!/usr/bin/env sh\nexec java -Dfile.encoding=UTF-8 -jar \"\$0\" \"\$@\"\n".toByteArray(Charsets.UTF_8)
+        val stub = (
+            "#!/usr/bin/env sh\n" +
+                "if java --enable-native-access=ALL-UNNAMED -version >/dev/null 2>&1; then\n" +
+                "  exec java --enable-native-access=ALL-UNNAMED -Dfile.encoding=UTF-8 -jar \"\$0\" \"\$@\"\n" +
+                "fi\n" +
+                "exec java -Dfile.encoding=UTF-8 -jar \"\$0\" \"\$@\"\n"
+            ).toByteArray(Charsets.UTF_8)
         FileOutputStream(outBin).use { out ->
             out.write(stub)
             jarFile.inputStream().use { input ->
