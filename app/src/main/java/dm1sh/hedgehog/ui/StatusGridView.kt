@@ -66,7 +66,7 @@ fun StatusGridView(
     val totalRows = (count + boxesPerRow - 1) / boxesPerRow
     val contentHeightPx = max(rowHeightPx, totalRows * rowHeightPx - gapPx)
     val contentHeightDp = with(density) { contentHeightPx.toDp() }
-    val minRows = 5
+    val minRows = 10
     val minViewportHeightDp = boxSizeDp * minRows + boxGapDp * (minRows - 1)
     val effectiveMaxHeightDp = maxOf(minViewportHeightDp, maxHeightDp)
     val viewportHeightDp = contentHeightDp.coerceIn(minViewportHeightDp, effectiveMaxHeightDp)

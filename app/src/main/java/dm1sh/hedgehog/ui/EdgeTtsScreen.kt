@@ -450,7 +450,7 @@ private fun BookTabContent(
     var bookTitlesHeightPx by remember { mutableIntStateOf(0) }
     var statusHeaderHeightPx by remember { mutableIntStateOf(0) }
 
-    val minGridHeightDp = 104.dp // 5 rows: 5 * 16.dp + 4 * 6.dp
+    val minGridHeightDp = 214.dp // 10 rows: 10 * 16.dp + 9 * 6.dp
     val maxGridHeightDp = if (viewportHeightPx > 0) {
         val viewportDp = with(density) { viewportHeightPx.toDp() }
         val titlesDp = if (vm.bookTitles.isNotEmpty()) with(density) { bookTitlesHeightPx.toDp() } else 0.dp
