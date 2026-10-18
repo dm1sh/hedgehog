@@ -1005,8 +1005,12 @@ private suspend fun runConversion(opts: CliOptions): Int {
     val launchedAtomic = AtomicInteger(0)
     val failedAtomic = AtomicInteger(0)
     val mergeMutex = Mutex()
+    val progressPrintLock = Any()
     val outputFiles = mutableListOf<File>()
     val timeoutMsec = if (opts.timeoutSec <= 0) Long.MAX_VALUE else opts.timeoutSec * 1000L
+    val startTimeNanos = System.nanoTime()
+
+    fun elapsedMillis(): Long = ((System.nanoTime() - startTimeNanos) / 1_000_000L).coerceAtLeast(0L)
 
     fun reportProgress() {
         if (opts.quiet) return
@@ -1015,9 +1019,15 @@ private suspend fun runConversion(opts: CliOptions): Int {
         val pRatio = doneParts.toDouble() / total.toDouble()
         val cRatio = doneChunks.toDouble() / totalChunksCount.coerceAtLeast(1).toDouble()
         val pct = ((0.5 * (pRatio + cRatio)) * 100.0).roundToInt().coerceIn(0, 100)
-        System.err.print("\rProgress: parts $doneParts/$total • chapters $doneChunks/$totalChunksCount ($pct%)   ")
-        System.err.flush()
+        val elapsedStr = formatClockDuration(elapsedMillis())
+        synchronized(progressPrintLock) {
+            System.err.print("\rProgress: parts $doneParts/$total • chapters $doneChunks/$totalChunksCount ($pct%) • Elapsed: $elapsedStr   ")
+            System.err.flush()
+        }
     }
+
+    reportProgress()
+    var lastTickReportMs = 0L
 
     try {
         kotlinx.coroutines.coroutineScope {
@@ -1053,7 +1063,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         if ((partData == null || partData.isEmpty()) && isActive && failedAtomic.get() == 0) {
                             if (offlineInstalled != null && (opts.offlineMode || opts.allowOfflineFallback)) {
                                 if (!opts.offlineMode && !opts.quiet) {
-                                    System.err.println("\nWarning: Online synthesis failed for part ${spec.index + 1}, falling back to offline voice '${offlineInstalled.folderName}'.")
+                                    synchronized(progressPrintLock) {
+                                        System.err.println("\nWarning: Online synthesis failed for part ${spec.index + 1}, falling back to offline voice '${offlineInstalled.folderName}'.")
+                                    }
                                 }
                                 partData = OfflineTtsEngine.synthesizePart(
                                     voiceDir = offlineInstalled.dir,
@@ -1109,6 +1121,19 @@ private suspend fun runConversion(opts: CliOptions): Int {
                     childJobs.add(job)
                 } else {
                     delay(50)
+                    val nowElapsed = elapsedMillis()
+                    if (nowElapsed - lastTickReportMs >= 1000L) {
+                        lastTickReportMs = nowElapsed
+                        reportProgress()
+                    }
+                }
+            }
+            while (childJobs.any { it.isActive }) {
+                delay(50)
+                val nowElapsed = elapsedMillis()
+                if (nowElapsed - lastTickReportMs >= 1000L) {
+                    lastTickReportMs = nowElapsed
+                    reportProgress()
                 }
             }
             childJobs.forEach { it.join() }
@@ -1117,21 +1142,55 @@ private suspend fun runConversion(opts: CliOptions): Int {
         workTempRoot.deleteRecursively()
     }
 
+    val totalElapsedMs = elapsedMillis()
+
     if (!opts.quiet) {
+        reportProgress()
         System.err.println()
     }
 
     if (failedAtomic.get() > 0) {
-        System.err.println("Error: Synthesis or encoding failed.")
+        System.err.println("Error: Synthesis or encoding failed after ${formatHumanDuration(totalElapsedMs)}.")
         return 1
     }
 
     if (!opts.quiet) {
+        System.err.println(
+            "Completed in ${formatClockDuration(totalElapsedMs)} (${formatHumanDuration(totalElapsedMs)}) • " +
+                "$total parts • ${outputFiles.size} file(s)"
+        )
         for (f in outputFiles) {
             println(f.absolutePath)
         }
     }
     return 0
+}
+
+private fun formatClockDuration(elapsedMs: Long): String {
+    val totalSeconds = (elapsedMs / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "%d:%02d:%02d".format(Locale.US, hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(Locale.US, minutes, seconds)
+    }
+}
+
+private fun formatHumanDuration(elapsedMs: Long): String {
+    if (elapsedMs < 60_000L) {
+        return "%.1fs".format(Locale.US, elapsedMs / 1000.0)
+    }
+    val totalSeconds = elapsedMs / 1000L
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "${hours}h ${minutes}m ${seconds}s"
+    } else {
+        "${minutes}m ${seconds}s"
+    }
 }
 
 private fun assembleCliChunk(
