@@ -72,6 +72,7 @@ object OpusConverter {
             ffmpegArgs = listOf(
                 "-vn",
                 "-c:a", "libopus",
+                "-ar", "24000",
                 "-b:a", "32k",
                 "-ac", "1",
                 "-application", "voip",

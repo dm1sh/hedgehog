@@ -136,7 +136,7 @@ int hedgehog_mp3_to_opus_mem(
     enc_ctx = avcodec_alloc_context3(encoder);
     if (!enc_ctx) goto cleanup;
 
-    enc_ctx->sample_rate = 48000;
+    enc_ctx->sample_rate = 24000;
     av_channel_layout_default(&enc_ctx->ch_layout, 1); /* -ac 1 */
     enc_ctx->sample_fmt = AV_SAMPLE_FMT_S16;
     enc_ctx->bit_rate = 32000; /* -b:a 32k */
@@ -161,21 +161,29 @@ int hedgehog_mp3_to_opus_mem(
         av_channel_layout_default(&dec_ctx->ch_layout, 1);
     }
 
-    if (swr_alloc_set_opts2(
-            &swr_ctx,
-            &enc_ctx->ch_layout,
-            enc_ctx->sample_fmt,
-            enc_ctx->sample_rate,
-            &dec_ctx->ch_layout,
-            dec_ctx->sample_fmt,
-            dec_ctx->sample_rate,
-            0,
-            NULL) < 0) {
-        goto cleanup;
-    }
-    if (swr_init(swr_ctx) < 0) goto cleanup;
+    int passthrough_pcm = (
+        dec_ctx->sample_rate == enc_ctx->sample_rate &&
+        dec_ctx->sample_fmt == enc_ctx->sample_fmt &&
+        dec_ctx->ch_layout.nb_channels == enc_ctx->ch_layout.nb_channels
+    );
 
-    int frame_size = enc_ctx->frame_size > 0 ? enc_ctx->frame_size : 2880; /* 60ms @ 48kHz = 2880 */
+    if (!passthrough_pcm) {
+        if (swr_alloc_set_opts2(
+                &swr_ctx,
+                &enc_ctx->ch_layout,
+                enc_ctx->sample_fmt,
+                enc_ctx->sample_rate,
+                &dec_ctx->ch_layout,
+                dec_ctx->sample_fmt,
+                dec_ctx->sample_rate,
+                0,
+                NULL) < 0) {
+            goto cleanup;
+        }
+        if (swr_init(swr_ctx) < 0) goto cleanup;
+    }
+
+    int frame_size = enc_ctx->frame_size > 0 ? enc_ctx->frame_size : 1440; /* 60ms @ 24kHz = 1440 */
     fifo = av_audio_fifo_alloc(enc_ctx->sample_fmt, enc_ctx->ch_layout.nb_channels, frame_size * 4);
     if (!fifo) goto cleanup;
 
@@ -214,16 +222,22 @@ int hedgehog_mp3_to_opus_mem(
         if (pkt->stream_index == audio_stream_idx) {
             if (avcodec_send_packet(dec_ctx, pkt) >= 0) {
                 while (avcodec_receive_frame(dec_ctx, in_frame) == 0) {
-                    int max_out = swr_get_out_samples(swr_ctx, in_frame->nb_samples);
-                    if (max_out > 0) {
-                        uint8_t **converted = NULL;
-                        if (av_samples_alloc_array_and_samples(&converted, NULL, enc_ctx->ch_layout.nb_channels, max_out, enc_ctx->sample_fmt, 0) >= 0) {
-                            int conv_samples = swr_convert(swr_ctx, converted, max_out, (const uint8_t **)in_frame->extended_data, in_frame->nb_samples);
-                            if (conv_samples > 0) {
-                                av_audio_fifo_write(fifo, (void **)converted, conv_samples);
+                    if (passthrough_pcm) {
+                        if (in_frame->nb_samples > 0) {
+                            av_audio_fifo_write(fifo, (void **)in_frame->extended_data, in_frame->nb_samples);
+                        }
+                    } else {
+                        int max_out = swr_get_out_samples(swr_ctx, in_frame->nb_samples);
+                        if (max_out > 0) {
+                            uint8_t **converted = NULL;
+                            if (av_samples_alloc_array_and_samples(&converted, NULL, enc_ctx->ch_layout.nb_channels, max_out, enc_ctx->sample_fmt, 0) >= 0) {
+                                int conv_samples = swr_convert(swr_ctx, converted, max_out, (const uint8_t **)in_frame->extended_data, in_frame->nb_samples);
+                                if (conv_samples > 0) {
+                                    av_audio_fifo_write(fifo, (void **)converted, conv_samples);
+                                }
+                                if (converted[0]) av_freep(&converted[0]);
+                                av_freep(&converted);
                             }
-                            if (converted[0]) av_freep(&converted[0]);
-                            av_freep(&converted);
                         }
                     }
                     av_frame_unref(in_frame);
@@ -236,31 +250,39 @@ int hedgehog_mp3_to_opus_mem(
 
     avcodec_send_packet(dec_ctx, NULL);
     while (avcodec_receive_frame(dec_ctx, in_frame) == 0) {
-        int max_out = swr_get_out_samples(swr_ctx, in_frame->nb_samples);
-        if (max_out > 0) {
+        if (passthrough_pcm) {
+            if (in_frame->nb_samples > 0) {
+                av_audio_fifo_write(fifo, (void **)in_frame->extended_data, in_frame->nb_samples);
+            }
+        } else {
+            int max_out = swr_get_out_samples(swr_ctx, in_frame->nb_samples);
+            if (max_out > 0) {
+                uint8_t **converted = NULL;
+                if (av_samples_alloc_array_and_samples(&converted, NULL, enc_ctx->ch_layout.nb_channels, max_out, enc_ctx->sample_fmt, 0) >= 0) {
+                    int conv_samples = swr_convert(swr_ctx, converted, max_out, (const uint8_t **)in_frame->extended_data, in_frame->nb_samples);
+                    if (conv_samples > 0) {
+                        av_audio_fifo_write(fifo, (void **)converted, conv_samples);
+                    }
+                    if (converted[0]) av_freep(&converted[0]);
+                    av_freep(&converted);
+                }
+            }
+        }
+        av_frame_unref(in_frame);
+    }
+
+    if (!passthrough_pcm && swr_ctx) {
+        int delayed = swr_get_out_samples(swr_ctx, 0);
+        if (delayed > 0) {
             uint8_t **converted = NULL;
-            if (av_samples_alloc_array_and_samples(&converted, NULL, enc_ctx->ch_layout.nb_channels, max_out, enc_ctx->sample_fmt, 0) >= 0) {
-                int conv_samples = swr_convert(swr_ctx, converted, max_out, (const uint8_t **)in_frame->extended_data, in_frame->nb_samples);
+            if (av_samples_alloc_array_and_samples(&converted, NULL, enc_ctx->ch_layout.nb_channels, delayed, enc_ctx->sample_fmt, 0) >= 0) {
+                int conv_samples = swr_convert(swr_ctx, converted, delayed, NULL, 0);
                 if (conv_samples > 0) {
                     av_audio_fifo_write(fifo, (void **)converted, conv_samples);
                 }
                 if (converted[0]) av_freep(&converted[0]);
                 av_freep(&converted);
             }
-        }
-        av_frame_unref(in_frame);
-    }
-
-    int delayed = swr_get_out_samples(swr_ctx, 0);
-    if (delayed > 0) {
-        uint8_t **converted = NULL;
-        if (av_samples_alloc_array_and_samples(&converted, NULL, enc_ctx->ch_layout.nb_channels, delayed, enc_ctx->sample_fmt, 0) >= 0) {
-            int conv_samples = swr_convert(swr_ctx, converted, delayed, NULL, 0);
-            if (conv_samples > 0) {
-                av_audio_fifo_write(fifo, (void **)converted, conv_samples);
-            }
-            if (converted[0]) av_freep(&converted[0]);
-            av_freep(&converted);
         }
     }
 
