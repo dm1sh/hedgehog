@@ -1104,8 +1104,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                 targetWavDirect = targetWavDirect,
                                 opts = opts,
                                 multipleBooks = multipleBooks,
-                                soundGlavaBytes = soundGlavaBytes,
-                                maxEncodeWorkers = effectiveThreads
+                                soundGlavaBytes = soundGlavaBytes
                             )
                             if (outFile != null) {
                                 synchronized(outputFiles) {
@@ -1196,7 +1195,7 @@ private fun formatHumanDuration(elapsedMs: Long): String {
     }
 }
 
-private suspend fun assembleCliChunk(
+private fun assembleCliChunk(
     chunkSpec: ChunkJobSpec,
     workTempRoot: File,
     saveDirFile: File,
@@ -1204,8 +1203,7 @@ private suspend fun assembleCliChunk(
     targetWavDirect: Boolean,
     opts: CliOptions,
     multipleBooks: Boolean,
-    soundGlavaBytes: ByteArray,
-    maxEncodeWorkers: Int
+    soundGlavaBytes: ByteArray
 ): File? {
     val bookTempDir = File(workTempRoot, chunkSpec.bookFolderName)
     bookTempDir.mkdirs()
@@ -1273,17 +1271,28 @@ private suspend fun assembleCliChunk(
         if (mergedWav.isEmpty()) return null
 
         if (opts.opusOutput) {
-            val introOpus = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-                OpusConverter.convertMp3ToOpus(soundGlavaBytes)
-            } else {
-                null
+            var opusBytes = OpusConverter.convertMp3ToOpus(mergedWav)
+            if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+                val introOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
+                if (introOpus != null && introOpus.isNotEmpty()) {
+                    val introFile = File.createTempFile("intro_", ".opus", bookTempDir)
+                    val bodyFile = File.createTempFile("body_", ".opus", bookTempDir)
+                    val mergedFile = File.createTempFile("merged_", ".opus", bookTempDir)
+                    try {
+                        introFile.writeBytes(introOpus)
+                        bodyFile.writeBytes(opusBytes)
+                        if (OpusConverter.mergeOpusFiles(listOf(introFile.absolutePath, bodyFile.absolutePath), mergedFile.absolutePath) &&
+                            mergedFile.exists() && mergedFile.length() > 0L
+                        ) {
+                            opusBytes = mergedFile.readBytes()
+                        }
+                    } finally {
+                        introFile.delete()
+                        bodyFile.delete()
+                        mergedFile.delete()
+                    }
+                }
             }
-            val opusBytes = OpusConverter.convertWavToOpusParallel(
-                wavBytes = mergedWav,
-                tempDir = bookTempDir,
-                introOpus = introOpus,
-                maxWorkers = maxEncodeWorkers
-            )
             if (opusBytes == null || opusBytes.isEmpty()) return null
             val finalOpus = if (opts.embedMetadata) {
                 AudioMetadataTagger.tagOpus(
@@ -1301,11 +1310,7 @@ private suspend fun assembleCliChunk(
             FileOutputStream(targetFile).use { it.write(finalOpus) }
             return targetFile
         } else {
-            val encodedMp3 = OpusConverter.convertWavToMp3Parallel(
-                wavBytes = mergedWav,
-                kbps = targetKbps,
-                maxWorkers = maxEncodeWorkers
-            ) ?: return null
+            val encodedMp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps) ?: return null
             val assembledMp3 = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
                 val buf = ByteArrayOutputStream(soundGlavaBytes.size + encodedMp3.size)
                 buf.write(soundGlavaBytes)
@@ -1332,32 +1337,27 @@ private suspend fun assembleCliChunk(
         }
     }
 
-    val mp3PartBuffers = ArrayList<ByteArray>(partFiles.size + 1)
+    val mergeBuffer = ByteArrayOutputStream()
     if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-        mp3PartBuffers.add(soundGlavaBytes)
+        mergeBuffer.write(soundGlavaBytes)
     }
     for (pFile in partFiles) {
         if (pFile.exists()) {
             val raw = pFile.readBytes()
             pFile.delete()
             val bytes = if (pFile.extension.equals("wav", ignoreCase = true)) {
-                OpusConverter.convertWavToMp3Parallel(raw, targetKbps, maxEncodeWorkers) ?: return null
+                OpusConverter.convertWavToMp3(raw, targetKbps) ?: return null
             } else {
                 raw
             }
-            if (bytes.isNotEmpty()) {
-                mp3PartBuffers.add(bytes)
-            }
+            mergeBuffer.write(bytes)
         }
     }
-    if (mp3PartBuffers.isEmpty()) return null
+    val assembledMp3 = mergeBuffer.toByteArray()
+    if (assembledMp3.isEmpty()) return null
 
     if (opts.opusOutput) {
-        val opusBytes = OpusConverter.convertMp3PartsToOpusParallel(
-            mp3Parts = mp3PartBuffers,
-            tempDir = bookTempDir,
-            maxWorkers = maxEncodeWorkers
-        ) ?: return null
+        val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3) ?: return null
         val finalOpus = if (opts.embedMetadata) {
             AudioMetadataTagger.tagOpus(
                 opusBytes = opusBytes,
@@ -1374,9 +1374,6 @@ private suspend fun assembleCliChunk(
         FileOutputStream(targetFile).use { it.write(finalOpus) }
         return targetFile
     } else {
-        val mergeBuffer = ByteArrayOutputStream()
-        for (b in mp3PartBuffers) mergeBuffer.write(b)
-        val assembledMp3 = mergeBuffer.toByteArray()
         val finalMp3 = if (opts.embedMetadata) {
             AudioMetadataTagger.tagMp3(
                 mp3Bytes = assembledMp3,
