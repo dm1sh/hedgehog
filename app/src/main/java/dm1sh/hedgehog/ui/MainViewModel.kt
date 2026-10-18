@@ -3001,19 +3001,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                         val chunkSpec = partToChunkMap.getOrNull(spec.index)
                         if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
-                            val chunkAssembled = mergeMutex.withLock {
-                                assembleChunk(
-                                    chunkSpec = chunkSpec,
-                                    saveDirBase = runSaveDir,
-                                    inBookDir = runBookDirCreate,
-                                    multipleBooks = multipleBooks,
-                                    soundGlavaBytes = soundGlavaBytes,
-                                    lowBitrate = runLowBitrate,
-                                    opusOutput = runOpusOutput,
-                                    embedMetadata = runEmbedMetadata,
-                                    rid = currentRunId
-                                )
-                            }
+                            val chunkAssembled = assembleChunk(
+                                chunkSpec = chunkSpec,
+                                saveDirBase = runSaveDir,
+                                inBookDir = runBookDirCreate,
+                                multipleBooks = multipleBooks,
+                                soundGlavaBytes = soundGlavaBytes,
+                                lowBitrate = runLowBitrate,
+                                opusOutput = runOpusOutput,
+                                embedMetadata = runEmbedMetadata,
+                                rid = currentRunId
+                            )
                             if (chunkAssembled && runIdGen.get() == currentRunId) {
                                 val doneChunks = postprocessedChunksAtomic.incrementAndGet()
                                 publishConversionProgress(savedPartsAtomic.get(), doneChunks)
@@ -3102,7 +3100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return false
     }
 
-    private fun assembleChunk(
+    private suspend fun assembleChunk(
         chunkSpec: ChunkJobSpec,
         saveDirBase: String,
         inBookDir: Boolean,
@@ -3128,6 +3126,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val targetKbps = if (lowBitrate) 48 else 96
+        val encodeWorkers = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val cacheDir = getApplication<Application>().cacheDir
 
         val partFiles = ArrayList<File>(chunkSpec.fileNums.size)
         var allWav = true
@@ -3177,30 +3177,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (mergedWav.isEmpty() || runIdGen.get() != rid) return false
 
             if (opusOutput) {
-                var opusBytes = OpusConverter.convertMp3ToOpus(mergedWav)
-                if (runIdGen.get() != rid) return false
-                if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-                    val introOpus = OpusConverter.convertMp3ToOpus(soundGlavaBytes)
-                    if (introOpus != null && introOpus.isNotEmpty()) {
-                        val cacheDir = getApplication<Application>().cacheDir
-                        val introFile = File.createTempFile("intro_", ".opus", cacheDir)
-                        val bodyFile = File.createTempFile("body_", ".opus", cacheDir)
-                        val mergedFile = File.createTempFile("merged_", ".opus", cacheDir)
-                        try {
-                            introFile.writeBytes(introOpus)
-                            bodyFile.writeBytes(opusBytes)
-                            if (OpusConverter.mergeOpusFiles(listOf(introFile.absolutePath, bodyFile.absolutePath), mergedFile.absolutePath) &&
-                                mergedFile.exists() && mergedFile.length() > 0L
-                            ) {
-                                opusBytes = mergedFile.readBytes()
-                            }
-                        } finally {
-                            introFile.delete()
-                            bodyFile.delete()
-                            mergedFile.delete()
-                        }
-                    }
+                val introOpus = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
+                    OpusConverter.convertMp3ToOpus(soundGlavaBytes)
+                } else {
+                    null
                 }
+                val opusBytes = OpusConverter.convertWavToOpusParallel(
+                    wavBytes = mergedWav,
+                    tempDir = cacheDir,
+                    introOpus = introOpus,
+                    maxWorkers = encodeWorkers
+                )
+                if (runIdGen.get() != rid) return false
                 if (opusBytes != null && opusBytes.isNotEmpty()) {
                     val finalOpus = if (embedMetadata) {
                         AudioMetadataTagger.tagOpus(
@@ -3225,7 +3213,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            val encodedMp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps)
+            val encodedMp3 = OpusConverter.convertWavToMp3Parallel(
+                wavBytes = mergedWav,
+                kbps = targetKbps,
+                maxWorkers = encodeWorkers
+            )
             if (encodedMp3 == null || encodedMp3.isEmpty() || runIdGen.get() != rid) return false
             val assembledMp3 = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
                 val buf = ByteArrayOutputStream(soundGlavaBytes.size + encodedMp3.size)
@@ -3257,9 +3249,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        val mergeBuffer = ByteArrayOutputStream()
+        val mp3PartBuffers = ArrayList<ByteArray>(partFiles.size + 1)
         if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-            mergeBuffer.write(soundGlavaBytes)
+            mp3PartBuffers.add(soundGlavaBytes)
         }
         for (rawFile in partFiles) {
             if (runIdGen.get() != rid) return false
@@ -3267,23 +3259,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     val rawBytes = rawFile.readBytes()
                     if (rawFile.extension.equals("wav", ignoreCase = true)) {
-                        val mp3Part = OpusConverter.convertWavToMp3(rawBytes, targetKbps)
+                        val mp3Part = OpusConverter.convertWavToMp3Parallel(rawBytes, targetKbps, encodeWorkers)
                         if (mp3Part != null && mp3Part.isNotEmpty()) {
-                            mergeBuffer.write(mp3Part)
+                            mp3PartBuffers.add(mp3Part)
                         }
-                    } else {
-                        mergeBuffer.write(rawBytes)
+                    } else if (rawBytes.isNotEmpty()) {
+                        mp3PartBuffers.add(rawBytes)
                     }
                 } catch (_: Exception) {
                 }
                 rawFile.delete()
             }
         }
+        if (mp3PartBuffers.isEmpty() || runIdGen.get() != rid) return false
+
+        val mergeBuffer = ByteArrayOutputStream()
+        for (b in mp3PartBuffers) mergeBuffer.write(b)
         val assembledMp3 = mergeBuffer.toByteArray()
         if (assembledMp3.isEmpty() || runIdGen.get() != rid) return false
 
         return if (opusOutput) {
-            val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3)
+            val opusBytes = OpusConverter.convertMp3PartsToOpusParallel(
+                mp3Parts = mp3PartBuffers,
+                tempDir = cacheDir,
+                maxWorkers = encodeWorkers
+            )
             if (runIdGen.get() != rid) return false
             if (opusBytes != null && opusBytes.isNotEmpty()) {
                 val finalOpus = if (embedMetadata) {
