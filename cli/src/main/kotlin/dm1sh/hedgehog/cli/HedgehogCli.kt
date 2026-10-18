@@ -1002,19 +1002,13 @@ private suspend fun runConversion(opts: CliOptions): Int {
         for ((bookChunkIdx, triple) in rawChunksForBook.withIndex()) {
             val (glava, cIdx, cParts) = triple
             val totalForGlava = chunksPerGlavaCount[glava] ?: 1
-            val stripName = stripBookName(opts.bookDirCreate, saveDirFile.absolutePath, bookFolderName, glava)
-            val targetBaseName = when {
-                glava.isEmpty() -> {
-                    val numStr = "%04d".format(cIdx + 1)
-                    mp3BaseName(stripName, bookFolderName, "", numStr, merged = true)
-                }
-                totalForGlava == 1 -> {
-                    mp3BaseName(stripName, bookFolderName, glava, "", merged = true)
-                }
-                else -> {
-                    val numStr = "%04d".format(cIdx + 1)
-                    mp3BaseName(stripName, bookFolderName, glava, numStr, merged = true)
-                }
+            val partNumberStr = "%04d".format(cIdx + 1)
+            val targetBaseName = if (glava.isEmpty()) {
+                "c$partNumberStr"
+            } else if (totalForGlava == 1) {
+                glava
+            } else {
+                "${glava}_c$partNumberStr"
             }
             val cSpec = ChunkJobSpec(
                 bookFolderName = bookFolderName,
