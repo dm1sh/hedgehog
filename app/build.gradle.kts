@@ -112,9 +112,8 @@ dependencies {
     // Networking & WebSocket for Online Edge TTS + Voice Catalog Download
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // Offline Embedded TTS (Microsoft Cognitive Services Speech SDK + jump3r LAME MP3 encoder)
+    // Offline Embedded TTS (Microsoft Cognitive Services Speech SDK)
     implementation("com.microsoft.cognitiveservices.speech:client-sdk-embedded:1.40.0")
-    implementation("de.sciss:jump3r:1.0.5")
 
     // XML / XHTML DOM parser for FB2 & EPUB footnote inlining
     implementation("org.jsoup:jsoup:1.18.1")

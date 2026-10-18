@@ -10,12 +10,12 @@ import com.microsoft.cognitiveservices.speech.ResultReason
 import com.microsoft.cognitiveservices.speech.SpeechSynthesisCancellationDetails
 import com.microsoft.cognitiveservices.speech.SpeechSynthesisOutputFormat
 import com.microsoft.cognitiveservices.speech.SpeechSynthesizer
-import de.sciss.jump3r.Main
 import dm1sh.hedgehog.data.SettingsRepository
 import dm1sh.hedgehog.localization.LocalizationManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -127,29 +127,26 @@ object OfflineTtsEngine {
                 continue
             }
             onStatusUpdate("KEY_STARTED")
-            val mp3 = semaphore.withPermit {
+            val wav = semaphore.withPermit {
                 if (isCancelled() || (!isPreview && isPaused())) {
                     ByteArray(0)
                 } else {
-                    val kbps = if (lowBitrate) "48" else "96"
-                    synthesizeBlocking(
-                        context = context,
+                    synthesizeWavBlocking(
                         voiceDir = voiceDir.absolutePath,
                         text = text,
                         rate = rate,
                         pitch = pitch,
-                        kbps = kbps,
                         shouldAbort = { isCancelled() || (!isPreview && isPaused()) },
                         onProcessingStart = { onStatusUpdate("KEY_PROCESSING") }
                     )
                 }
             }
             if (isCancelled()) return null
-            if (mp3.isEmpty() && !isPreview && isPaused()) {
+            if (wav.isEmpty() && !isPreview && isPaused()) {
                 continue
             }
-            if (mp3.isNotEmpty()) {
-                return mp3
+            if (wav.isNotEmpty()) {
+                return wav
             }
             onStatusUpdate("KEY_ERROR_RERUN")
             if (isPreview) return null
@@ -158,13 +155,11 @@ object OfflineTtsEngine {
         return null
     }
 
-    fun synthesizeBlocking(
-        context: Context,
+    fun synthesizeWavBlocking(
         voiceDir: String,
         text: String,
         rate: String,
         pitch: String,
-        kbps: String,
         shouldAbort: () -> Boolean = { false },
         onProcessingStart: () -> Unit = {}
     ): ByteArray {
@@ -177,9 +172,9 @@ object OfflineTtsEngine {
                 shouldAbort = shouldAbort,
                 onProcessingStart = onProcessingStart
             )
-            if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else mp3(context, pcmBytes, kbps)
+            if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else buildWav(pcmBytes)
         } catch (t: Throwable) {
-            Log.e(TAG, "synthesize failed: ${t.message}", t)
+            Log.e(TAG, "synthesizeWavBlocking failed: ${t.message}", t)
             ByteArray(0)
         }
     }
@@ -328,7 +323,8 @@ object OfflineTtsEngine {
             "$escaped</prosody></voice></speak>"
     }
 
-    private fun stripRiff(riff: ByteArray): ByteArray {
+    fun stripRiff(riff: ByteArray): ByteArray {
+        if (riff.size < 44) return riff
         val buffer = ByteBuffer.wrap(riff).order(ByteOrder.LITTLE_ENDIAN)
         var i = 12
         while (true) {
@@ -342,21 +338,7 @@ object OfflineTtsEngine {
         }
     }
 
-    private fun mp3(context: Context, pcm: ByteArray, kbps: String): ByteArray {
-        val cacheDir = context.cacheDir ?: return ByteArray(0)
-        val wavFile = File.createTempFile("part_", ".wav", cacheDir)
-        val mp3File = File(wavFile.path.removeSuffix(".wav") + ".mp3")
-        return try {
-            wavFile.writeBytes(buildWav(pcm))
-            val code = Main().run(arrayOf("-b", kbps, "--silent", wavFile.path, mp3File.path))
-            if (code == 0 && mp3File.exists()) mp3File.readBytes() else ByteArray(0)
-        } finally {
-            wavFile.delete()
-            mp3File.delete()
-        }
-    }
-
-    private fun buildWav(pcm: ByteArray): ByteArray {
+    fun buildWav(pcm: ByteArray): ByteArray {
         val buffer = ByteBuffer.allocate(pcm.size + 44).order(ByteOrder.LITTLE_ENDIAN)
         buffer.put("RIFF".toByteArray(Charsets.US_ASCII)).putInt(pcm.size + 36)
         buffer.put("WAVEfmt ".toByteArray(Charsets.US_ASCII)).putInt(16)
@@ -365,5 +347,29 @@ object OfflineTtsEngine {
         buffer.putShort(2).putShort(16)
         buffer.put("data".toByteArray(Charsets.US_ASCII)).putInt(pcm.size).put(pcm)
         return buffer.array()
+    }
+
+    fun mergeWavFiles(wavFiles: List<File>, deleteAfterRead: Boolean = false): ByteArray {
+        if (wavFiles.isEmpty()) return ByteArray(0)
+        val pcmOut = ByteArrayOutputStream()
+        for (file in wavFiles) {
+            if (file.exists()) {
+                try {
+                    val raw = file.readBytes()
+                    if (raw.isNotEmpty()) {
+                        val pcm = stripRiff(raw)
+                        if (pcm.isNotEmpty()) {
+                            pcmOut.write(pcm)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+                if (deleteAfterRead) {
+                    file.delete()
+                }
+            }
+        }
+        val mergedPcm = pcmOut.toByteArray()
+        return if (mergedPcm.isEmpty()) ByteArray(0) else buildWav(mergedPcm)
     }
 }
