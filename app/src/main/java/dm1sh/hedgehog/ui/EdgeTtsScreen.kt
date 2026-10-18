@@ -439,37 +439,25 @@ fun EdgeTtsScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BookTabContent(
     vm: MainViewModel,
     onRequestNativePicker: (NativePickerType) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val settings = vm.settings
-    val useOnline = settings.useOnlineVoices
-    val activeVoiceDisplay = if (useOnline) {
-        settings.voicesName
-    } else {
-        settings.offlineVoicesName.ifBlank { vm.tr("KEY_OFFLINE_UNAVAILABLE") }
-    }
-    val activeDropdownExpanded = if (useOnline) vm.voicesDropdownOpen else vm.offlineVoicesDropdownOpen
-
     val density = LocalDensity.current
     var viewportHeightPx by remember { mutableIntStateOf(0) }
-    var voiceCardHeightPx by remember { mutableIntStateOf(0) }
     var bookTitlesHeightPx by remember { mutableIntStateOf(0) }
     var statusHeaderHeightPx by remember { mutableIntStateOf(0) }
 
     val minGridHeightDp = 104.dp // 5 rows: 5 * 16.dp + 4 * 6.dp
-    val maxGridHeightDp = if (viewportHeightPx > 0 && voiceCardHeightPx > 0) {
+    val maxGridHeightDp = if (viewportHeightPx > 0) {
         val viewportDp = with(density) { viewportHeightPx.toDp() }
-        val voiceCardDp = with(density) { voiceCardHeightPx.toDp() }
         val titlesDp = if (vm.bookTitles.isNotEmpty()) with(density) { bookTitlesHeightPx.toDp() } else 0.dp
         val statusHeaderDp = if (statusHeaderHeightPx > 0) with(density) { statusHeaderHeightPx.toDp() } else 48.dp
-        val outerGapsDp = if (vm.bookTitles.isNotEmpty()) 58.dp else 46.dp
+        val outerGapsDp = if (vm.bookTitles.isNotEmpty()) 46.dp else 34.dp
         val cardInnerChromeDp = 44.dp // 16.dp top + 16.dp bottom padding + 12.dp spacing above grid
-        val available = viewportDp - voiceCardDp - titlesDp - statusHeaderDp - outerGapsDp - cardInnerChromeDp
+        val available = viewportDp - titlesDp - statusHeaderDp - outerGapsDp - cardInnerChromeDp
         maxOf(minGridHeightDp, available)
     } else {
         minGridHeightDp
@@ -485,72 +473,6 @@ private fun BookTabContent(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Spacer(modifier = Modifier.height(2.dp))
-
-            // Group1: Quick Voice & Speed Card
-            OutlinedCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onSizeChanged { voiceCardHeightPx = it.height }
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    ExposedDropdownMenuBox(
-                        expanded = activeDropdownExpanded,
-                        onExpandedChange = {
-                            vm.languagesDropdownOpen = false
-                            vm.uiTtsDropdownOpen = false
-                            if (useOnline) {
-                                vm.offlineVoicesDropdownOpen = false
-                                vm.voicesDropdownOpen = !vm.voicesDropdownOpen
-                                vm.ttsSay(settings.voicesName)
-                            } else {
-                                vm.voicesDropdownOpen = false
-                                vm.offlineVoicesDropdownOpen = !vm.offlineVoicesDropdownOpen
-                                vm.ttsSay(vm.voiceSayText(activeVoiceDisplay))
-                            }
-                        }
-                    ) {
-                        OutlinedTextField(
-                            value = activeVoiceDisplay,
-                            onValueChange = {},
-                            readOnly = true,
-                            singleLine = true,
-                            label = {
-                                Text(vm.tr(if (useOnline) "KEY_ONLINE_VOICE" else "KEY_OFFLINE_VOICE"))
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Outlined.RecordVoiceOver,
-                                    contentDescription = null
-                                )
-                            },
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = activeDropdownExpanded)
-                            },
-                            supportingText = if (!useOnline) {
-                                { Text(vm.tr("KEY_VOICE_OFFLINE")) }
-                            } else null,
-                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
-                            modifier = Modifier
-                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                                .fillMaxWidth()
-                        )
-                    }
-
-                    M3SliderSetting(
-                        label = vm.tr("KEY_SPEED"),
-                        valueText = "${vm.formatSignedValue(settings.rate)}%",
-                        value = settings.rate.toFloat(),
-                        valueRange = -50f..100f,
-                        steps = 29,
-                        onValueChange = { vm.setRate(it.roundToInt()) }
-                    )
-                }
-            }
 
             // Dynamic Area: If a book is loading, show loading indicator; if loaded, show StatusGrid; otherwise show list of files in Load folder
             when {
