@@ -62,7 +62,8 @@ data class CliOptions(
     var bookDirCreate: Boolean = false,
     var rate: Int = 0,
     var pitch: Int = 0,
-    var maxThreads: Int = 10,
+    var maxThreads: Int = maxOf(10, Runtime.getRuntime().availableProcessors()),
+    var threadsExplicitlySet: Boolean = false,
     var mergeFiles: Int = 50,
     var timeoutSec: Int = 60,
     var downloadOfflineVoices: Boolean = false,
@@ -239,9 +240,11 @@ private fun parseArgs(args: Array<String>): CliOptions {
 
             arg == "-j" || arg == "--threads" -> {
                 opts.maxThreads = requireNext(arg).toIntOrNull()?.coerceIn(1, 64) ?: 10
+                opts.threadsExplicitlySet = true
             }
             arg.startsWith("--threads=") -> {
                 opts.maxThreads = arg.substringAfter("=").toIntOrNull()?.coerceIn(1, 64) ?: 10
+                opts.threadsExplicitlySet = true
             }
 
             arg == "--merge-files" -> {
@@ -858,7 +861,15 @@ private suspend fun runConversion(opts: CliOptions): Int {
         activeBook.fileNames[0].fileName = explicitOutFile.nameWithoutExtension
     }
 
-    OfflineTtsEngine.setMaxJobs(opts.maxThreads)
+    val cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+    val effectiveThreads = if (opts.offlineMode && !opts.threadsExplicitlySet) {
+        cpuCores
+    } else if (opts.offlineMode) {
+        opts.maxThreads.coerceIn(1, cpuCores)
+    } else {
+        opts.maxThreads
+    }
+    OfflineTtsEngine.setMaxJobs(effectiveThreads)
 
     val soundGlavaBytes = if (!opts.chapterMp3Path.isNullOrBlank()) {
         val f = expandPath(opts.chapterMp3Path!!)
@@ -976,9 +987,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
     if (!opts.quiet) {
         val modeLabel = if (opts.offlineMode) {
-            "OFFLINE (${offlineInstalled?.folderName})"
+            "OFFLINE (${offlineInstalled?.folderName}, $effectiveThreads threads)"
         } else {
-            "ONLINE ($resolvedOnlineVoice)"
+            "ONLINE ($resolvedOnlineVoice, $effectiveThreads threads)"
         }
         val fmtLabel = when {
             targetWavDirect -> "WAV"
@@ -1013,7 +1024,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
             val childJobs = mutableListOf<Job>()
             while (isActive && savedPartsAtomic.get() < total && failedAtomic.get() == 0) {
                 val savedCount = savedPartsAtomic.get()
-                val maxWindow = savedCount + opts.maxThreads
+                val maxWindow = savedCount + effectiveThreads
                 val nextIdx = launchedAtomic.get()
                 if (nextIdx < maxWindow && nextIdx < total) {
                     launchedAtomic.incrementAndGet()
