@@ -110,7 +110,7 @@ fun StatusGridView(
                                             y = row * rowHeightPx - scrollState.value
                                         )
                                         val st = statuses[idx]
-                                        val msg = "${tr("KEY_STAT_AREA_TEXT_1")}${idx + 1}: ${tr(st.trKey)}"
+                                        val msg = "${tr("KEY_STAT_AREA_TEXT_1")}${idx + 1}: ${tr(st.trKey).trim()}"
                                         onSpeakTooltip(msg)
                                     }
                                 } else {
@@ -149,7 +149,7 @@ fun StatusGridView(
 
         if (selectedTooltipIndex in 0 until count) {
             val st = statuses[selectedTooltipIndex]
-            val tooltipText = "${tr("KEY_STAT_AREA_TEXT_1")}${selectedTooltipIndex + 1}: ${tr(st.trKey)}"
+            val tooltipText = "${tr("KEY_STAT_AREA_TEXT_1")}${selectedTooltipIndex + 1}: ${tr(st.trKey).trim()}"
             val tx = tooltipOffsetPx.x.toInt().coerceIn(0, (containerWidthPx - 200).coerceAtLeast(0))
             val ty = (tooltipOffsetPx.y.toInt() - 42).coerceAtLeast(0)
             Surface(
