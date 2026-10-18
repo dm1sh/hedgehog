@@ -1182,8 +1182,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         }
                     }
                     childJobs.add(job)
+                    delay(100)
                 } else {
-                    delay(50)
+                    delay(100)
                     val nowElapsed = elapsedMillis()
                     if (!interruptedByUser && nowElapsed - lastTickReportMs >= 1000L) {
                         lastTickReportMs = nowElapsed
