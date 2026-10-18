@@ -84,6 +84,8 @@ data class CliOptions(
     val downloadVoiceNames: MutableList<String> = mutableListOf(),
     var listVoices: Boolean = false,
     var listVoicesFilter: String? = null,
+    var configPath: File? = null,
+    var saveConfig: Boolean = false,
     var quiet: Boolean = false,
     var showHelp: Boolean = false,
     var showVersion: Boolean = false
@@ -152,6 +154,20 @@ fun main(args: Array<String>) {
                 return@runBlocking
             }
 
+            if (opts.saveConfig) {
+                val targetCfg = opts.configPath ?: defaultConfigFile()
+                if (!saveConfigFromOptions(opts, targetCfg)) {
+                    exitCode = 1
+                    return@runBlocking
+                }
+                if (!opts.quiet) {
+                    println("Saved configuration to ${targetCfg.absolutePath}")
+                }
+                if (!opts.downloadOfflineVoices && !opts.listVoices && opts.inputs.isEmpty() && opts.inlineText == null) {
+                    return@runBlocking
+                }
+            }
+
             if (opts.downloadOfflineVoices) {
                 val code = runDownloadOfflineVoices(opts)
                 if (!opts.listVoices && opts.inputs.isEmpty() && opts.inlineText == null) {
@@ -211,8 +227,132 @@ private fun parseSignedNumber(raw: String): Int {
         ?: throw IllegalArgumentException("Invalid numeric value: '$raw'")
 }
 
+private fun defaultConfigFile(): File {
+    val xdg = System.getenv("XDG_CONFIG_HOME")?.trim().orEmpty()
+    val baseDir = if (xdg.isNotEmpty()) File(xdg) else File(System.getProperty("user.home"), ".config")
+    return File(File(baseDir, "hedgehog"), "config.ini")
+}
+
+private fun parseBoolConfig(raw: String): Boolean {
+    return when (raw.trim().lowercase(Locale.ROOT)) {
+        "1", "true", "yes", "on" -> true
+        else -> false
+    }
+}
+
+private fun loadConfigIntoOptions(configFile: File, opts: CliOptions) {
+    if (!configFile.exists() || !configFile.isFile) return
+    try {
+        for (rawLine in configFile.readLines(Charsets.UTF_8)) {
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith(";") || line.startsWith("[")) {
+                continue
+            }
+            val eqIdx = line.indexOf('=')
+            if (eqIdx <= 0) continue
+            val key = line.substring(0, eqIdx).trim().lowercase(Locale.ROOT).replace('-', '_')
+            val value = line.substring(eqIdx + 1).trim().removeSurrounding("\"").removeSurrounding("'")
+            when (key) {
+                "output", "output_dir" -> if (value.isNotEmpty()) opts.outputPath = value
+                "offline", "offline_mode" -> opts.offlineMode = parseBoolConfig(value)
+                "allow_offline_fallback", "fallback" -> opts.allowOfflineFallback = parseBoolConfig(value)
+                "voice", "online_voice" -> if (value.isNotEmpty()) opts.onlineVoice = value
+                "offline_voice" -> opts.offlineVoice = value.ifEmpty { null }
+                "voices_dir" -> if (value.isNotEmpty()) opts.voicesDir = expandPath(value)
+                "lexx", "lexx_path" -> opts.lexxPath = value.ifEmpty { null }
+                "lexx_register" -> opts.lexxRegister = parseBoolConfig(value)
+                "chapters" -> opts.chapters = parseBoolConfig(value)
+                "chapter_title" -> opts.chapterTitleSpeak = parseBoolConfig(value)
+                "chapter_regex" -> if (value.isNotEmpty()) opts.chapterRegex = value
+                "chapter_mp3" -> opts.chapterMp3Path = value.ifEmpty { null }
+                "inline_notes" -> opts.inlineNotes = parseBoolConfig(value)
+                "filter_emojis" -> opts.filterEmojis = parseBoolConfig(value)
+                "opus", "opus_output" -> opts.opusOutput = parseBoolConfig(value)
+                "low_bitrate" -> opts.lowBitrate = parseBoolConfig(value)
+                "embed_metadata" -> opts.embedMetadata = parseBoolConfig(value)
+                "book_dir" -> opts.bookDirCreate = parseBoolConfig(value)
+                "rate", "speed" -> value.let {
+                    runCatching { parseSignedNumber(it).coerceIn(-50, 100) }.getOrNull()?.let { r -> opts.rate = r }
+                }
+                "pitch" -> value.let {
+                    runCatching { parseSignedNumber(it).coerceIn(-50, 50) }.getOrNull()?.let { p -> opts.pitch = p }
+                }
+                "threads", "max_threads" -> value.toIntOrNull()?.coerceIn(1, 64)?.let { t ->
+                    opts.maxThreads = t
+                    opts.threadsExplicitlySet = true
+                }
+                "merge_files" -> value.toIntOrNull()?.coerceAtLeast(0)?.let { m -> opts.mergeFiles = m }
+                "timeout", "timeout_sec" -> value.toIntOrNull()?.let { t -> opts.timeoutSec = t }
+                "quiet" -> opts.quiet = parseBoolConfig(value)
+            }
+        }
+    } catch (e: Exception) {
+        System.err.println("Warning: Failed to read config file '${configFile.absolutePath}': ${e.message}")
+    }
+}
+
+private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
+    return try {
+        val content = buildString {
+            appendLine("# Hedgehog CLI configuration file")
+            appendLine("offline = ${opts.offlineMode}")
+            appendLine("allow_offline_fallback = ${opts.allowOfflineFallback}")
+            appendLine("voice = \"${opts.onlineVoice}\"")
+            appendLine("offline_voice = \"${opts.offlineVoice.orEmpty()}\"")
+            appendLine("voices_dir = \"${opts.voicesDir.path}\"")
+            appendLine("output = \"${opts.outputPath.orEmpty()}\"")
+            appendLine("lexx = \"${opts.lexxPath.orEmpty()}\"")
+            appendLine("lexx_register = ${opts.lexxRegister}")
+            appendLine("chapters = ${opts.chapters}")
+            appendLine("chapter_title = ${opts.chapterTitleSpeak}")
+            appendLine("chapter_regex = \"${opts.chapterRegex}\"")
+            appendLine("chapter_mp3 = \"${opts.chapterMp3Path.orEmpty()}\"")
+            appendLine("inline_notes = ${opts.inlineNotes}")
+            appendLine("filter_emojis = ${opts.filterEmojis}")
+            appendLine("opus = ${opts.opusOutput}")
+            appendLine("low_bitrate = ${opts.lowBitrate}")
+            appendLine("embed_metadata = ${opts.embedMetadata}")
+            appendLine("book_dir = ${opts.bookDirCreate}")
+            appendLine("rate = ${opts.rate}")
+            appendLine("pitch = ${opts.pitch}")
+            if (opts.threadsExplicitlySet) {
+                appendLine("threads = ${opts.maxThreads}")
+            }
+            appendLine("merge_files = ${opts.mergeFiles}")
+            appendLine("timeout = ${opts.timeoutSec}")
+            appendLine("quiet = ${opts.quiet}")
+        }
+        BookConversionIndex.writeBytesAtomically(targetFile, content.toByteArray(Charsets.UTF_8))
+    } catch (e: Exception) {
+        System.err.println("Error: Failed to write config file '${targetFile.absolutePath}': ${e.message}")
+        false
+    }
+}
+
 private fun parseArgs(args: Array<String>): CliOptions {
     val opts = CliOptions()
+
+    // First pre-scan for --config so custom config path is loaded before CLI overrides
+    var explicitConfigFile: File? = null
+    var scanIdx = 0
+    while (scanIdx < args.size) {
+        val a = args[scanIdx]
+        if ((a == "--config" || a == "-c") && scanIdx + 1 < args.size) {
+            explicitConfigFile = expandPath(args[scanIdx + 1])
+            scanIdx++
+        } else if (a.startsWith("--config=")) {
+            explicitConfigFile = expandPath(a.substringAfter("="))
+        }
+        scanIdx++
+    }
+    val configToLoad = explicitConfigFile ?: defaultConfigFile()
+    if (explicitConfigFile != null && !explicitConfigFile.exists()) {
+        System.err.println("Error: Config file does not exist: ${explicitConfigFile.absolutePath}")
+        exitProcess(2)
+    }
+    loadConfigIntoOptions(configToLoad, opts)
+    opts.configPath = explicitConfigFile
+
     var i = 0
     while (i < args.size) {
         val arg = args[i]
@@ -346,6 +486,28 @@ private fun parseArgs(args: Array<String>): CliOptions {
                 opts.listVoicesFilter = arg.substringAfter("=").trim()
             }
 
+            arg == "-c" || arg == "--config" -> {
+                opts.configPath = expandPath(requireNext(arg))
+            }
+            arg.startsWith("--config=") -> {
+                opts.configPath = expandPath(arg.substringAfter("="))
+            }
+
+            arg == "--save-config" || arg == "--generate-config" -> {
+                opts.saveConfig = true
+                if (i + 1 < args.size && !args[i + 1].startsWith("-")) {
+                    i++
+                    opts.configPath = expandPath(args[i])
+                }
+            }
+            arg.startsWith("--save-config=") || arg.startsWith("--generate-config=") -> {
+                opts.saveConfig = true
+                val pathVal = arg.substringAfter("=").trim()
+                if (pathVal.isNotEmpty()) {
+                    opts.configPath = expandPath(pathVal)
+                }
+            }
+
             !arg.startsWith("-") -> {
                 opts.inputs.add(arg)
             }
@@ -400,6 +562,8 @@ private fun printHelp() {
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
           -j, --threads <n>                Maximum parallel synthesis workers (default: 10)
           --merge-files <n>                Parts per merged output file when --chapters is off (default: 50, 0 = all in 1)
+          -c, --config <file>              Load configuration file (default: ~/.config/hedgehog/config.ini)
+          --save-config [file]             Generate/save configuration file from the passed CLI arguments
           -q, --quiet                      Suppress progress output
           -h, --help                       Show this help message
           -V, --version                    Show version
@@ -413,6 +577,9 @@ private fun printHelp() {
 
           # Read from stdin / plain text to an audio file
           echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o hello.mp3
+
+          # Generate default config file from CLI arguments
+          hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --chapters --opus --save-config
 
           # Download offline voices or list available voices on Linux
           hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices

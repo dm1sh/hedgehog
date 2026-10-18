@@ -125,6 +125,9 @@ hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir
 # Read from stdin / plain text to an audio file
 echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o hello.mp3
 
+# Generate / save default configuration file (~/.config/hedgehog/config.ini) from CLI arguments
+hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --chapters --opus --save-config
+
 # Download offline voices or list available voices on Linux
 hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices
 hedgehog-cli --list-voices
