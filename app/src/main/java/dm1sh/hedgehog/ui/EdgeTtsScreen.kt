@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -18,6 +19,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -581,6 +584,7 @@ private fun BookLoadingCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BookStatusGridCard(
     vm: MainViewModel,
@@ -616,10 +620,10 @@ private fun BookStatusGridCard(
                     .onSizeChanged { onHeaderHeightChanged(it.height) },
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
                         text = statusText,
@@ -630,12 +634,18 @@ private fun BookStatusGridCard(
                         } else {
                             MaterialTheme.colorScheme.onSurface
                         },
-                        maxLines = 2,
+                        maxLines = 1,
+                        softWrap = false,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .align(Alignment.CenterVertically)
+                            .padding(end = 8.dp)
                     )
 
-                    BookStatusHeaderBadges(vm = vm)
+                    BookStatusHeaderBadges(
+                        vm = vm,
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
                 }
 
                 BookStatusProgressBar(vm = vm)
@@ -655,6 +665,7 @@ private fun BookStatusGridCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TopBarSubtitleStatus(vm: MainViewModel) {
     val topBarStatus = when {
@@ -681,7 +692,7 @@ private fun TopBarSubtitleStatus(vm: MainViewModel) {
     if (topBarStatus.isNotEmpty()) {
         Text(
             text = topBarStatus,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
             fontWeight = if (vm.statInfo.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
             color = when {
                 vm.statInfoDoneHighlight -> MaterialTheme.colorScheme.primary
@@ -689,7 +700,10 @@ private fun TopBarSubtitleStatus(vm: MainViewModel) {
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            softWrap = false,
+            modifier = Modifier
+                .fillMaxWidth()
+                .basicMarquee(iterations = Int.MAX_VALUE)
         )
     }
 }
@@ -718,8 +732,12 @@ private fun TopBarProgressStrip(vm: MainViewModel) {
 }
 
 @Composable
-private fun BookStatusHeaderBadges(vm: MainViewModel) {
+private fun BookStatusHeaderBadges(
+    vm: MainViewModel,
+    modifier: Modifier = Modifier
+) {
     Row(
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -745,7 +763,7 @@ private fun BookStatusHeaderBadges(vm: MainViewModel) {
                         } else {
                             vm.elapsedTimeText
                         },
-                        style = MaterialTheme.typography.labelMedium
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
                     )
                 }
             }
