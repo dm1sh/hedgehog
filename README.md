@@ -9,7 +9,9 @@
 - **Convert Books to Audiobooks**:
   - Open books in **FB2**, **EPUB**, **TXT**, **CSV**, **INI**, or **ZIP** archives containing books.
   - Automatically detects book metadata (`Author - Book Title`) and text encodings (UTF-8 and Windows-1251).
-  - Save audiobooks in **MP3** (`96 kbps` or compact `48 kbps`) or **Opus** (`32 kbps VoIP` for small file sizes).
+  - Save audiobooks in **MP3** (`96 kbps` or compact `48 kbps`) or **Opus** (`32 kbps VoIP` for small file sizes) using high-speed native `libmp3lame`, `libopus`, and `FFmpeg` streaming assembly.
+  - **Clean File & Chapter Naming**: Single-file audiobooks include the author and title in the filename, while multi-chapter audiobooks place the author and title in the book folder name and name each chapter file with its chapter number and chapter title.
+  - **Resumable Conversion**: Intermediate `.part` audio files and a SHA-256 text index for parts and chapters are stored in the output book folder. If conversion is stopped or interrupted—or if you edit specific text parts in **View text** and re-run—unchanged parts and chapters are reused automatically, and chapter files are written atomically.
   - **Embedded Cover Art & Audio Tags**: Automatically extracts cover images and book metadata (title, author, series/album, genre, year, track number) from FB2, EPUB, and ZIP files and embeds them into output `.mp3` (`ID3v2.3` + `APIC`) and `.opus` (`OpusTags` + `METADATA_BLOCK_PICTURE`) files (can be toggled in **Settings → Book**).
 - **Built-in Player (`Player` Tab)**:
   - Listen to loaded books or shared text right inside the app with per-sentence synthesis, background pre-caching of upcoming sentences, and seamless sequential playback.
@@ -23,6 +25,7 @@
   - Choose from hundreds of **Online** Microsoft Edge neural voices across dozens of languages.
   - Download **Offline** voices directly inside the app to convert and listen without an internet connection.
   - Independent toggles in **Settings → Voice** to choose whether **Book conversion**, the **Built-in player**, and **System TTS** use online or offline voices, with automatic fallback to your selected offline voice (and a toast notification) if the network is unavailable.
+  - Visual indicators in the top app bar, conversion status grid, and player sentence cards clearly show whether online or offline voices are active (including parts synthesized via offline fallback).
 - **Smart Book & Text Processing**:
   - **Cut by chapters**: Split audiobooks into separate chapter files named after each chapter, and optionally prepend a custom chapter sound (`glav.mp3`).
   - **Inline footnotes**: Optionally embed FB2 and EPUB footnotes directly into the spoken text so notes are read naturally in context.
@@ -31,14 +34,14 @@
   - **Filter out emojis**: Automatically strip emojis during text normalization (configurable in **Settings → Book**).
 - **Preview & Edit Before Converting (`View text` Tab)**:
   - Browse and edit individual text parts, edit chapter titles and skip between chapters, listen to a voice preview of any part, or customize the output book title before saving.
-- **Background Conversion**:
-  - Converts books in multiple parallel streams with live progress for synthesized parts and postprocessed audio chunks in the status grid, top bar, and system notification—even while your screen is off.
+- **Background Conversion & Live ETA**:
+  - Converts books in multiple parallel streams and assembles finished chapters concurrently in the background as soon as their parts complete, displaying live counters for synthesized parts and postprocessed chapters, elapsed time, and combined ETA in the status grid, top bar, and system notification—even while your screen is off.
 
 ---
 
 ## How to Use
 
-### 1. Choose a Voice (`Book` or `Settings` tab)
+### 1. Choose a Voice (`Settings` tab)
 1. Select your preferred **Online voice** and/or **Offline voice** in **Settings → Voice**.
 2. Toggle whether to use online voices for **Book conversion**, the **Built-in player**, and **System TTS**.
 3. Adjust **Speed** and **Pitch** if needed.
@@ -102,9 +105,11 @@ Every push to `main` automatically builds a signed debug APK (`dm1sh.hedgehog_de
 
 ## Linux CLI (`hedgehog-cli`)
 
-Hedgehog includes a standalone command-line interface (**`:cli`**) for Linux PCs that shares the same online Edge TTS engine, offline Microsoft Embedded Speech engine, book parsers (`FB2`, `EPUB`, `TXT`, `HTML`, `ZIP`), `.lexx` dictionaries, metadata/cover tagger, and native `libmp3lame` + `libopus` + `FFmpeg` audio encoder.
+Hedgehog includes a standalone command-line interface (**`:cli`**) for Linux PCs that shares the same online Edge TTS engine, offline Microsoft Embedded Speech engine, resumable conversion index, book parsers (`FB2`, `EPUB`, `TXT`, `HTML`, `ZIP`), `.lexx` dictionaries, metadata/cover tagger, and native `libmp3lame` + `libopus` + `FFmpeg` audio encoder.
 
-### Building `hedgehog-cli`
+Prebuilt Linux `x86_64` archives (`hedgehog-cli-<version>-linux-x86_64.zip`) are published on the [**Releases**](https://github.com/dm1sh/hedgehog/releases) page alongside the Android APK.
+
+### Building `hedgehog-cli` from Source
 
 ```bash
 ./scripts/build-opus-ffmpeg-linux.sh
