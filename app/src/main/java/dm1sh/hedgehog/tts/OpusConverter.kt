@@ -8,7 +8,7 @@ import java.util.Locale
  * Minimal FFmpeg + libopus + libmp3lame JNI wrapper for transcoding audio buffers
  * (from online Edge TTS streams or offline TTS synthesis) to .opus using exact FFmpeg options:
  *   -c:a libopus -b:a 32k -ac 1 -application voip -frame_duration 60 -vbr on
- * or .mp3 via libmp3lame, and merging multiple .opus part files into a single Ogg Opus stream.
+ * or .mp3 via libmp3lame, and stream-copy merging per-part .opus files into a single Ogg Opus chapter.
  * On desktop JVM (Linux), loads bundled /NATIVE/linux-x64/libhedgehog_opus.so from resources
  * if present, or falls back to invoking system `ffmpeg`.
  */
@@ -57,12 +57,6 @@ object OpusConverter {
         inputPaths: Array<String>,
         introMp3: ByteArray?,
         kbps: Int
-    ): ByteArray?
-
-    @JvmStatic
-    private external fun nativeConvertAudioFilesToOpus(
-        inputPaths: Array<String>,
-        introMp3: ByteArray?
     ): ByteArray?
 
     @JvmStatic
@@ -148,33 +142,6 @@ object OpusConverter {
         } else {
             encodedMp3
         }
-    }
-
-    fun convertAudioFilesToOpus(
-        partFiles: List<File>,
-        introMp3: ByteArray = ByteArray(0)
-    ): ByteArray? {
-        if (partFiles.isEmpty()) return null
-        if (nativeLoaded) {
-            val paths = Array(partFiles.size) { partFiles[it].absolutePath }
-            return try {
-                nativeConvertAudioFilesToOpus(
-                    paths,
-                    introMp3.takeIf { it.isNotEmpty() }
-                )
-            } catch (t: Throwable) {
-                System.err.println("OpusConverter: convertAudioFilesToOpus failed: ${t.message}")
-                null
-            }
-        }
-        val assembledMp3 = OfflineTtsEngine.mergeMp3AndWavFilesToMp3(
-            partFiles = partFiles,
-            introBytes = introMp3,
-            targetKbps = 96,
-            convertWavToMp3 = { wav, kbps -> convertWavToMp3(wav, kbps) }
-        )
-        if (assembledMp3.isEmpty()) return null
-        return convertMp3ToOpus(assembledMp3)
     }
 
     fun mergeOpusFiles(inputPaths: List<String>, outputPath: String): Boolean {

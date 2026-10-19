@@ -48,6 +48,7 @@ import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -1878,7 +1879,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val allWav = cachedFiles.all { it.extension.equals("wav", ignoreCase = true) }
                 val finalBytes: ByteArray = if (useOpus) {
-                    val opus = OpusConverter.convertAudioFilesToOpus(cachedFiles)
+                    val assembled: ByteArray? = if (allWav) {
+                        /* Merged 24 kHz mono WAV hits the direct PCM-to-Opus fast path. */
+                        val mergedWav = OfflineTtsEngine.mergeWavFiles(cachedFiles, deleteAfterRead = false)
+                        mergedWav.takeIf { it.isNotEmpty() }
+                    } else {
+                        OfflineTtsEngine.mergeMp3AndWavFilesToMp3(
+                            partFiles = cachedFiles,
+                            introBytes = ByteArray(0),
+                            targetKbps = targetKbps,
+                            shouldAbort = { false },
+                            convertWavToMp3 = { wav, kbps -> OpusConverter.convertWavToMp3(wav, kbps) }
+                        )
+                    }
+                    val opus = if (assembled != null && assembled.isNotEmpty()) {
+                        OpusConverter.convertMp3ToOpus(assembled)
+                    } else {
+                        null
+                    }
                     if (opus != null && opus.isNotEmpty()) {
                         if (embedMeta) {
                             AudioMetadataTagger.tagOpus(
@@ -2957,8 +2975,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val bIndex = bookIndices[bName] ?: continue
                 if (bIndex.isChapterReusableByHash(cSpec.targetBaseName, cSpec.chapterTextHash, targetFile)) {
                     for (num in cSpec.fileNums) {
-                        File(bDir, rawPartFileName(cSpec.glava, num, "wav")).delete()
-                        File(bDir, rawPartFileName(cSpec.glava, num, "mp3")).delete()
+                        for (ext in PART_FILE_EXTS) {
+                            File(bDir, rawPartFileName(cSpec.glava, num, ext)).delete()
+                        }
                     }
                     cSpec.remainingParts.set(0)
                     preCompletedParts.addAll(cSpec.partIndices)
@@ -2996,7 +3015,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val bookDir = File(runSaveDir, bookFolderName)
                         val bookIndex = bookIndices[bookFolderName]
                         val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
-                        val reusablePartFile = bookIndex?.getReusablePartByHash(partKey, spec.textHash, bookDir)
+                        val reusablePartFile = bookIndex?.getReusablePartByHash(
+                            partKey = partKey,
+                            expectedHash = spec.textHash,
+                            partDir = bookDir,
+                            allowedExts = if (runOpusOutput) null else NON_OPUS_PART_EXTS
+                        )
 
                         if (reusablePartFile != null) {
                             updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
@@ -3040,8 +3064,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                         val wantOnlineForSpec = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice)
                         val job = launch {
-                            File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "wav")).delete()
-                            File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "mp3")).delete()
+                            for (staleExt in PART_FILE_EXTS) {
+                                File(bookDir, rawPartFileName(spec.glava, spec.fileNum, staleExt)).delete()
+                            }
 
                             val offlineVoice = if (repo.isVoiceOffline(spec.voice)) {
                                 spec.voice
@@ -3100,12 +3125,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
 
-                            if (!isActive || runIdGen.get() != currentRunId || partData == null || partData.isEmpty()) {
+                            if (!isActive || runIdGen.get() != currentRunId) {
+                                return@launch
+                            }
+                            val rawPartData = partData
+                            if (rawPartData == null || rawPartData.isEmpty()) {
                                 return@launch
                             }
 
+                            /* Encode the part to Ogg Opus right away: chapters become a cheap stream copy. */
+                            val sendData: ByteArray = if (runOpusOutput) {
+                                val opusData = OpusConverter.convertMp3ToOpus(rawPartData)
+                                if (opusData == null || opusData.isEmpty()) {
+                                    return@launch
+                                }
+                                partExt = "opus"
+                                opusData
+                            } else {
+                                rawPartData
+                            }
+
                             val savedPartFile = savePartMp3File(
-                                data = partData,
+                                data = sendData,
                                 saveDirBase = runSaveDir,
                                 fileName = spec.fileName,
                                 glava = spec.glava,
@@ -3228,6 +3269,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun sha256HexBytes(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        val sb = StringBuilder(digest.size * 2)
+        for (b in digest) {
+            val v = b.toInt() and 0xFF
+            sb.append(HEX_DIGITS[v ushr 4]).append(HEX_DIGITS[v and 0x0F])
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Encodes the shared chapter intro (glav.mp3) to Ogg Opus once per book work directory.
+     * The resulting file can be stream-copied in front of any chapter instead of decoding and
+     * re-encoding the intro for every chapter.
+     */
+    private fun ensureGlavaIntroOpusFile(dir: File, introBytes: ByteArray): File? {
+        if (introBytes.isEmpty()) return null
+        val outFile = File(dir, ".glav_intro_${sha256HexBytes(introBytes).take(16)}.opus")
+        if (outFile.exists() && outFile.length() > 0L) return outFile
+        synchronized(glavaIntroOpusLock) {
+            if (outFile.exists() && outFile.length() > 0L) return outFile
+            val opus = OpusConverter.convertMp3ToOpus(introBytes) ?: return null
+            if (opus.isEmpty()) return null
+            return if (BookConversionIndex.writeBytesAtomically(outFile, opus)) outFile else null
+        }
+    }
+
+    /**
+     * Returns the `.part` file for [fileNum] as Ogg Opus. Parts produced by older versions may
+     * still be `.wav`/`.mp3`; those are transcoded once and replaced with `.part_...opus`.
+     */
+    private fun resolveOpusPartFile(
+        glava: String,
+        fileNum: String,
+        bookDir: File,
+        bookIndex: BookConversionIndex? = null
+    ): File? {
+        val opusFile = File(bookDir, rawPartFileName(glava, fileNum, "opus"))
+        if (opusFile.exists() && opusFile.length() > 0L) return opusFile
+        for (legacyExt in LEGACY_PART_EXTS) {
+            val legacyFile = File(bookDir, rawPartFileName(glava, fileNum, legacyExt))
+            if (!legacyFile.exists() || legacyFile.length() <= 0L) continue
+            val bytes = try {
+                legacyFile.readBytes()
+            } catch (_: Throwable) {
+                continue
+            }
+            val opus = OpusConverter.convertMp3ToOpus(bytes) ?: return null
+            if (opus.isEmpty() || !BookConversionIndex.writeBytesAtomically(opusFile, opus)) return null
+            bookIndex?.replacePartFile(
+                partKey = BookConversionIndex.partKey(glava, fileNum),
+                fileName = opusFile.name,
+                ext = "opus"
+            )
+            try {
+                legacyFile.delete()
+            } catch (_: Throwable) {
+            }
+            return opusFile
+        }
+        return null
+    }
+
     private fun savePartMp3File(
         data: ByteArray,
         saveDirBase: String,
@@ -3262,6 +3366,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             shouldAbort = { runIdGen.get() != rid }
         )
         if (!savedOk) return false
+        finalizePartBookkeeping(outFile, partFiles, chunkSpec, bookIndex)
+        return true
+    }
+
+    /**
+     * Atomically moves an already assembled chapter file into place (zero JVM-heap copy) and
+     * records the completed chapter in the resumable index.
+     */
+    private fun finalizeAppChunkFile(
+        outFile: File,
+        sourceFile: File,
+        partFiles: List<File>,
+        chunkSpec: ChunkJobSpec,
+        bookIndex: BookConversionIndex?
+    ): Boolean {
+        if (!BookConversionIndex.moveFileAtomically(sourceFile, outFile)) return false
+        finalizePartBookkeeping(outFile, partFiles, chunkSpec, bookIndex)
+        return true
+    }
+
+    private fun finalizePartBookkeeping(
+        outFile: File,
+        partFiles: List<File>,
+        chunkSpec: ChunkJobSpec,
+        bookIndex: BookConversionIndex?
+    ) {
         val mergedPartKeys = chunkSpec.fileNums.map { BookConversionIndex.partKey(chunkSpec.glava, it) }
         for (pFile in partFiles) {
             try {
@@ -3275,7 +3405,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             targetFileName = outFile.name,
             mergedPartKeys = mergedPartKeys
         )
-        return true
     }
 
     private fun assembleChunk(
@@ -3309,17 +3438,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val partFiles = ArrayList<File>(chunkSpec.fileNums.size)
         var allWav = true
         var allMp3 = true
-        for (num in chunkSpec.fileNums) {
-            val wavFile = File(bookDir, rawPartFileName(chunkSpec.glava, num, "wav"))
-            val mp3File = File(bookDir, rawPartFileName(chunkSpec.glava, num, "mp3"))
-            when {
-                wavFile.exists() -> {
-                    partFiles.add(wavFile)
-                    allMp3 = false
-                }
-                mp3File.exists() -> {
-                    partFiles.add(mp3File)
-                    allWav = false
+        if (opusOutput) {
+            for (num in chunkSpec.fileNums) {
+                val opusFile = resolveOpusPartFile(chunkSpec.glava, num, bookDir, bookIndex) ?: return false
+                partFiles.add(opusFile)
+            }
+            allWav = false
+            allMp3 = false
+        } else {
+            for (num in chunkSpec.fileNums) {
+                val wavFile = File(bookDir, rawPartFileName(chunkSpec.glava, num, "wav"))
+                val mp3File = File(bookDir, rawPartFileName(chunkSpec.glava, num, "mp3"))
+                when {
+                    wavFile.exists() -> {
+                        partFiles.add(wavFile)
+                        allMp3 = false
+                    }
+                    mp3File.exists() -> {
+                        partFiles.add(mp3File)
+                        allWav = false
+                    }
                 }
             }
         }
@@ -3356,12 +3494,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val introBytes = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) soundGlavaBytes else ByteArray(0)
 
         if (opusOutput) {
-            val opusBytes = OpusConverter.convertAudioFilesToOpus(partFiles, introBytes)
+            val outFile = File(outDir, "$finalBaseName.opus")
+            val opusInputs = ArrayList<String>(partFiles.size + 1)
+            if (introBytes.isNotEmpty()) {
+                val introFile = ensureGlavaIntroOpusFile(bookDir, introBytes) ?: return false
+                opusInputs.add(introFile.absolutePath)
+            }
+            opusInputs.addAll(partFiles.map { it.absolutePath })
             if (runIdGen.get() != rid) return false
-            if (opusBytes != null && opusBytes.isNotEmpty()) {
-                val finalOpus = if (embedMetadata) {
-                    AudioMetadataTagger.tagOpus(
-                        opusBytes = opusBytes,
+
+            /* Single source without tagging: move the file instead of copying it through the heap. */
+            if (!embedMetadata && opusInputs.size == 1) {
+                return finalizeAppChunkFile(outFile, File(opusInputs[0]), partFiles, chunkSpec, bookIndex)
+            }
+
+            val tmpFile = File(outDir, ".${finalBaseName}.opus.tmp")
+            try {
+                if (!OpusConverter.mergeOpusFiles(opusInputs, tmpFile.absolutePath)) return false
+                if (runIdGen.get() != rid) return false
+                if (embedMetadata) {
+                    val mergedBytes = try {
+                        tmpFile.readBytes()
+                    } catch (_: Throwable) {
+                        return false
+                    }
+                    val finalOpus = AudioMetadataTagger.tagOpus(
+                        opusBytes = mergedBytes,
                         bookMeta = chunkSpec.bookMetadata,
                         trackTitle = trackTitle,
                         albumTitle = albumTitle,
@@ -3369,11 +3527,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         totalTracks = chunkSpec.totalChunksForBook,
                         voiceName = chunkSpec.voice
                     )
-                } else {
-                    opusBytes
+                    return finalizeAppChunkOutput(outFile, finalOpus, partFiles, chunkSpec, bookIndex, rid)
                 }
-                val outFile = File(outDir, "$finalBaseName.opus")
-                return finalizeAppChunkOutput(outFile, finalOpus, partFiles, chunkSpec, bookIndex, rid)
+                return finalizeAppChunkFile(outFile, tmpFile, partFiles, chunkSpec, bookIndex)
+            } finally {
+                try {
+                    tmpFile.delete()
+                } catch (_: Throwable) {
+                }
             }
         }
 
@@ -3418,6 +3579,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             for (bookFolderName in bookFolderNames) {
                 val bookDir = File(saveDirBase, bookFolderName)
+                /* Drop the shared per-book chapter intro encoded to Opus. */
+                bookDir.listFiles { f -> f.name.startsWith(".glav_intro_") }?.forEach { intro ->
+                    try {
+                        intro.delete()
+                    } catch (_: Throwable) {
+                    }
+                }
                 if (bookDir.exists() && bookDir.listFiles()?.isEmpty() == true) {
                     bookDir.delete()
                 }
@@ -3655,5 +3823,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MERGED_PREFIX = "F"
         private const val MAX_SAVE_PATH_LEN = 220
         private const val PLAYER_KEEP_BEHIND_SENTENCES = 5
+        private const val HEX_DIGITS = "0123456789abcdef"
+        private val LEGACY_PART_EXTS = arrayOf("wav", "mp3")
+        private val PART_FILE_EXTS = arrayOf("wav", "mp3", "opus")
+        private val NON_OPUS_PART_EXTS = listOf("wav", "mp3")
+        private val glavaIntroOpusLock = Any()
     }
 }

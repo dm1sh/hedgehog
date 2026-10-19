@@ -26,8 +26,7 @@ import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -43,6 +42,11 @@ import kotlin.system.exitProcess
 private const val DEFAULT_CHAPTER_REGEX = "глава |раздел |эпизод |рассказ |chapter "
 private const val MERGED_PREFIX = "F"
 private const val MAX_SAVE_PATH_LEN = 220
+private const val HEX_DIGITS = "0123456789abcdef"
+private val LEGACY_PART_EXTS = arrayOf("wav", "mp3")
+private val PART_FILE_EXTS = arrayOf("wav", "mp3", "opus")
+private val NON_OPUS_PART_EXTS = listOf("wav", "mp3")
+private val glavaIntroOpusLock = Any()
 private val BOOK_EXTENSIONS = setOf("txt", "fb2", "epub", "html", "htm", "xml", "ini", "zip")
 private val TOKEN_VOICE_REGEX = Regex("value=\"(Microsoft Server Speech Text to Speech Voice \\(([^,]+), ([^)]+)\\))\"")
 
@@ -879,6 +883,68 @@ private fun rawPartFileName(glava: String, fileNum: String, ext: String): String
     }
 }
 
+private fun sha256HexBytes(bytes: ByteArray): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    val sb = StringBuilder(digest.size * 2)
+    for (b in digest) {
+        val v = b.toInt() and 0xFF
+        sb.append(HEX_DIGITS[v ushr 4]).append(HEX_DIGITS[v and 0x0F])
+    }
+    return sb.toString()
+}
+
+/**
+ * Encodes the shared chapter intro (glav.mp3) to Ogg Opus once per book work directory so that
+ * every chapter can stream-copy it instead of decoding and re-encoding it.
+ */
+private fun ensureGlavaIntroOpusFile(dir: File, introBytes: ByteArray): File? {
+    if (introBytes.isEmpty()) return null
+    val outFile = File(dir, ".glav_intro_${sha256HexBytes(introBytes).take(16)}.opus")
+    if (outFile.exists() && outFile.length() > 0L) return outFile
+    synchronized(glavaIntroOpusLock) {
+        if (outFile.exists() && outFile.length() > 0L) return outFile
+        val opus = OpusConverter.convertMp3ToOpus(introBytes) ?: return null
+        if (opus.isEmpty()) return null
+        return if (BookConversionIndex.writeBytesAtomically(outFile, opus)) outFile else null
+    }
+}
+
+/**
+ * Returns the `.part` file for [fileNum] as Ogg Opus, transcoding a legacy `.wav`/`.mp3` part
+ * once (for folders produced by older versions) and replacing it with `.part_...opus`.
+ */
+private fun resolveOpusPartFile(
+    glava: String,
+    fileNum: String,
+    bookWorkDir: File,
+    bookIndex: BookConversionIndex? = null
+): File? {
+    val opusFile = File(bookWorkDir, rawPartFileName(glava, fileNum, "opus"))
+    if (opusFile.exists() && opusFile.length() > 0L) return opusFile
+    for (legacyExt in LEGACY_PART_EXTS) {
+        val legacyFile = File(bookWorkDir, rawPartFileName(glava, fileNum, legacyExt))
+        if (!legacyFile.exists() || legacyFile.length() <= 0L) continue
+        val bytes = try {
+            legacyFile.readBytes()
+        } catch (_: Throwable) {
+            continue
+        }
+        val opus = OpusConverter.convertMp3ToOpus(bytes) ?: return null
+        if (opus.isEmpty() || !BookConversionIndex.writeBytesAtomically(opusFile, opus)) return null
+        bookIndex?.replacePartFile(
+            partKey = BookConversionIndex.partKey(glava, fileNum),
+            fileName = opusFile.name,
+            ext = "opus"
+        )
+        try {
+            legacyFile.delete()
+        } catch (_: Throwable) {
+        }
+        return opusFile
+    }
+    return null
+}
+
 private fun loadBooksIntoProcessingFile(
     opts: CliOptions,
     lexxRules: List<String>,
@@ -1281,8 +1347,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
         )
         if (bIndex.isChapterReusableByHash(cSpec.targetBaseName, cSpec.chapterTextHash, targetFile)) {
             for (fileNum in cSpec.fileNums) {
-                File(wDir, rawPartFileName(cSpec.glava, fileNum, "wav")).delete()
-                File(wDir, rawPartFileName(cSpec.glava, fileNum, "mp3")).delete()
+                for (ext in PART_FILE_EXTS) {
+                    File(wDir, rawPartFileName(cSpec.glava, fileNum, ext)).delete()
+                }
             }
             cSpec.remainingParts.set(0)
             preCompletedParts.addAll(cSpec.partIndices)
@@ -1375,7 +1442,13 @@ private suspend fun runConversion(opts: CliOptions): Int {
                     val bookWorkDir = bookWorkDirs[bookFolderName] ?: saveDirFile
                     val bookIndex = bookIndices[bookFolderName]
                     val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
-                    val reusablePartFile = bookIndex?.getReusablePartByHash(partKey, spec.textHash, bookWorkDir)
+                    val opusPartsExpected = opts.opusOutput && !targetWavDirect
+                    val reusablePartFile = bookIndex?.getReusablePartByHash(
+                        partKey = partKey,
+                        expectedHash = spec.textHash,
+                        partDir = bookWorkDir,
+                        allowedExts = if (opusPartsExpected) null else NON_OPUS_PART_EXTS
+                    )
 
                     if (reusablePartFile != null) {
                         savedPartsAtomic.incrementAndGet()
@@ -1428,8 +1501,9 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         var partExt = "mp3"
                         val hasOfflineFallback = opts.allowOfflineFallback && offlineInstalled != null
 
-                        File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, "wav")).delete()
-                        File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, "mp3")).delete()
+                        for (staleExt in PART_FILE_EXTS) {
+                            File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, staleExt)).delete()
+                        }
 
                         if (!opts.offlineMode) {
                             partData = SocketEdgeTtsWorker.synthesizePart(
@@ -1473,16 +1547,32 @@ private suspend fun runConversion(opts: CliOptions): Int {
                             return@launch
                         }
 
-                        if (partData == null || partData.isEmpty()) {
+                        val rawPartData = partData
+                        if (rawPartData == null || rawPartData.isEmpty()) {
                             failedAtomic.incrementAndGet()
                             return@launch
+                        }
+
+                        /* Encode the part to Ogg Opus right away: chapters become a cheap stream copy. */
+                        val saveData: ByteArray = if (opts.opusOutput && !targetWavDirect) {
+                            val opusData = OpusConverter.convertMp3ToOpus(rawPartData)
+                            if (opusData == null || opusData.isEmpty()) {
+                                if (!interruptedByUser && isActive) {
+                                    failedAtomic.incrementAndGet()
+                                }
+                                return@launch
+                            }
+                            partExt = "opus"
+                            opusData
+                        } else {
+                            rawPartData
                         }
 
                         bookWorkDir.mkdirs()
                         val partFile = File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, partExt))
                         val savedOk = BookConversionIndex.writeBytesAtomically(
                             targetFile = partFile,
-                            data = partData,
+                            data = saveData,
                             shouldAbort = { interruptedByUser || !isActive }
                         )
                         if (!savedOk) {
@@ -1575,6 +1665,15 @@ private suspend fun runConversion(opts: CliOptions): Int {
     } finally {
         for (bIdx in bookIndices.values) {
             bIdx.flush()
+        }
+        /* Drop shared per-book chapter intros encoded to Opus. */
+        for (wDir in bookWorkDirs.values.toSet()) {
+            wDir.listFiles { f -> f.name.startsWith(".glav_intro_") }?.forEach { intro ->
+                try {
+                    intro.delete()
+                } catch (_: Throwable) {
+                }
+            }
         }
     }
 
@@ -1695,6 +1794,32 @@ private fun finalizeCliChunkOutput(
         shouldAbort = { interruptedByUser }
     )
     if (!savedOk) return null
+    finalizeCliPartBookkeeping(targetFile, partFilesToDelete, chunkSpec, bookIndex)
+    return targetFile
+}
+
+/**
+ * Atomically moves an already assembled chapter file into place (no JVM-heap copy) and records
+ * the completed chapter in the resumable index.
+ */
+private fun finalizeCliChunkFile(
+    targetFile: File,
+    sourceFile: File,
+    partFilesToDelete: List<File>,
+    chunkSpec: ChunkJobSpec,
+    bookIndex: BookConversionIndex?
+): File? {
+    if (!BookConversionIndex.moveFileAtomically(sourceFile, targetFile)) return null
+    finalizeCliPartBookkeeping(targetFile, partFilesToDelete, chunkSpec, bookIndex)
+    return targetFile
+}
+
+private fun finalizeCliPartBookkeeping(
+    targetFile: File,
+    partFilesToDelete: List<File>,
+    chunkSpec: ChunkJobSpec,
+    bookIndex: BookConversionIndex?
+) {
     val mergedPartKeys = chunkSpec.fileNums.map { BookConversionIndex.partKey(chunkSpec.glava, it) }
     for (pFile in partFilesToDelete) {
         try {
@@ -1708,7 +1833,6 @@ private fun finalizeCliChunkOutput(
         targetFileName = targetFile.name,
         mergedPartKeys = mergedPartKeys
     )
-    return targetFile
 }
 
 private fun assembleCliChunk(
@@ -1735,14 +1859,22 @@ private fun assembleCliChunk(
 
     val partFiles = ArrayList<File>(chunkSpec.fileNums.size)
     var allWav = true
-    for (fileNum in chunkSpec.fileNums) {
-        val wavFile = File(bookWorkDir, rawPartFileName(chunkSpec.glava, fileNum, "wav"))
-        val mp3File = File(bookWorkDir, rawPartFileName(chunkSpec.glava, fileNum, "mp3"))
-        if (wavFile.exists()) {
-            partFiles.add(wavFile)
-        } else if (mp3File.exists()) {
-            allWav = false
-            partFiles.add(mp3File)
+    if (opts.opusOutput && !targetWavDirect) {
+        for (fileNum in chunkSpec.fileNums) {
+            val opusFile = resolveOpusPartFile(chunkSpec.glava, fileNum, bookWorkDir, bookIndex) ?: return null
+            partFiles.add(opusFile)
+        }
+        allWav = false
+    } else {
+        for (fileNum in chunkSpec.fileNums) {
+            val wavFile = File(bookWorkDir, rawPartFileName(chunkSpec.glava, fileNum, "wav"))
+            val mp3File = File(bookWorkDir, rawPartFileName(chunkSpec.glava, fileNum, "mp3"))
+            if (wavFile.exists()) {
+                partFiles.add(wavFile)
+            } else if (mp3File.exists()) {
+                allWav = false
+                partFiles.add(mp3File)
+            }
         }
     }
 
@@ -1767,23 +1899,50 @@ private fun assembleCliChunk(
 
     val introBytes = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) soundGlavaBytes else ByteArray(0)
 
-    if (opts.opusOutput) {
-        val opusBytes = OpusConverter.convertAudioFilesToOpus(partFiles, introBytes)
-        if (opusBytes == null || opusBytes.isEmpty() || interruptedByUser) return null
-        val finalOpus = if (opts.embedMetadata) {
-            AudioMetadataTagger.tagOpus(
-                opusBytes = opusBytes,
-                bookMeta = chunkSpec.bookMetadata,
-                trackTitle = trackTitle,
-                albumTitle = albumTitle,
-                trackNumber = chunkSpec.bookChunkNumber,
-                totalTracks = chunkSpec.totalChunksForBook,
-                voiceName = chunkSpec.voice
-            )
-        } else {
-            opusBytes
+    if (opts.opusOutput && !targetWavDirect) {
+        val opusInputs = ArrayList<String>(partFiles.size + 1)
+        if (introBytes.isNotEmpty()) {
+            val introFile = ensureGlavaIntroOpusFile(bookWorkDir, introBytes) ?: return null
+            opusInputs.add(introFile.absolutePath)
         }
-        return finalizeCliChunkOutput(targetFile, finalOpus, partFiles, chunkSpec, bookIndex)
+        opusInputs.addAll(partFiles.map { it.absolutePath })
+        if (interruptedByUser) return null
+
+        /* Single source without tagging: move the file rather than copying it through the heap. */
+        if (!opts.embedMetadata && opusInputs.size == 1) {
+            return finalizeCliChunkFile(targetFile, File(opusInputs[0]), partFiles, chunkSpec, bookIndex)
+        }
+
+        val tmpDir = targetFile.parentFile ?: bookWorkDir
+        tmpDir.mkdirs()
+        val tmpFile = File(tmpDir, ".${targetFile.name}.tmp")
+        try {
+            if (!OpusConverter.mergeOpusFiles(opusInputs, tmpFile.absolutePath)) return null
+            if (interruptedByUser) return null
+            if (opts.embedMetadata) {
+                val mergedBytes = try {
+                    tmpFile.readBytes()
+                } catch (_: Throwable) {
+                    return null
+                }
+                val finalOpus = AudioMetadataTagger.tagOpus(
+                    opusBytes = mergedBytes,
+                    bookMeta = chunkSpec.bookMetadata,
+                    trackTitle = trackTitle,
+                    albumTitle = albumTitle,
+                    trackNumber = chunkSpec.bookChunkNumber,
+                    totalTracks = chunkSpec.totalChunksForBook,
+                    voiceName = chunkSpec.voice
+                )
+                return finalizeCliChunkOutput(targetFile, finalOpus, partFiles, chunkSpec, bookIndex)
+            }
+            return finalizeCliChunkFile(targetFile, tmpFile, partFiles, chunkSpec, bookIndex)
+        } finally {
+            try {
+                tmpFile.delete()
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     val assembledMp3 = if (allWav) {

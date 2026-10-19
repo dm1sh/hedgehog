@@ -36,13 +36,33 @@ class BookConversionIndex private constructor(
         return getReusablePartByHash(partKey, sha256Hex(text), partDir)
     }
 
-    fun getReusablePartByHash(partKey: String, expectedHash: String, partDir: File): File? {
+    fun getReusablePartByHash(
+        partKey: String,
+        expectedHash: String,
+        partDir: File,
+        allowedExts: Collection<String>? = null
+    ): File? {
         val rec = parts[partKey] ?: return null
         if (rec.textHash != expectedHash) {
             return null
         }
+        if (allowedExts != null && allowedExts.none { it.equals(rec.ext, ignoreCase = true) }) {
+            return null
+        }
         val f = File(partDir, rec.fileName)
         return if (f.exists() && f.isFile && f.length() > 0L) f else null
+    }
+
+    /**
+     * Points an existing part record at a re-encoded file (for example a legacy `.part.wav`
+     * transcoded to `.part_...opus`) while preserving its text hash.
+     */
+    fun replacePartFile(partKey: String, fileName: String, ext: String) {
+        val rec = parts[partKey] ?: return
+        if (rec.fileName == fileName && rec.ext.equals(ext, ignoreCase = true)) return
+        parts[partKey] = rec.copy(fileName = fileName, ext = ext)
+        dirty = true
+        save(force = false)
     }
 
     fun recordPart(partKey: String, text: String, fileName: String, ext: String) {
@@ -259,6 +279,29 @@ class BookConversionIndex private constructor(
                 out[i * 2 + 1] = hexChars[v and 0x0F]
             }
             return String(out)
+        }
+
+        /**
+         * Moves [src] over [dst] atomically when the filesystem supports it, so a partially
+         * written chapter file is never observed by the resumable index.
+         */
+        fun moveFileAtomically(src: File, dst: File): Boolean {
+            dst.parentFile?.mkdirs()
+            return try {
+                try {
+                    Files.move(
+                        src.toPath(),
+                        dst.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE
+                    )
+                } catch (_: Throwable) {
+                    Files.move(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+                true
+            } catch (_: Throwable) {
+                false
+            }
         }
 
         fun writeBytesAtomically(
