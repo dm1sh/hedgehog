@@ -184,7 +184,9 @@ fun EdgeTtsScreen(
             Column(modifier = Modifier.fillMaxWidth()) {
                 TopAppBar(
                     title = {
-                        Column {
+                        Column(
+                            modifier = Modifier.padding(end = 12.dp)
+                        ) {
                             Text(
                                 text = context.getString(dm1sh.hedgehog.R.string.app_name),
                                 style = MaterialTheme.typography.titleLarge,
@@ -584,7 +586,7 @@ private fun BookLoadingCard(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun BookStatusGridCard(
     vm: MainViewModel,
@@ -618,35 +620,28 @@ private fun BookStatusGridCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .onSizeChanged { onHeaderHeightChanged(it.height) },
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = if (vm.statInfoDoneHighlight) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (vm.statInfoDoneHighlight) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .align(Alignment.CenterVertically)
-                            .padding(end = 8.dp)
-                    )
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = if (vm.statInfoDoneHighlight) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (vm.statInfoDoneHighlight) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .basicMarquee(iterations = Int.MAX_VALUE)
+                )
 
-                    BookStatusHeaderBadges(
-                        vm = vm,
-                        modifier = Modifier.align(Alignment.CenterVertically)
-                    )
-                }
+                BookStatusHeaderBadges(
+                    vm = vm,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 BookStatusProgressBar(vm = vm)
 
@@ -731,15 +726,16 @@ private fun TopBarProgressStrip(vm: MainViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BookStatusHeaderBadges(
     vm: MainViewModel,
     modifier: Modifier = Modifier
 ) {
-    Row(
+    FlowRow(
         modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
             Surface(
