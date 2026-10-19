@@ -17,9 +17,11 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -31,7 +33,11 @@ import kotlin.coroutines.coroutineContext
 object SocketEdgeTtsWorker {
     private const val PREVIEW_TIMEOUT_MSEC = 30_000L
     private const val DEFAULT_STALL_TIMEOUT_MSEC = 60_000L
-    private const val STREAM_RESTART_DELAY_MSEC = 4000L
+
+    /* Retry backoff: 4 s, 8 s, 16 s, capped at 30 s, ±20 % jitter. */
+    private const val STREAM_RESTART_BASE_DELAY_MSEC = 4000L
+    private const val STREAM_RESTART_MAX_DELAY_MSEC = 30_000L
+    private const val PREVIEW_RESTART_DELAY_MSEC = 300L
     private const val BING_HOST = "speech.platform.bing.com"
     private const val BING_PORT = 443
     private val AUDIO_SEP_BYTES = "Path:audio\r\n".toByteArray(Charsets.UTF_8)
@@ -72,6 +78,20 @@ object SocketEdgeTtsWorker {
         lastReachableResult.set(ok)
         lastReachableCheckMsec.set(System.currentTimeMillis())
         return ok
+    }
+
+    /**
+     * Exponential backoff with jitter for the next stream attempt.
+     *
+     * Dozens of parallel streams tend to fail together when the endpoint starts throttling
+     * (the usual cause of mid-stream "Connection reset"). With a fixed delay they would all
+     * reconnect in lockstep 4 s later and get reset again, so the delay grows and is spread out.
+     */
+    fun restartDelayMsec(failedAttempts: Int): Long {
+        val exponent = (failedAttempts - 1).coerceIn(0, 3)
+        val base = (STREAM_RESTART_BASE_DELAY_MSEC shl exponent).coerceAtMost(STREAM_RESTART_MAX_DELAY_MSEC)
+        val jittered = (base * (0.8 + ThreadLocalRandom.current().nextDouble() * 0.4)).toLong()
+        return jittered.coerceIn(1_000L, STREAM_RESTART_MAX_DELAY_MSEC)
     }
 
     private val wsClient: OkHttpClient by lazy {
@@ -144,6 +164,8 @@ object SocketEdgeTtsWorker {
         }
 
         var failedAttempts = 0
+        /* Last attempt's failure reason, reported once together with the retry decision. */
+        val lastError = AtomicReference<String?>(null)
 
         while (coroutineContext.isActive && !isCancelled()) {
             if (!isPreview && isPaused()) {
@@ -173,7 +195,7 @@ object SocketEdgeTtsWorker {
                 isPaused = isPaused,
                 isCancelled = isCancelled,
                 onStatusUpdate = onStatusUpdate,
-                onDiagnostic = onDiagnostic
+                lastError = lastError
             )
 
             if (result != null && result.isNotEmpty()) {
@@ -194,26 +216,32 @@ object SocketEdgeTtsWorker {
             failedAttempts++
             SecMsGecGenerator.reportError(syncBlocking = failedAttempts == 1)
 
+            val reason = lastError.getAndSet(null) ?: "stream ended without any audio"
+
             if (isPreview) {
                 if (failedAttempts >= 2) {
+                    onDiagnostic(reason)
                     return null
                 }
-                delay(300)
+                delay(PREVIEW_RESTART_DELAY_MSEC)
                 continue
             }
 
             // If an offline fallback voice is available and the WebSocket could not connect
             // (e.g. internet is off while VPN is on), return null so caller falls back to offline TTS.
             if (fallbackToOfflineOnError && !wsOpened.get() && failedAttempts >= 2) {
-                onDiagnostic("connection to $BING_HOST failed $failedAttempts time(s), switching to offline voice")
+                onDiagnostic("$reason; could not open $BING_HOST $failedAttempts time(s), switching to offline voice")
                 return null
             }
 
             onStatusUpdate("KEY_ERROR_RERUN")
-            onDiagnostic("restarting stream in ${STREAM_RESTART_DELAY_MSEC / 1000} s (attempt ${failedAttempts + 1})")
-            // Wait 4 seconds before retrying (matching SocketEdgeTTS.gd OS.delay_msec(4000))
+            val restartDelayMs = restartDelayMsec(failedAttempts)
+            onDiagnostic(
+                "$reason; retrying in " +
+                    "${"%.1f".format(Locale.US, restartDelayMs / 1000.0)} s (attempt ${failedAttempts + 1})"
+            )
             var waited = 0L
-            while (waited < STREAM_RESTART_DELAY_MSEC && coroutineContext.isActive && !isCancelled()) {
+            while (waited < restartDelayMs && coroutineContext.isActive && !isCancelled()) {
                 if (isPaused()) {
                     break
                 }
@@ -236,8 +264,9 @@ object SocketEdgeTtsWorker {
         isPaused: () -> Boolean,
         isCancelled: () -> Boolean,
         onStatusUpdate: (String) -> Unit,
-        onDiagnostic: (String) -> Unit
+        lastError: AtomicReference<String?>
     ): ByteArray? {
+        lastError.set(null)
         val resultDeferred = CompletableDeferred<ByteArray?>()
         val audioBuffer = ByteArrayOutputStream()
         val receivedFirstChunk = AtomicBoolean(false)
@@ -310,7 +339,7 @@ object SocketEdgeTtsWorker {
                     if (bytes.isNotEmpty()) {
                         resultDeferred.complete(bytes)
                     } else {
-                        onDiagnostic("server finished the stream without any audio")
+                        lastError.set("server finished the stream without any audio")
                         resultDeferred.complete(null)
                     }
                     webSocket.close(1000, "Normal closure")
@@ -343,7 +372,7 @@ object SocketEdgeTtsWorker {
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 if (code != 1000 && !isCancelled()) {
-                    onDiagnostic("stream closed by server: code=$code${if (reason.isNotBlank()) " reason=$reason" else ""}")
+                    lastError.set("stream closed by server: code=$code${if (reason.isNotBlank()) " reason=$reason" else ""}")
                 }
                 webSocket.close(1000, null)
                 if (!resultDeferred.isCompleted) {
@@ -361,8 +390,8 @@ object SocketEdgeTtsWorker {
                 if (!resultDeferred.isCompleted && !isCancelled()) {
                     val http = response?.let { " (HTTP ${it.code}${if (it.message.isNotBlank()) " ${it.message}" else ""})" }.orEmpty()
                     val msg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
-                    val where = if (wsOpened.get()) "stream failed" else "connection failed"
-                    onDiagnostic("network error: $where: $msg$http")
+                    val kind = if (wsOpened.get()) "network error: stream failed" else "network error: connection failed"
+                    lastError.set("$kind: $msg$http")
                 }
                 if (!resultDeferred.isCompleted) {
                     resultDeferred.complete(null)
@@ -378,11 +407,10 @@ object SocketEdgeTtsWorker {
                 }
                 val idleMs = System.currentTimeMillis() - lastActivityTime.get()
                 if (idleMs > effectiveTimeout) {
-                    onDiagnostic(
+                    lastError.set(
                         "timeout: no data from server for " +
                             "${"%.1f".format(Locale.US, idleMs / 1000.0)} s " +
-                            "(limit ${"%.1f".format(Locale.US, effectiveTimeout / 1000.0)} s), " +
-                            "restarting stream"
+                            "(limit ${"%.1f".format(Locale.US, effectiveTimeout / 1000.0)} s)"
                     )
                     ws.cancel()
                     return null

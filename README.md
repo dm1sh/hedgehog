@@ -124,9 +124,13 @@ This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli
 
 - **Parallel streams** — `50` by default (`-j/--threads`, clamped to `1..100`, same as the app's thread setting). Offline TTS is additionally bounded to the CPU core count by the shared engine.
 - **Idle timeout** — a stream is restarted when the server sends nothing for `10` s (`--timeout`/`--restart-delay <sec>`, the app's "restart delay" setting; `0` disables it, like the app's ∞).
-- **Restart delay** — after a failed attempt the stream is restarted after `4` s.
+- **Restart backoff** — after a failed attempt the stream is restarted with exponential backoff (`4 s`, `8 s`, `16 s`, capped at `30 s`, ±20 % jitter). Parallel streams usually fail together when the endpoint throttles, so a fixed delay would make them reconnect in lockstep and get reset again.
 - **Network pre-check** — like the app, the CLI checks `speech.platform.bing.com:443` before opening a stream; if it is unreachable and an offline voice is available, that part is synthesized offline (the warning shows the voice name), otherwise online synthesis is still attempted.
-- **Diagnostics** — network errors (with the HTTP status when available), idle timeouts, empty server responses and restart/fallback decisions are printed to **stderr** as `Warning: part N: …`, so they never corrupt the progress line or stdout output paths.
+- **Diagnostics** — network errors (with the HTTP status when available), idle timeouts, empty server responses and restart/fallback decisions are printed to **stderr** as `Warning: part N: …`, so they never corrupt the progress line or stdout output paths. A part prints its first error and then every fifth retry, plus `succeeded after N retried attempt(s)` when it recovers, and a total count at the end of the run.
+
+#### `Warning: part N: network error: stream failed: Connection reset`
+
+A mid-stream TCP reset comes from the endpoint itself (or a proxy/VPN on the way) — usually because too many connections are open at once. Each affected part is retried automatically with backoff, so the conversion normally still finishes; if the warnings are frequent, lower the concurrency, e.g. `hedgehog-cli -j 10 book.fb2`. Streams that stay silent longer than the idle timeout (or that hit `--timeout`) are reported and restarted the same way.
 
 `-o`/`--output` accepts two kinds of paths:
 

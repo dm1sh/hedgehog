@@ -623,7 +623,8 @@ private fun printHelp() {
           --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +0)
           --pitch <hz>                     Speech pitch adjustment from -50 to +50 (default: +0)
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
-          -j, --threads <n>                Maximum parallel synthesis streams (default: 50, same as the app)
+          -j, --threads <n>                Maximum parallel synthesis streams (default: 50, same as the app;
+                                           lower it when the endpoint keeps resetting streams)
           --timeout, --restart-delay <sec>  Restart a stream when it stays silent for <sec> seconds (default: 10, same as the app; 0 = no timeout)
                                           Network errors and timeouts are reported on stderr
           --merge-files <n>                Parts per merged output file when --chapters is off (default: 0 = whole book in 1)
@@ -1403,7 +1404,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
         val timeoutLabel = if (opts.timeoutSec <= 0) "default" else opts.timeoutSec.toString()
         System.err.println(
             "Hedgehog CLI: $total parts • $totalChunksCount chapters/chunks • Mode: $modeLabel • Format: $fmtLabel • " +
-                "Streams: $timeoutLabel s idle timeout, 4 s restart delay"
+                "Streams: $timeoutLabel s idle timeout, retry backoff 4-30 s"
         )
     }
 
@@ -1418,6 +1419,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
     val progressPrintLock = Any()
     val outputFiles = mutableListOf<File>()
     val networkDownReported = java.util.concurrent.atomic.AtomicBoolean(false)
+    val streamErrorCount = AtomicInteger(0)
 
     /* Keeps the progress line readable while reporting stream diagnostics on stderr. */
     fun cliDiagnostic(message: String) {
@@ -1611,6 +1613,11 @@ private suspend fun runConversion(opts: CliOptions): Int {
                     val job = masterScope.launch(Dispatchers.IO) {
                         var partData: ByteArray? = null
                         var partExt = "mp3"
+                        /*
+                         * Dozens of streams fail together when the endpoint throttles, so a part
+                         * reports its first error and then every fifth retry instead of every one.
+                         */
+                        val partStreamErrors = AtomicInteger(0)
                         val hasOfflineFallback = opts.allowOfflineFallback && offlineInstalled != null
 
                         for (staleExt in PART_FILE_EXTS) {
@@ -1657,8 +1664,18 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                 isPaused = { false },
                                 isCancelled = { interruptedByUser || !isActive || failedAtomic.get() > 0 },
                                 onStatusUpdate = {},
-                                onDiagnostic = { msg -> cliDiagnostic("part ${spec.index + 1}: $msg") }
+                                onDiagnostic = { msg ->
+                                    val errors = partStreamErrors.incrementAndGet()
+                                    streamErrorCount.incrementAndGet()
+                                    if (errors == 1 || errors % 5 == 0) {
+                                        cliDiagnostic("part ${spec.index + 1}: $msg")
+                                    }
+                                }
                             )
+                            val retried = partStreamErrors.get()
+                            if (retried > 0 && (partData?.isNotEmpty() == true)) {
+                                cliDiagnostic("part ${spec.index + 1}: succeeded after $retried retried attempt(s)")
+                            }
                         }
 
                         if ((partData == null || partData.isEmpty()) && isActive && !interruptedByUser && failedAtomic.get() == 0) {
@@ -1849,6 +1866,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
     }
 
     if (!opts.quiet) {
+        val streamErrorsTotal = streamErrorCount.get()
+        if (streamErrorsTotal > 0) {
+            System.err.println("Stream errors: $streamErrorsTotal retried attempt(s) in total.")
+        }
         System.err.println(
             "Completed in ${formatClockDuration(totalElapsedMs)} • " +
                 "$total parts • ${sortedOutputFiles.size} file(s)"
