@@ -1259,13 +1259,6 @@ private suspend fun runConversion(opts: CliOptions): Int {
     val assembledChaptersCountAtomic = AtomicInteger(0)
     val totalChapterAssembleMsAtomic = AtomicLong(0L)
     val chapterAssemblySemaphore = Semaphore(Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
-    val soundGlavaOpusBytes: ByteArray by lazy {
-        if (soundGlavaBytes.isNotEmpty()) {
-            OpusConverter.convertMp3ToOpus(soundGlavaBytes) ?: ByteArray(0)
-        } else {
-            ByteArray(0)
-        }
-    }
     val launchedAtomic = AtomicInteger(0)
     val failedAtomic = AtomicInteger(0)
     val progressPrintLock = Any()
@@ -1366,7 +1359,8 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
     try {
         kotlinx.coroutines.coroutineScope {
-            val childJobs = mutableListOf<Job>()
+            val masterScope = this
+            val childJobs = java.util.Collections.synchronizedList(mutableListOf<Job>())
             while (isActive && !interruptedByUser && savedPartsAtomic.get() < total && failedAtomic.get() == 0) {
                 val savedCount = savedPartsAtomic.get()
                 val maxWindow = savedCount + effectiveThreads
@@ -1390,7 +1384,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         }
                         val chunkSpec = partToChunkMap[spec.index]
                         if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
-                            val job = launch(Dispatchers.IO) {
+                            val job = masterScope.launch(Dispatchers.IO) {
                                 var chunkTookMs = 0L
                                 val outFile = chapterAssemblySemaphore.withPermit {
                                     val chunkStartNs = System.nanoTime()
@@ -1402,8 +1396,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                         targetWavDirect = targetWavDirect,
                                         opts = opts,
                                         multipleBooks = multipleBooks,
-                                        soundGlavaBytes = soundGlavaBytes,
-                                        soundGlavaOpusBytesProvider = { soundGlavaOpusBytes }
+                                        soundGlavaBytes = soundGlavaBytes
                                     )
                                     chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
                                     f
@@ -1430,7 +1423,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         continue
                     }
 
-                    val job = launch(Dispatchers.IO) {
+                    val job = masterScope.launch(Dispatchers.IO) {
                         var partData: ByteArray? = null
                         var partExt = "mp3"
                         val hasOfflineFallback = opts.allowOfflineFallback && offlineInstalled != null
@@ -1508,39 +1501,41 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
                         val chunkSpec = partToChunkMap[spec.index]
                         if (!interruptedByUser && chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
-                            var chunkTookMs = 0L
-                            val outFile = chapterAssemblySemaphore.withPermit {
-                                val chunkStartNs = System.nanoTime()
-                                val f = assembleCliChunk(
-                                    chunkSpec = chunkSpec,
-                                    bookWorkDir = bookWorkDir,
-                                    bookIndex = bookIndex,
-                                    explicitOutFile = explicitOutFile,
-                                    targetWavDirect = targetWavDirect,
-                                    opts = opts,
-                                    multipleBooks = multipleBooks,
-                                    soundGlavaBytes = soundGlavaBytes,
-                                    soundGlavaOpusBytesProvider = { soundGlavaOpusBytes }
-                                )
-                                chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
-                                f
+                            val asmJob = masterScope.launch(Dispatchers.IO) {
+                                var chunkTookMs = 0L
+                                val outFile = chapterAssemblySemaphore.withPermit {
+                                    val chunkStartNs = System.nanoTime()
+                                    val f = assembleCliChunk(
+                                        chunkSpec = chunkSpec,
+                                        bookWorkDir = bookWorkDir,
+                                        bookIndex = bookIndex,
+                                        explicitOutFile = explicitOutFile,
+                                        targetWavDirect = targetWavDirect,
+                                        opts = opts,
+                                        multipleBooks = multipleBooks,
+                                        soundGlavaBytes = soundGlavaBytes
+                                    )
+                                    chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
+                                    f
+                                }
+                                if (outFile != null) {
+                                    totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
+                                    assembledChaptersCountAtomic.incrementAndGet()
+                                    synchronized(outputFiles) {
+                                        outputFiles.add(outFile)
+                                    }
+                                    postprocessedChunksAtomic.incrementAndGet()
+                                    if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
+                                        bookIndex?.deleteIndexFile()
+                                    }
+                                    if (!interruptedByUser) {
+                                        reportProgress()
+                                    }
+                                } else if (!interruptedByUser) {
+                                    failedAtomic.incrementAndGet()
+                                }
                             }
-                            if (outFile != null) {
-                                totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
-                                assembledChaptersCountAtomic.incrementAndGet()
-                                synchronized(outputFiles) {
-                                    outputFiles.add(outFile)
-                                }
-                                postprocessedChunksAtomic.incrementAndGet()
-                                if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
-                                    bookIndex?.deleteIndexFile()
-                                }
-                                if (!interruptedByUser) {
-                                    reportProgress()
-                                }
-                            } else if (!interruptedByUser) {
-                                failedAtomic.incrementAndGet()
-                            }
+                            childJobs.add(asmJob)
                         }
                     }
                     childJobs.add(job)
@@ -1557,9 +1552,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 }
             }
             if (interruptedByUser) {
-                childJobs.forEach { it.cancel() }
+                val snapshot = synchronized(childJobs) { childJobs.toList() }
+                snapshot.forEach { it.cancel() }
             } else {
-                while (childJobs.any { it.isActive } && !interruptedByUser) {
+                while (synchronized(childJobs) { childJobs.any { it.isActive } } && !interruptedByUser) {
                     delay(50)
                     val nowElapsed = elapsedMillis()
                     if (nowElapsed - lastTickReportMs >= 1000L) {
@@ -1567,10 +1563,11 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         reportProgress()
                     }
                 }
+                val snapshot = synchronized(childJobs) { childJobs.toList() }
                 if (interruptedByUser) {
-                    childJobs.forEach { it.cancel() }
+                    snapshot.forEach { it.cancel() }
                 } else {
-                    childJobs.forEach { it.join() }
+                    snapshot.forEach { it.join() }
                 }
             }
         }
@@ -1722,8 +1719,7 @@ private fun assembleCliChunk(
     targetWavDirect: Boolean,
     opts: CliOptions,
     multipleBooks: Boolean,
-    soundGlavaBytes: ByteArray,
-    soundGlavaOpusBytesProvider: () -> ByteArray
+    soundGlavaBytes: ByteArray
 ): File? {
     if (interruptedByUser) return null
     bookWorkDir.mkdirs()
@@ -1769,89 +1765,11 @@ private fun assembleCliChunk(
         else -> albumTitle
     }
 
-    if (allWav) {
-        val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = false)
-        if (mergedWav.isEmpty() || interruptedByUser) return null
-
-        if (opts.opusOutput) {
-            var opusBytes = OpusConverter.convertMp3ToOpus(mergedWav)
-            if (opusBytes != null && opusBytes.isNotEmpty() && chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty() && !interruptedByUser) {
-                val introOpus = soundGlavaOpusBytesProvider()
-                if (introOpus.isNotEmpty()) {
-                    val introFile = File.createTempFile(".intro_", ".opus", bookWorkDir)
-                    val bodyFile = File.createTempFile(".body_", ".opus", bookWorkDir)
-                    val mergedFile = File.createTempFile(".merged_", ".opus", bookWorkDir)
-                    try {
-                        introFile.writeBytes(introOpus)
-                        bodyFile.writeBytes(opusBytes)
-                        if (OpusConverter.mergeOpusFiles(listOf(introFile.absolutePath, bodyFile.absolutePath), mergedFile.absolutePath) &&
-                            mergedFile.exists() && mergedFile.length() > 0L
-                        ) {
-                            opusBytes = mergedFile.readBytes()
-                        }
-                    } finally {
-                        introFile.delete()
-                        bodyFile.delete()
-                        mergedFile.delete()
-                    }
-                }
-            }
-            if (opusBytes == null || opusBytes.isEmpty() || interruptedByUser) return null
-            val finalOpus = if (opts.embedMetadata) {
-                AudioMetadataTagger.tagOpus(
-                    opusBytes = opusBytes,
-                    bookMeta = chunkSpec.bookMetadata,
-                    trackTitle = trackTitle,
-                    albumTitle = albumTitle,
-                    trackNumber = chunkSpec.bookChunkNumber,
-                    totalTracks = chunkSpec.totalChunksForBook,
-                    voiceName = chunkSpec.voice
-                )
-            } else {
-                opusBytes
-            }
-            return finalizeCliChunkOutput(targetFile, finalOpus, partFiles, chunkSpec, bookIndex)
-        } else {
-            val encodedMp3 = OpusConverter.convertWavToMp3(mergedWav, targetKbps) ?: return null
-            if (interruptedByUser) return null
-            val assembledMp3 = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) {
-                ByteArray(soundGlavaBytes.size + encodedMp3.size).also { joined ->
-                    System.arraycopy(soundGlavaBytes, 0, joined, 0, soundGlavaBytes.size)
-                    System.arraycopy(encodedMp3, 0, joined, soundGlavaBytes.size, encodedMp3.size)
-                }
-            } else {
-                encodedMp3
-            }
-            val finalMp3 = if (opts.embedMetadata) {
-                AudioMetadataTagger.tagMp3(
-                    mp3Bytes = assembledMp3,
-                    bookMeta = chunkSpec.bookMetadata,
-                    trackTitle = trackTitle,
-                    albumTitle = albumTitle,
-                    trackNumber = chunkSpec.bookChunkNumber,
-                    totalTracks = chunkSpec.totalChunksForBook,
-                    voiceName = chunkSpec.voice
-                )
-            } else {
-                assembledMp3
-            }
-            return finalizeCliChunkOutput(targetFile, finalMp3, partFiles, chunkSpec, bookIndex)
-        }
-    }
-
     val introBytes = if (chunkSpec.includeGlavaIntro && soundGlavaBytes.isNotEmpty()) soundGlavaBytes else ByteArray(0)
-    val assembledMp3 = OfflineTtsEngine.mergeMp3AndWavFilesToMp3(
-        partFiles = partFiles,
-        introBytes = introBytes,
-        targetKbps = targetKbps,
-        shouldAbort = { interruptedByUser },
-        convertWavToMp3 = { wav, kbps -> OpusConverter.convertWavToMp3(wav, kbps) }
-    )
-    if (assembledMp3.isEmpty() || interruptedByUser) return null
 
     if (opts.opusOutput) {
-        val opusBytes = OpusConverter.convertMp3ToOpus(assembledMp3) ?: return null
-        if (interruptedByUser) return null
+        val opusBytes = OpusConverter.convertAudioFilesToOpus(partFiles, introBytes)
+        if (opusBytes == null || opusBytes.isEmpty() || interruptedByUser) return null
         val finalOpus = if (opts.embedMetadata) {
             AudioMetadataTagger.tagOpus(
                 opusBytes = opusBytes,
@@ -1866,20 +1784,33 @@ private fun assembleCliChunk(
             opusBytes
         }
         return finalizeCliChunkOutput(targetFile, finalOpus, partFiles, chunkSpec, bookIndex)
-    } else {
-        val finalMp3 = if (opts.embedMetadata) {
-            AudioMetadataTagger.tagMp3(
-                mp3Bytes = assembledMp3,
-                bookMeta = chunkSpec.bookMetadata,
-                trackTitle = trackTitle,
-                albumTitle = albumTitle,
-                trackNumber = chunkSpec.bookChunkNumber,
-                totalTracks = chunkSpec.totalChunksForBook,
-                voiceName = chunkSpec.voice
-            )
-        } else {
-            assembledMp3
-        }
-        return finalizeCliChunkOutput(targetFile, finalMp3, partFiles, chunkSpec, bookIndex)
     }
+
+    val assembledMp3 = if (allWav) {
+        OpusConverter.convertWavFilesToMp3(partFiles, introBytes, targetKbps) ?: return null
+    } else {
+        OfflineTtsEngine.mergeMp3AndWavFilesToMp3(
+            partFiles = partFiles,
+            introBytes = introBytes,
+            targetKbps = targetKbps,
+            shouldAbort = { interruptedByUser },
+            convertWavToMp3 = { wav, kbps -> OpusConverter.convertWavToMp3(wav, kbps) }
+        )
+    }
+    if (assembledMp3.isEmpty() || interruptedByUser) return null
+
+    val finalMp3 = if (opts.embedMetadata) {
+        AudioMetadataTagger.tagMp3(
+            mp3Bytes = assembledMp3,
+            bookMeta = chunkSpec.bookMetadata,
+            trackTitle = trackTitle,
+            albumTitle = albumTitle,
+            trackNumber = chunkSpec.bookChunkNumber,
+            totalTracks = chunkSpec.totalChunksForBook,
+            voiceName = chunkSpec.voice
+        )
+    } else {
+        assembledMp3
+    }
+    return finalizeCliChunkOutput(targetFile, finalMp3, partFiles, chunkSpec, bookIndex)
 }

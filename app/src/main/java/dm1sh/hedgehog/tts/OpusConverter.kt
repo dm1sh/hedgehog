@@ -53,6 +53,19 @@ object OpusConverter {
     private external fun nativeConvertWavToMp3(wavBytes: ByteArray, kbps: Int): ByteArray?
 
     @JvmStatic
+    private external fun nativeConvertWavFilesToMp3(
+        inputPaths: Array<String>,
+        introMp3: ByteArray?,
+        kbps: Int
+    ): ByteArray?
+
+    @JvmStatic
+    private external fun nativeConvertAudioFilesToOpus(
+        inputPaths: Array<String>,
+        introMp3: ByteArray?
+    ): ByteArray?
+
+    @JvmStatic
     private external fun nativeMergeOpusFiles(inputPaths: Array<String>, outputPath: String): Boolean
 
     fun convertMp3ToOpus(mp3Bytes: ByteArray): ByteArray? {
@@ -103,6 +116,65 @@ object OpusConverter {
                 "-ac", "1"
             )
         )
+    }
+
+    fun convertWavFilesToMp3(
+        partFiles: List<File>,
+        introMp3: ByteArray = ByteArray(0),
+        kbps: Int
+    ): ByteArray? {
+        if (partFiles.isEmpty()) return null
+        if (nativeLoaded) {
+            val paths = Array(partFiles.size) { partFiles[it].absolutePath }
+            return try {
+                nativeConvertWavFilesToMp3(
+                    paths,
+                    introMp3.takeIf { it.isNotEmpty() },
+                    kbps
+                )
+            } catch (t: Throwable) {
+                System.err.println("OpusConverter: convertWavFilesToMp3 failed: ${t.message}")
+                null
+            }
+        }
+        val mergedWav = OfflineTtsEngine.mergeWavFiles(partFiles, deleteAfterRead = false)
+        if (mergedWav.isEmpty()) return null
+        val encodedMp3 = convertWavToMp3(mergedWav, kbps) ?: return null
+        return if (introMp3.isNotEmpty()) {
+            ByteArray(introMp3.size + encodedMp3.size).also { joined ->
+                System.arraycopy(introMp3, 0, joined, 0, introMp3.size)
+                System.arraycopy(encodedMp3, 0, joined, introMp3.size, encodedMp3.size)
+            }
+        } else {
+            encodedMp3
+        }
+    }
+
+    fun convertAudioFilesToOpus(
+        partFiles: List<File>,
+        introMp3: ByteArray = ByteArray(0)
+    ): ByteArray? {
+        if (partFiles.isEmpty()) return null
+        if (nativeLoaded) {
+            val paths = Array(partFiles.size) { partFiles[it].absolutePath }
+            return try {
+                nativeConvertAudioFilesToOpus(
+                    paths,
+                    introMp3.takeIf { it.isNotEmpty() }
+                )
+            } catch (t: Throwable) {
+                System.err.println("OpusConverter: convertAudioFilesToOpus failed: ${t.message}")
+                null
+            }
+        }
+        val assembledMp3 = OfflineTtsEngine.mergeMp3AndWavFilesToMp3(
+            partFiles = partFiles,
+            introBytes = introMp3,
+            targetKbps = 96,
+            convertWavToMp3 = { wav, kbps -> convertWavToMp3(wav, kbps) }
+        )
+        if (assembledMp3.isEmpty()) return null
+        return convertMp3ToOpus(assembledMp3)
     }
 
     fun mergeOpusFiles(inputPaths: List<String>, outputPath: String): Boolean {
