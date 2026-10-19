@@ -99,6 +99,7 @@ private data class PartJobSpec(
     val glava: String,
     val fileNum: String,
     val text: String,
+    val textHash: String,
     val voice: String,
     val rate: String,
     val pitch: String
@@ -115,7 +116,7 @@ private data class ChunkJobSpec(
     val includeGlavaIntro: Boolean,
     val fileNums: List<String>,
     val partIndices: List<Int>,
-    val partTexts: List<String>,
+    val chapterTextHash: String,
     val remainingParts: AtomicInteger,
     val bookMetadata: BookAudioMetadata,
     val voice: String
@@ -1126,13 +1127,15 @@ private suspend fun runConversion(opts: CliOptions): Int {
         val meta = activeBook.fileNames[bookMetaIdx]
         val glava = activeBook.allGlavs.getOrElse(i) { "" }
         val fileNum = "%04d".format(i + 1)
+        val partText = activeBook.allSentences[i]
         specs.add(
             PartJobSpec(
                 index = i,
                 fileName = meta.fileName,
                 glava = glava,
                 fileNum = fileNum,
-                text = activeBook.allSentences[i],
+                text = partText,
+                textHash = BookConversionIndex.sha256Hex(partText),
                 voice = meta.voice,
                 rate = meta.rate,
                 pitch = meta.pitch
@@ -1195,7 +1198,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 includeGlavaIntro = (cIdx == 0 && glava.isNotEmpty() && soundGlavaBytes.isNotEmpty()),
                 fileNums = cParts.map { it.fileNum },
                 partIndices = cParts.map { it.index },
-                partTexts = cParts.map { it.text },
+                chapterTextHash = BookConversionIndex.computeChapterTextHash(cParts.map { it.text }),
                 remainingParts = AtomicInteger(cParts.size),
                 bookMetadata = bookMeta,
                 voice = bookVoice
@@ -1283,7 +1286,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
             opts = opts,
             multipleBooks = multipleBooks
         )
-        if (bIndex.isChapterReusable(cSpec.targetBaseName, cSpec.partTexts, targetFile)) {
+        if (bIndex.isChapterReusableByHash(cSpec.targetBaseName, cSpec.chapterTextHash, targetFile)) {
             for (fileNum in cSpec.fileNums) {
                 File(wDir, rawPartFileName(cSpec.glava, fileNum, "wav")).delete()
                 File(wDir, rawPartFileName(cSpec.glava, fileNum, "mp3")).delete()
@@ -1378,7 +1381,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                     val bookWorkDir = bookWorkDirs[bookFolderName] ?: saveDirFile
                     val bookIndex = bookIndices[bookFolderName]
                     val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
-                    val reusablePartFile = bookIndex?.getReusablePart(partKey, spec.text, bookWorkDir)
+                    val reusablePartFile = bookIndex?.getReusablePartByHash(partKey, spec.textHash, bookWorkDir)
 
                     if (reusablePartFile != null) {
                         savedPartsAtomic.incrementAndGet()
@@ -1495,7 +1498,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                             }
                             return@launch
                         }
-                        bookIndex?.recordPart(partKey, spec.text, partFile.name, partExt)
+                        bookIndex?.recordPartByHash(partKey, spec.textHash, partFile.name, partExt)
 
                         newlySynthesizedPartsAtomic.incrementAndGet()
                         savedPartsAtomic.incrementAndGet()
@@ -1541,9 +1544,11 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         }
                     }
                     childJobs.add(job)
-                    delay(100)
+                    if (!opts.offlineMode) {
+                        delay(100)
+                    }
                 } else {
-                    delay(100)
+                    delay(50)
                     val nowElapsed = elapsedMillis()
                     if (!interruptedByUser && nowElapsed - lastTickReportMs >= 1000L) {
                         lastTickReportMs = nowElapsed
@@ -1570,6 +1575,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
             }
         }
     } catch (_: CancellationException) {
+    } finally {
+        for (bIdx in bookIndices.values) {
+            bIdx.flush()
+        }
     }
 
     val totalElapsedMs = elapsedMillis()
@@ -1696,9 +1705,9 @@ private fun finalizeCliChunkOutput(
         } catch (_: Throwable) {
         }
     }
-    bookIndex?.recordChapterCompleted(
+    bookIndex?.recordChapterCompletedByHash(
         chapterKey = chunkSpec.targetBaseName,
-        partTexts = chunkSpec.partTexts,
+        chapterTextHash = chunkSpec.chapterTextHash,
         targetFileName = targetFile.name,
         mergedPartKeys = mergedPartKeys
     )

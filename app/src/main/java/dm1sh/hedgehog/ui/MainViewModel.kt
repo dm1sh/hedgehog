@@ -2764,6 +2764,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val pitch: String,
             val rate: String,
             val text: String,
+            val textHash: String,
             val metadata: BookAudioMetadata
         )
 
@@ -2796,6 +2797,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val fRate = meta.rate.ifEmpty { formatSignedValue(settings.rate) }
             val fPitch = meta.pitch.ifEmpty { formatSignedValue(settings.pitch) }
+            val partText = activeBook.allSentences[idx]
             specs.add(
                 PartJobSpec(
                     index = idx,
@@ -2805,7 +2807,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     voice = fVoice,
                     pitch = "${fPitch}Hz",
                     rate = "${fRate}%",
-                    text = activeBook.allSentences[idx],
+                    text = partText,
+                    textHash = BookConversionIndex.sha256Hex(partText),
                     metadata = meta.metadata
                 )
             )
@@ -2888,7 +2891,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         includeGlavaIntro = addGlavMp3 && chunkIdx == 0,
                         fileNums = chunkParts.map { it.fileNum },
                         partIndices = chunkParts.map { it.index },
-                        partTexts = chunkParts.map { it.text },
+                        chapterTextHash = BookConversionIndex.computeChapterTextHash(chunkParts.map { it.text }),
                         remainingParts = AtomicInteger(chunkParts.size),
                         bookMetadata = firstPart.metadata,
                         voice = firstPart.voice
@@ -2974,7 +2977,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val ext = if (runOpusOutput) "opus" else "mp3"
                 val targetFile = File(outDir, "$finalBaseName.$ext")
                 val bIndex = bookIndices[bName] ?: continue
-                if (bIndex.isChapterReusable(cSpec.targetBaseName, cSpec.partTexts, targetFile)) {
+                if (bIndex.isChapterReusableByHash(cSpec.targetBaseName, cSpec.chapterTextHash, targetFile)) {
                     for (num in cSpec.fileNums) {
                         File(bDir, rawPartFileName(cSpec.glava, num, "wav")).delete()
                         File(bDir, rawPartFileName(cSpec.glava, num, "mp3")).delete()
@@ -2993,33 +2996,155 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            while (isActive && launchedAtomic.get() < total) {
-                if (workPaused) {
-                    delay(100)
-                    continue
-                }
-                val savedCount = savedPartsAtomic.get()
-                val maxWindow = savedCount + settings.maxThreads
-                val nextIdx = launchedAtomic.get()
-                if (nextIdx < maxWindow && nextIdx < total) {
-                    launchedAtomic.incrementAndGet()
-                    if (preCompletedParts.contains(nextIdx)) {
+            try {
+                while (isActive && launchedAtomic.get() < total) {
+                    if (workPaused) {
+                        for (bIdx in bookIndices.values) {
+                            bIdx.flush()
+                        }
+                        delay(100)
                         continue
                     }
-                    val spec = specs[nextIdx]
-                    val bookFolderName = File(bookStem(spec.fileName)).name.trim().ifEmpty { "Book" }
-                    val bookDir = File(runSaveDir, bookFolderName)
-                    val bookIndex = bookIndices[bookFolderName]
-                    val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
-                    val reusablePartFile = bookIndex?.getReusablePart(partKey, spec.text, bookDir)
+                    val savedCount = savedPartsAtomic.get()
+                    val maxWindow = savedCount + settings.maxThreads
+                    val nextIdx = launchedAtomic.get()
+                    if (nextIdx < maxWindow && nextIdx < total) {
+                        launchedAtomic.incrementAndGet()
+                        if (preCompletedParts.contains(nextIdx)) {
+                            continue
+                        }
+                        val spec = specs[nextIdx]
+                        val bookFolderName = File(bookStem(spec.fileName)).name.trim().ifEmpty { "Book" }
+                        val bookDir = File(runSaveDir, bookFolderName)
+                        val bookIndex = bookIndices[bookFolderName]
+                        val partKey = BookConversionIndex.partKey(spec.glava, spec.fileNum)
+                        val reusablePartFile = bookIndex?.getReusablePartByHash(partKey, spec.textHash, bookDir)
 
-                    if (reusablePartFile != null) {
-                        updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
-                        val doneParts = savedPartsAtomic.incrementAndGet()
-                        publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
-                        val chunkSpec = partToChunkMap.getOrNull(spec.index)
-                        if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
-                            val job = launch {
+                        if (reusablePartFile != null) {
+                            updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
+                            val doneParts = savedPartsAtomic.incrementAndGet()
+                            publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
+                            val chunkSpec = partToChunkMap.getOrNull(spec.index)
+                            if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
+                                val job = launch {
+                                    var chunkTookMs = 0L
+                                    val chunkAssembled = chapterAssemblySemaphore.withPermit {
+                                        val chunkStartNs = System.nanoTime()
+                                        val ok = assembleChunk(
+                                            chunkSpec = chunkSpec,
+                                            saveDirBase = runSaveDir,
+                                            inBookDir = runBookDirCreate,
+                                            multipleBooks = multipleBooks,
+                                            soundGlavaBytes = soundGlavaBytes,
+                                            soundGlavaOpusBytesProvider = { soundGlavaOpusBytes },
+                                            lowBitrate = runLowBitrate,
+                                            opusOutput = runOpusOutput,
+                                            embedMetadata = runEmbedMetadata,
+                                            bookIndex = bookIndex,
+                                            rid = currentRunId
+                                        )
+                                        chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
+                                        ok
+                                    }
+                                    if (chunkAssembled && runIdGen.get() == currentRunId) {
+                                        totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
+                                        assembledChaptersCountAtomic.incrementAndGet()
+                                        if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
+                                            bookIndex.deleteIndexFile()
+                                        }
+                                        val doneChunks = postprocessedChunksAtomic.incrementAndGet()
+                                        publishConversionProgress(savedPartsAtomic.get(), doneChunks)
+                                    }
+                                }
+                                childJobs.add(job)
+                            }
+                            continue
+                        }
+
+                        val wantOnlineForSpec = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice)
+                        val job = launch {
+                            File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "wav")).delete()
+                            File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "mp3")).delete()
+
+                            val offlineVoice = if (repo.isVoiceOffline(spec.voice)) {
+                                spec.voice
+                            } else {
+                                resolveOfflineFallbackVoice()
+                            }
+                            val hasOfflineFallback = !offlineVoice.isNullOrBlank()
+                            val wantOnline = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice)
+                            val shouldUseOnline = wantOnline && isNetworkAvailable()
+                            var partData: ByteArray? = null
+                            var partExt = "mp3"
+                            if (shouldUseOnline) {
+                                partData = SocketEdgeTtsWorker.synthesizePart(
+                                    voice = spec.voice,
+                                    pitch = spec.pitch,
+                                    rate = spec.rate,
+                                    text = spec.text,
+                                    lowBitrate = runLowBitrate,
+                                    timeoutMsec = timeoutMsec,
+                                    isPreview = false,
+                                    fallbackToOfflineOnError = hasOfflineFallback,
+                                    isPaused = { workPaused },
+                                    isCancelled = { !isActive || runIdGen.get() != currentRunId },
+                                    onStatusUpdate = { statusKey ->
+                                        updateStatusBox(spec.index, statusKey, currentRunId)
+                                    }
+                                )
+                            }
+                            if ((partData == null || partData.isEmpty()) && isActive && runIdGen.get() == currentRunId) {
+                                if (!offlineVoice.isNullOrBlank()) {
+                                    val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
+                                    if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
+                                        if (wantOnline) {
+                                            markPartOfflineFallback(spec.index, currentRunId)
+                                            OfflineTtsEngine.showFallbackToast(
+                                                getApplication(),
+                                                tr("KEY_OFFLINE_FALLBACK_TOAST")
+                                            )
+                                        }
+                                        partData = OfflineTtsEngine.synthesizePart(
+                                            context = getApplication(),
+                                            voiceDir = voiceDir,
+                                            text = spec.text,
+                                            rate = spec.rate,
+                                            pitch = spec.pitch,
+                                            lowBitrate = runLowBitrate,
+                                            isPreview = false,
+                                            isPaused = { workPaused },
+                                            isCancelled = { !isActive || runIdGen.get() != currentRunId },
+                                            onStatusUpdate = { statusKey ->
+                                                updateStatusBox(spec.index, statusKey, currentRunId)
+                                            }
+                                        )
+                                        partExt = "wav"
+                                    }
+                                }
+                            }
+
+                            if (!isActive || runIdGen.get() != currentRunId || partData == null || partData.isEmpty()) {
+                                return@launch
+                            }
+
+                            val savedPartFile = savePartMp3File(
+                                data = partData,
+                                saveDirBase = runSaveDir,
+                                fileName = spec.fileName,
+                                glava = spec.glava,
+                                fileNum = spec.fileNum,
+                                ext = partExt,
+                                shouldAbort = { !isActive || runIdGen.get() != currentRunId }
+                            ) ?: return@launch
+                            bookIndex?.recordPartByHash(partKey, spec.textHash, savedPartFile.name, partExt)
+                            updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
+
+                            newlySynthesizedPartsAtomic.incrementAndGet()
+                            val doneParts = savedPartsAtomic.incrementAndGet()
+                            publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
+
+                            val chunkSpec = partToChunkMap.getOrNull(spec.index)
+                            if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
                                 var chunkTookMs = 0L
                                 val chunkAssembled = chapterAssemblySemaphore.withPermit {
                                     val chunkStartNs = System.nanoTime()
@@ -3043,137 +3168,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
                                     assembledChaptersCountAtomic.incrementAndGet()
                                     if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
-                                        bookIndex.deleteIndexFile()
+                                        bookIndex?.deleteIndexFile()
                                     }
                                     val doneChunks = postprocessedChunksAtomic.incrementAndGet()
                                     publishConversionProgress(savedPartsAtomic.get(), doneChunks)
                                 }
                             }
-                            childJobs.add(job)
                         }
-                        continue
+                        childJobs.add(job)
+                        if (wantOnlineForSpec) {
+                            delay(100)
+                        }
+                    } else {
+                        delay(50)
                     }
-
-                    val job = launch {
-                        File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "wav")).delete()
-                        File(bookDir, rawPartFileName(spec.glava, spec.fileNum, "mp3")).delete()
-
-                        val offlineVoice = if (repo.isVoiceOffline(spec.voice)) {
-                            spec.voice
-                        } else {
-                            resolveOfflineFallbackVoice()
-                        }
-                        val hasOfflineFallback = !offlineVoice.isNullOrBlank()
-                        val wantOnline = settings.useOnlineVoices && !repo.isVoiceOffline(spec.voice)
-                        val shouldUseOnline = wantOnline && isNetworkAvailable()
-                        var partData: ByteArray? = null
-                        var partExt = "mp3"
-                        if (shouldUseOnline) {
-                            partData = SocketEdgeTtsWorker.synthesizePart(
-                                voice = spec.voice,
-                                pitch = spec.pitch,
-                                rate = spec.rate,
-                                text = spec.text,
-                                lowBitrate = runLowBitrate,
-                                timeoutMsec = timeoutMsec,
-                                isPreview = false,
-                                fallbackToOfflineOnError = hasOfflineFallback,
-                                isPaused = { workPaused },
-                                isCancelled = { !isActive || runIdGen.get() != currentRunId },
-                                onStatusUpdate = { statusKey ->
-                                    updateStatusBox(spec.index, statusKey, currentRunId)
-                                }
-                            )
-                        }
-                        if ((partData == null || partData.isEmpty()) && isActive && runIdGen.get() == currentRunId) {
-                            if (!offlineVoice.isNullOrBlank()) {
-                                val voiceDir = File(File(repo.programDir, "Voices"), offlineVoice)
-                                if (OfflineTtsEngine.voiceInstalled(voiceDir)) {
-                                    if (wantOnline) {
-                                        markPartOfflineFallback(spec.index, currentRunId)
-                                        OfflineTtsEngine.showFallbackToast(
-                                            getApplication(),
-                                            tr("KEY_OFFLINE_FALLBACK_TOAST")
-                                        )
-                                    }
-                                    partData = OfflineTtsEngine.synthesizePart(
-                                        context = getApplication(),
-                                        voiceDir = voiceDir,
-                                        text = spec.text,
-                                        rate = spec.rate,
-                                        pitch = spec.pitch,
-                                        lowBitrate = runLowBitrate,
-                                        isPreview = false,
-                                        isPaused = { workPaused },
-                                        isCancelled = { !isActive || runIdGen.get() != currentRunId },
-                                        onStatusUpdate = { statusKey ->
-                                            updateStatusBox(spec.index, statusKey, currentRunId)
-                                        }
-                                    )
-                                    partExt = "wav"
-                                }
-                            }
-                        }
-
-                        if (!isActive || runIdGen.get() != currentRunId || partData == null || partData.isEmpty()) {
-                            return@launch
-                        }
-
-                        val savedPartFile = savePartMp3File(
-                            data = partData,
-                            saveDirBase = runSaveDir,
-                            fileName = spec.fileName,
-                            glava = spec.glava,
-                            fileNum = spec.fileNum,
-                            ext = partExt,
-                            shouldAbort = { !isActive || runIdGen.get() != currentRunId }
-                        ) ?: return@launch
-                        bookIndex?.recordPart(partKey, spec.text, savedPartFile.name, partExt)
-                        updateStatusBox(spec.index, "KEY_SAVED", currentRunId)
-
-                        newlySynthesizedPartsAtomic.incrementAndGet()
-                        val doneParts = savedPartsAtomic.incrementAndGet()
-                        publishConversionProgress(doneParts, postprocessedChunksAtomic.get())
-
-                        val chunkSpec = partToChunkMap.getOrNull(spec.index)
-                        if (chunkSpec != null && chunkSpec.remainingParts.decrementAndGet() == 0) {
-                            var chunkTookMs = 0L
-                            val chunkAssembled = chapterAssemblySemaphore.withPermit {
-                                val chunkStartNs = System.nanoTime()
-                                val ok = assembleChunk(
-                                    chunkSpec = chunkSpec,
-                                    saveDirBase = runSaveDir,
-                                    inBookDir = runBookDirCreate,
-                                    multipleBooks = multipleBooks,
-                                    soundGlavaBytes = soundGlavaBytes,
-                                    soundGlavaOpusBytesProvider = { soundGlavaOpusBytes },
-                                    lowBitrate = runLowBitrate,
-                                    opusOutput = runOpusOutput,
-                                    embedMetadata = runEmbedMetadata,
-                                    bookIndex = bookIndex,
-                                    rid = currentRunId
-                                )
-                                chunkTookMs = ((System.nanoTime() - chunkStartNs) / 1_000_000L).coerceAtLeast(1L)
-                                ok
-                            }
-                            if (chunkAssembled && runIdGen.get() == currentRunId) {
-                                totalChapterAssembleMsAtomic.addAndGet(chunkTookMs)
-                                assembledChaptersCountAtomic.incrementAndGet()
-                                if (bookRemainingChunks[chunkSpec.bookFolderName]?.decrementAndGet() == 0) {
-                                    bookIndex?.deleteIndexFile()
-                                }
-                                val doneChunks = postprocessedChunksAtomic.incrementAndGet()
-                                publishConversionProgress(savedPartsAtomic.get(), doneChunks)
-                            }
-                        }
-                    }
-                    childJobs.add(job)
-                    delay(100)
-                } else {
-                    delay(100)
+                }
+                childJobs.forEach { it.join() }
+            } finally {
+                for (bIdx in bookIndices.values) {
+                    bIdx.flush()
                 }
             }
-            childJobs.forEach { it.join() }
             if (isActive && runIdGen.get() == currentRunId && savedPartsAtomic.get() >= total) {
                 finalizeConversion(
                     rid = currentRunId,
@@ -3195,7 +3210,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val includeGlavaIntro: Boolean,
         val fileNums: List<String>,
         val partIndices: List<Int>,
-        val partTexts: List<String>,
+        val chapterTextHash: String,
         val remainingParts: AtomicInteger,
         val bookMetadata: BookAudioMetadata,
         val voice: String
@@ -3270,9 +3285,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Throwable) {
             }
         }
-        bookIndex?.recordChapterCompleted(
+        bookIndex?.recordChapterCompletedByHash(
             chapterKey = chunkSpec.targetBaseName,
-            partTexts = chunkSpec.partTexts,
+            chapterTextHash = chunkSpec.chapterTextHash,
             targetFileName = outFile.name,
             mergedPartKeys = mergedPartKeys
         )

@@ -316,16 +316,18 @@ object SocketEdgeTtsWorker {
                     resultDeferred.complete(null)
                     return
                 }
-                val arr = bytes.toByteArray()
-                val idx = findSubArray(arr, AUDIO_SEP_BYTES)
+                val idx = bytes.indexOf(AUDIO_SEP_BYTES)
                 if (idx >= 0) {
                     val payloadStart = idx + AUDIO_SEP_BYTES.size
-                    if (payloadStart <= arr.size) {
+                    if (payloadStart <= bytes.size) {
                         if (receivedFirstChunk.compareAndSet(false, true) && !isPreview) {
                             onStatusUpdate("KEY_PROCESSING")
                         }
-                        synchronized(audioBuffer) {
-                            audioBuffer.write(arr, payloadStart, arr.size - payloadStart)
+                        if (payloadStart < bytes.size) {
+                            val payload = bytes.substring(payloadStart)
+                            synchronized(audioBuffer) {
+                                payload.write(audioBuffer)
+                            }
                         }
                     }
                 }

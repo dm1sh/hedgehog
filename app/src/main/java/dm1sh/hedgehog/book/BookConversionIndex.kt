@@ -26,9 +26,18 @@ class BookConversionIndex private constructor(
     private val parts = ConcurrentHashMap<String, PartRecord>()
     private val chapters = ConcurrentHashMap<String, ChapterRecord>()
 
+    @Volatile
+    private var dirty: Boolean = false
+
+    @Volatile
+    private var lastSaveTimeMs: Long = 0L
+
     fun getReusablePart(partKey: String, text: String, partDir: File): File? {
+        return getReusablePartByHash(partKey, sha256Hex(text), partDir)
+    }
+
+    fun getReusablePartByHash(partKey: String, expectedHash: String, partDir: File): File? {
         val rec = parts[partKey] ?: return null
-        val expectedHash = sha256Hex(text)
         if (rec.textHash != expectedHash) {
             return null
         }
@@ -37,12 +46,17 @@ class BookConversionIndex private constructor(
     }
 
     fun recordPart(partKey: String, text: String, fileName: String, ext: String) {
+        recordPartByHash(partKey, sha256Hex(text), fileName, ext)
+    }
+
+    fun recordPartByHash(partKey: String, textHash: String, fileName: String, ext: String) {
         parts[partKey] = PartRecord(
-            textHash = sha256Hex(text),
+            textHash = textHash,
             fileName = fileName,
             ext = ext
         )
-        save()
+        dirty = true
+        save(force = false)
     }
 
     fun removeParts(partKeys: Collection<String>, saveImmediately: Boolean = true) {
@@ -52,12 +66,19 @@ class BookConversionIndex private constructor(
                 changed = true
             }
         }
-        if (changed && saveImmediately) {
-            save()
+        if (changed) {
+            dirty = true
+            if (saveImmediately) {
+                save(force = true)
+            }
         }
     }
 
     fun isChapterReusable(chapterKey: String, partTexts: List<String>, targetFile: File): Boolean {
+        return isChapterReusableByHash(chapterKey, computeChapterTextHash(partTexts), targetFile)
+    }
+
+    fun isChapterReusableByHash(chapterKey: String, expectedChapterHash: String, targetFile: File): Boolean {
         if (!targetFile.exists() || !targetFile.isFile || targetFile.length() <= 0L) {
             return false
         }
@@ -65,8 +86,7 @@ class BookConversionIndex private constructor(
         if (rec.fileName != targetFile.name) {
             return false
         }
-        val expectedHash = computeChapterTextHash(partTexts)
-        return rec.textHash == expectedHash
+        return rec.textHash == expectedChapterHash
     }
 
     fun recordChapterCompleted(
@@ -75,18 +95,51 @@ class BookConversionIndex private constructor(
         targetFileName: String,
         mergedPartKeys: Collection<String>
     ) {
+        recordChapterCompletedByHash(
+            chapterKey = chapterKey,
+            chapterTextHash = computeChapterTextHash(partTexts),
+            targetFileName = targetFileName,
+            mergedPartKeys = mergedPartKeys
+        )
+    }
+
+    fun recordChapterCompletedByHash(
+        chapterKey: String,
+        chapterTextHash: String,
+        targetFileName: String,
+        mergedPartKeys: Collection<String>
+    ) {
         for (k in mergedPartKeys) {
             parts.remove(k)
         }
         chapters[chapterKey] = ChapterRecord(
-            textHash = computeChapterTextHash(partTexts),
+            textHash = chapterTextHash,
             fileName = targetFileName
         )
-        save()
+        dirty = true
+        save(force = true)
     }
 
-    fun save() {
+    fun flush() {
+        if (dirty) {
+            save(force = true)
+        }
+    }
+
+    fun save(force: Boolean = true) {
+        if (!force) {
+            val now = System.currentTimeMillis()
+            if (now - lastSaveTimeMs < SAVE_DEBOUNCE_MS) {
+                return
+            }
+        }
         synchronized(saveLock) {
+            if (!force) {
+                val now = System.currentTimeMillis()
+                if (!dirty || now - lastSaveTimeMs < SAVE_DEBOUNCE_MS) {
+                    return
+                }
+            }
             try {
                 val root = JSONObject()
                 root.put("version", 1)
@@ -110,8 +163,11 @@ class BookConversionIndex private constructor(
                 }
                 root.put("chapters", chaptersObj)
 
-                val bytes = root.toString(2).toByteArray(Charsets.UTF_8)
-                writeBytesAtomically(indexFile, bytes)
+                val bytes = root.toString().toByteArray(Charsets.UTF_8)
+                if (writeBytesAtomically(indexFile, bytes)) {
+                    dirty = false
+                    lastSaveTimeMs = System.currentTimeMillis()
+                }
             } catch (_: Throwable) {
             }
         }
@@ -119,6 +175,7 @@ class BookConversionIndex private constructor(
 
     fun deleteIndexFile() {
         synchronized(saveLock) {
+            dirty = false
             try {
                 if (indexFile.exists()) {
                     indexFile.delete()
@@ -130,6 +187,7 @@ class BookConversionIndex private constructor(
 
     companion object {
         const val INDEX_FILE_NAME = ".hedgehog_index.json"
+        private const val SAVE_DEBOUNCE_MS = 750L
 
         fun load(dir: File, indexFileName: String = INDEX_FILE_NAME): BookConversionIndex {
             dir.mkdirs()
