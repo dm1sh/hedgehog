@@ -1438,7 +1438,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 "speech.platform.bing.com:443 is unreachable, using offline voice '${offlineInstalled.folderName}'"
             )
         } else {
-            cliDiagnostic("speech.platform.bing.com:443 is unreachable, retrying online synthesis")
+            cliDiagnostic(
+                "speech.platform.bing.com:443 is unreachable and no offline voice is installed, " +
+                    "still trying online synthesis"
+            )
         }
     }
     val startTimeNanos = System.nanoTime()
@@ -1631,7 +1634,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                         )
                                     }
                                 } else if (networkDownReported.compareAndSet(false, true)) {
-                                    cliDiagnostic("speech.platform.bing.com:443 is unreachable, retrying online synthesis")
+                                    cliDiagnostic(
+                                        "speech.platform.bing.com:443 is unreachable and no offline voice is " +
+                                            "installed, still trying online synthesis"
+                                    )
                                 }
                             } else {
                                 networkDownReported.set(false)
