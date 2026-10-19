@@ -10,7 +10,7 @@ data class AppSettings(
     val useOnlineVoices: Boolean = true,
     val useOnlineVoicesPlayer: Boolean = false,
     val useOnlineVoicesSystemTts: Boolean = false,
-    val rate: Int = 100,
+    val rate: Int = DEFAULT_RATE,
     val pitch: Int = 0,
     val maxThreads: Int = DEFAULT_MAX_THREADS,
     val restartDelay: Int = DEFAULT_RESTART_DELAY,
@@ -22,13 +22,13 @@ data class AppSettings(
     val lexxUse: Boolean = false,
     val lexxRegister: Boolean = true,
     val bookDirCreate: Boolean = true,
-    val lowBitrate: Boolean = false,
-    val opusOutput: Boolean = false,
-    val inlineNotes: Boolean = false,
+    val lowBitrate: Boolean = DEFAULT_LOW_BITRATE,
+    val opusOutput: Boolean = DEFAULT_OPUS_OUTPUT,
+    val inlineNotes: Boolean = DEFAULT_INLINE_NOTES,
     val embedMetadata: Boolean = true,
     val filterEmojis: Boolean = true,
     val voicePreview: Boolean = false,
-    val bookChapter: Boolean = false,
+    val bookChapter: Boolean = DEFAULT_BOOK_CHAPTER,
     val dopSettingsPressed: Boolean = false,
     val showTextAreaPressed: Boolean = false,
     val group4Visible: Boolean = false,
@@ -51,6 +51,13 @@ data class AppSettings(
     companion object {
         const val DEFAULT_MAX_THREADS = 50
         const val DEFAULT_RESTART_DELAY = 10000
+
+        /* Synthesis defaults: unchanged speed, 48 kbps MP3 input to Opus, footnotes inlined, split by chapters. */
+        const val DEFAULT_RATE = 0
+        const val DEFAULT_LOW_BITRATE = true
+        const val DEFAULT_OPUS_OUTPUT = true
+        const val DEFAULT_INLINE_NOTES = true
+        const val DEFAULT_BOOK_CHAPTER = true
         const val DEFAULT_REGEX_GLAVA = "глава |раздел |эпизод |рассказ |chapter "
 
         val RESTART_DELAY_STEPS = listOf(

@@ -9,7 +9,7 @@
 - **Convert Books to Audiobooks**:
   - Open books in **FB2**, **EPUB**, **TXT**, **CSV**, **INI**, or **ZIP** archives containing books.
   - Automatically detects book metadata (`Author - Book Title`) and text encodings (UTF-8 and Windows-1251).
-  - Save audiobooks in **MP3** (`96 kbps` or compact `48 kbps`) or **Opus** (`32 kbps VoIP` for small file sizes) using high-speed native `libmp3lame`, `libopus`, and `FFmpeg` streaming assembly. With Opus output each text part is encoded to `.part_...opus` immediately after synthesis, so chapters are assembled by a zero-re-encode Ogg Opus stream copy (the shared chapter intro is encoded once per book).
+  - Save audiobooks in **MP3** (`96 kbps` or compact `48 kbps`) or **Opus** (`32 kbps VoIP` for small file sizes) using high-speed native `libmp3lame`, `libopus`, and `FFmpeg` streaming assembly. Fresh installs default to compact **48 kbps MP3 → Opus**, footnotes inlined, and chapters split by the chapter regex (all of it can be changed in **Settings**). With Opus output each text part is encoded to `.part_...opus` immediately after synthesis, so chapters are assembled by a zero-re-encode Ogg Opus stream copy (the shared chapter intro is encoded once per book).
   - **Clean File & Chapter Naming**: Single-file audiobooks include the author and title in the filename, while multi-chapter audiobooks place the author and title in the book folder name and name each chapter file with its chapter number and chapter title.
   - **Resumable Conversion**: Intermediate `.part` audio files and a SHA-256 text index for parts and chapters are stored in the output book folder. If conversion is stopped or interrupted—or if you edit specific text parts in **View text** and re-run—unchanged parts and chapters are reused automatically, and chapter files are written atomically.
   - **Embedded Cover Art & Audio Tags**: Automatically extracts cover images and book metadata (title, author, series/album, genre, year, track number) from FB2, EPUB, and ZIP files and embeds them into output `.mp3` (`ID3v2.3` + `APIC`) and `.opus` (`OpusTags` + `METADATA_BLOCK_PICTURE`) files (can be toggled in **Settings → Book**).
@@ -74,7 +74,7 @@ If your device has no internet access at all, you can install offline voices man
 
 ### 3. Listen in the Player or Convert to Audio Files
 - **Listen immediately**: Switch to the **Player** tab and press **Play** (or tap any sentence card) to listen right away.
-- **Convert full audiobook**: Tap **Save to MP3** (or **Save to Opus**) in the bottom dock to convert and save the book to your **Save folder** (`Downloads` by default). You can **Pause**, **Resume**, or **Stop** conversion at any time.
+- **Convert full audiobook**: Tap **Save to Opus** (or **Save to MP3** when Opus output is disabled) in the bottom dock to convert and save the book to your **Save folder** (`Downloads` by default). You can **Pause**, **Resume**, or **Stop** conversion at any time.
 
 ---
 
