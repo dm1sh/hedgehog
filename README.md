@@ -118,6 +118,16 @@ Prebuilt Linux `x86_64` archives (`hedgehog-cli-<version>-linux-x86_64.zip`) are
 
 This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli/build/libs/hedgehog-cli.jar`), which only requires a Java 11+ runtime (`java`) on the host machine.
 
+### CLI streaming behavior
+
+`hedgehog-cli` uses the same streaming engine and defaults as the Android app:
+
+- **Parallel streams** — `50` by default (`-j/--threads`, clamped to `1..100`, same as the app's thread setting). Offline TTS is additionally bounded to the CPU core count by the shared engine.
+- **Idle timeout** — a stream is restarted when the server sends nothing for `10` s (`--timeout`/`--restart-delay <sec>`, the app's "restart delay" setting; `0` disables it, like the app's ∞).
+- **Restart delay** — after a failed attempt the stream is restarted after `4` s.
+- **Network pre-check** — like the app, the CLI checks `speech.platform.bing.com:443` before opening a stream; if it is unreachable and an offline voice is available, that part is synthesized offline.
+- **Diagnostics** — network errors (with the HTTP status when available), idle timeouts, empty server responses and restart/fallback decisions are printed to **stderr** as `Warning: part N: …`, so they never corrupt the progress line or stdout output paths.
+
 `-o`/`--output` accepts two kinds of paths:
 
 - **Save folder** — a directory path (e.g. `-o ./out`), which behaves exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable the subfolder with `--no-book-dir`). The format comes from `--mp3`, `--opus`, `--wav`, or `--output-format`. Like the app, a book without detected chapters is written as one file (`--merge-files` defaults to `0`, meaning the whole book in one file; use `--merge-files <n>` to split it every `n` parts).

@@ -15,6 +15,7 @@ import okio.ByteString
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -30,6 +31,7 @@ import kotlin.coroutines.coroutineContext
 object SocketEdgeTtsWorker {
     private const val PREVIEW_TIMEOUT_MSEC = 30_000L
     private const val DEFAULT_STALL_TIMEOUT_MSEC = 60_000L
+    private const val STREAM_RESTART_DELAY_MSEC = 4000L
     private const val BING_HOST = "speech.platform.bing.com"
     private const val BING_PORT = 443
     private val AUDIO_SEP_BYTES = "Path:audio\r\n".toByteArray(Charsets.UTF_8)
@@ -128,7 +130,8 @@ object SocketEdgeTtsWorker {
         fallbackToOfflineOnError: Boolean = false,
         isPaused: () -> Boolean,
         isCancelled: () -> Boolean,
-        onStatusUpdate: (String) -> Unit
+        onStatusUpdate: (String) -> Unit,
+        onDiagnostic: (String) -> Unit = {}
     ): ByteArray? {
         if (text.trim().isEmpty()) {
             return ByteArray(0)
@@ -169,7 +172,8 @@ object SocketEdgeTtsWorker {
                 wsOpened = wsOpened,
                 isPaused = isPaused,
                 isCancelled = isCancelled,
-                onStatusUpdate = onStatusUpdate
+                onStatusUpdate = onStatusUpdate,
+                onDiagnostic = onDiagnostic
             )
 
             if (result != null && result.isNotEmpty()) {
@@ -201,13 +205,15 @@ object SocketEdgeTtsWorker {
             // If an offline fallback voice is available and the WebSocket could not connect
             // (e.g. internet is off while VPN is on), return null so caller falls back to offline TTS.
             if (fallbackToOfflineOnError && !wsOpened.get() && failedAttempts >= 2) {
+                onDiagnostic("connection to $BING_HOST failed $failedAttempts time(s), switching to offline voice")
                 return null
             }
 
             onStatusUpdate("KEY_ERROR_RERUN")
+            onDiagnostic("restarting stream in ${STREAM_RESTART_DELAY_MSEC / 1000} s (attempt ${failedAttempts + 1})")
             // Wait 4 seconds before retrying (matching SocketEdgeTTS.gd OS.delay_msec(4000))
             var waited = 0L
-            while (waited < 4000L && coroutineContext.isActive && !isCancelled()) {
+            while (waited < STREAM_RESTART_DELAY_MSEC && coroutineContext.isActive && !isCancelled()) {
                 if (isPaused()) {
                     break
                 }
@@ -229,7 +235,8 @@ object SocketEdgeTtsWorker {
         wsOpened: AtomicBoolean,
         isPaused: () -> Boolean,
         isCancelled: () -> Boolean,
-        onStatusUpdate: (String) -> Unit
+        onStatusUpdate: (String) -> Unit,
+        onDiagnostic: (String) -> Unit
     ): ByteArray? {
         val resultDeferred = CompletableDeferred<ByteArray?>()
         val audioBuffer = ByteArrayOutputStream()
@@ -303,6 +310,7 @@ object SocketEdgeTtsWorker {
                     if (bytes.isNotEmpty()) {
                         resultDeferred.complete(bytes)
                     } else {
+                        onDiagnostic("server finished the stream without any audio")
                         resultDeferred.complete(null)
                     }
                     webSocket.close(1000, "Normal closure")
@@ -334,6 +342,9 @@ object SocketEdgeTtsWorker {
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                if (code != 1000 && !isCancelled()) {
+                    onDiagnostic("stream closed by server: code=$code${if (reason.isNotBlank()) " reason=$reason" else ""}")
+                }
                 webSocket.close(1000, null)
                 if (!resultDeferred.isCompleted) {
                     resultDeferred.complete(null)
@@ -347,6 +358,12 @@ object SocketEdgeTtsWorker {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!resultDeferred.isCompleted && !isCancelled()) {
+                    val http = response?.let { " (HTTP ${it.code}${if (it.message.isNotBlank()) " ${it.message}" else ""})" }.orEmpty()
+                    val msg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                    val where = if (wsOpened.get()) "stream failed" else "connection failed"
+                    onDiagnostic("network error: $where: $msg$http")
+                }
                 if (!resultDeferred.isCompleted) {
                     resultDeferred.complete(null)
                 }
@@ -361,6 +378,12 @@ object SocketEdgeTtsWorker {
                 }
                 val idleMs = System.currentTimeMillis() - lastActivityTime.get()
                 if (idleMs > effectiveTimeout) {
+                    onDiagnostic(
+                        "timeout: no data from server for " +
+                            "${"%.1f".format(Locale.US, idleMs / 1000.0)} s " +
+                            "(limit ${"%.1f".format(Locale.US, effectiveTimeout / 1000.0)} s), " +
+                            "restarting stream"
+                    )
                     ws.cancel()
                     return null
                 }

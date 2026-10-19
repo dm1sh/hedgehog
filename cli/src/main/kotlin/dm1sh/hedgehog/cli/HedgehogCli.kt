@@ -40,6 +40,10 @@ import kotlin.math.roundToLong
 import kotlin.system.exitProcess
 
 private const val DEFAULT_CHAPTER_REGEX = "глава |раздел |эпизод |рассказ |chapter "
+/* Mirrors the Android app defaults so both frontends stream identically. */
+private const val DEFAULT_MAX_THREADS = 50
+private const val MAX_THREADS_LIMIT = 100
+private const val DEFAULT_STALL_TIMEOUT_SEC = 10
 private const val HEX_DIGITS = "0123456789abcdef"
 private val LEGACY_PART_EXTS = arrayOf("wav", "mp3")
 private val PART_FILE_EXTS = arrayOf("wav", "mp3", "opus")
@@ -83,11 +87,13 @@ data class CliOptions(
     var bookDirCreate: Boolean = true,
     var rate: Int = 0,
     var pitch: Int = 0,
-    var maxThreads: Int = maxOf(10, Runtime.getRuntime().availableProcessors()),
+    /* Same default as the app (AppSettings.DEFAULT_MAX_THREADS). */
+    var maxThreads: Int = DEFAULT_MAX_THREADS,
     var threadsExplicitlySet: Boolean = false,
     var mergeFiles: Int = 0,
     var mergeFilesExplicitlySet: Boolean = false,
-    var timeoutSec: Int = 60,
+    /* Idle (stall) timeout per stream, same "restart delay" setting as the app; <= 0 = infinite. */
+    var timeoutSec: Int = DEFAULT_STALL_TIMEOUT_SEC,
     var downloadOfflineVoices: Boolean = false,
     val downloadVoiceNames: MutableList<String> = mutableListOf(),
     var listVoices: Boolean = false,
@@ -287,7 +293,7 @@ private fun loadConfigIntoOptions(configFile: File, opts: CliOptions) {
                 "pitch" -> value.let {
                     runCatching { parseSignedNumber(it).coerceIn(-50, 50) }.getOrNull()?.let { p -> opts.pitch = p }
                 }
-                "threads", "max_threads" -> value.toIntOrNull()?.coerceIn(1, 64)?.let { t ->
+                "threads", "max_threads" -> value.toIntOrNull()?.coerceIn(1, MAX_THREADS_LIMIT)?.let { t ->
                     opts.maxThreads = t
                     opts.threadsExplicitlySet = true
                 }
@@ -295,7 +301,7 @@ private fun loadConfigIntoOptions(configFile: File, opts: CliOptions) {
                     opts.mergeFiles = m
                     opts.mergeFilesExplicitlySet = true
                 }
-                "timeout", "timeout_sec" -> value.toIntOrNull()?.let { t -> opts.timeoutSec = t }
+                "timeout", "timeout_sec", "restart_delay" -> value.toIntOrNull()?.let { t -> opts.timeoutSec = t }
                 "quiet" -> opts.quiet = parseBoolConfig(value)
             }
         }
@@ -335,6 +341,7 @@ private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
             if (opts.mergeFilesExplicitlySet) {
                 appendLine("merge_files = ${opts.mergeFiles}")
             }
+            appendLine("# idle timeout in seconds (alias: restart_delay), same as the app; 0 = no timeout")
             appendLine("timeout = ${opts.timeoutSec}")
             appendLine("quiet = ${opts.quiet}")
         }
@@ -464,11 +471,11 @@ private fun parseArgs(args: Array<String>): CliOptions {
             }
 
             arg == "-j" || arg == "--threads" -> {
-                opts.maxThreads = requireNext(arg).toIntOrNull()?.coerceIn(1, 64) ?: 10
+                opts.maxThreads = requireNext(arg).toIntOrNull()?.coerceIn(1, MAX_THREADS_LIMIT) ?: DEFAULT_MAX_THREADS
                 opts.threadsExplicitlySet = true
             }
             arg.startsWith("--threads=") -> {
-                opts.maxThreads = arg.substringAfter("=").toIntOrNull()?.coerceIn(1, 64) ?: 10
+                opts.maxThreads = arg.substringAfter("=").toIntOrNull()?.coerceIn(1, MAX_THREADS_LIMIT) ?: DEFAULT_MAX_THREADS
                 opts.threadsExplicitlySet = true
             }
 
@@ -481,11 +488,11 @@ private fun parseArgs(args: Array<String>): CliOptions {
                 opts.mergeFilesExplicitlySet = true
             }
 
-            arg == "--timeout" -> {
-                opts.timeoutSec = requireNext(arg).toIntOrNull() ?: 60
+            arg == "--timeout" || arg == "--restart-delay" -> {
+                opts.timeoutSec = requireNext(arg).toIntOrNull() ?: DEFAULT_STALL_TIMEOUT_SEC
             }
-            arg.startsWith("--timeout=") -> {
-                opts.timeoutSec = arg.substringAfter("=").toIntOrNull() ?: 60
+            arg.startsWith("--timeout=") || arg.startsWith("--restart-delay=") -> {
+                opts.timeoutSec = arg.substringAfter("=").toIntOrNull() ?: DEFAULT_STALL_TIMEOUT_SEC
             }
 
             arg == "--download-offline-voices" || arg == "--download-offline-voice" -> {
@@ -616,7 +623,9 @@ private fun printHelp() {
           --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +0)
           --pitch <hz>                     Speech pitch adjustment from -50 to +50 (default: +0)
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
-          -j, --threads <n>                Maximum parallel synthesis workers (default: 10)
+          -j, --threads <n>                Maximum parallel synthesis streams (default: 50, same as the app)
+          --timeout, --restart-delay <sec>  Restart a stream when it stays silent for <sec> seconds (default: 10, same as the app; 0 = no timeout)
+                                          Network errors and timeouts are reported on stderr
           --merge-files <n>                Parts per merged output file when --chapters is off (default: 0 = whole book in 1)
           -c, --config <file>              Load configuration file (default: ~/.config/hedgehog/config.ini)
           --save-config [file]             Generate/save configuration file from the passed CLI arguments
@@ -1221,14 +1230,8 @@ private suspend fun runConversion(opts: CliOptions): Int {
         return 1
     }
 
-    val cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
-    val effectiveThreads = if (opts.offlineMode && !opts.threadsExplicitlySet) {
-        cpuCores
-    } else if (opts.offlineMode) {
-        opts.maxThreads.coerceIn(1, cpuCores)
-    } else {
-        opts.maxThreads
-    }
+    /* Same as the app: the thread count is passed through and OfflineTtsEngine bounds it to CPU cores. */
+    val effectiveThreads = opts.maxThreads
     OfflineTtsEngine.setMaxJobs(effectiveThreads)
 
     val soundGlavaBytes = if (!opts.chapterMp3Path.isNullOrBlank()) {
@@ -1397,7 +1400,11 @@ private suspend fun runConversion(opts: CliOptions): Int {
             opts.lowBitrate -> "MP3 (48 kbps)"
             else -> "MP3 (96 kbps)"
         }
-        System.err.println("Hedgehog CLI: $total parts • $totalChunksCount chapters/chunks • Mode: $modeLabel • Format: $fmtLabel")
+        val timeoutLabel = if (opts.timeoutSec <= 0) "default" else opts.timeoutSec.toString()
+        System.err.println(
+            "Hedgehog CLI: $total parts • $totalChunksCount chapters/chunks • Mode: $modeLabel • Format: $fmtLabel • " +
+                "Streams: $timeoutLabel s idle timeout, 4 s restart delay"
+        )
     }
 
     val savedPartsAtomic = AtomicInteger(0)
@@ -1410,7 +1417,30 @@ private suspend fun runConversion(opts: CliOptions): Int {
     val failedAtomic = AtomicInteger(0)
     val progressPrintLock = Any()
     val outputFiles = mutableListOf<File>()
+    val networkDownReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /* Keeps the progress line readable while reporting stream diagnostics on stderr. */
+    fun cliDiagnostic(message: String) {
+        synchronized(progressPrintLock) {
+            System.err.print("\r")
+            System.err.println("Warning: $message")
+            System.err.flush()
+        }
+    }
+
     val timeoutMsec = if (opts.timeoutSec <= 0) Long.MAX_VALUE else opts.timeoutSec * 1000L
+
+    /* Pre-flight the endpoint once so the first workers reuse the cached probe result. */
+    if (!opts.offlineMode && !SocketEdgeTtsWorker.isOnlineReachable(forceRefresh = true)) {
+        networkDownReported.set(true)
+        if (offlineInstalled != null && opts.allowOfflineFallback) {
+            cliDiagnostic(
+                "speech.platform.bing.com:443 is unreachable, using offline voice '${offlineInstalled.folderName}'"
+            )
+        } else {
+            cliDiagnostic("speech.platform.bing.com:443 is unreachable, retrying online synthesis")
+        }
+    }
     val startTimeNanos = System.nanoTime()
     val preCompletedParts = HashSet<Int>()
 
@@ -1584,7 +1614,31 @@ private suspend fun runConversion(opts: CliOptions): Int {
                             File(bookWorkDir, rawPartFileName(spec.glava, spec.fileNum, staleExt)).delete()
                         }
 
-                        if (!opts.offlineMode) {
+                        /*
+                         * Same gate as the app: only go online when the endpoint is actually reachable.
+                         * Without an offline voice we still try, so no fallback path is lost.
+                         */
+                        var shouldUseOnline = !opts.offlineMode
+                        if (shouldUseOnline) {
+                            val reachable = SocketEdgeTtsWorker.isOnlineReachable()
+                            if (!reachable) {
+                                if (hasOfflineFallback) {
+                                    shouldUseOnline = false
+                                    if (networkDownReported.compareAndSet(false, true)) {
+                                        cliDiagnostic(
+                                            "speech.platform.bing.com:443 is unreachable, using offline voice " +
+                                                "'${offlineInstalled?.folderName}'"
+                                        )
+                                    }
+                                } else if (networkDownReported.compareAndSet(false, true)) {
+                                    cliDiagnostic("speech.platform.bing.com:443 is unreachable, retrying online synthesis")
+                                }
+                            } else {
+                                networkDownReported.set(false)
+                            }
+                        }
+
+                        if (shouldUseOnline) {
                             partData = SocketEdgeTtsWorker.synthesizePart(
                                 voice = resolvedOnlineVoice,
                                 pitch = spec.pitch,
@@ -1596,16 +1650,18 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                 fallbackToOfflineOnError = hasOfflineFallback,
                                 isPaused = { false },
                                 isCancelled = { interruptedByUser || !isActive || failedAtomic.get() > 0 },
-                                onStatusUpdate = {}
+                                onStatusUpdate = {},
+                                onDiagnostic = { msg -> cliDiagnostic("part ${spec.index + 1}: $msg") }
                             )
                         }
 
                         if ((partData == null || partData.isEmpty()) && isActive && !interruptedByUser && failedAtomic.get() == 0) {
                             if (offlineInstalled != null && (opts.offlineMode || opts.allowOfflineFallback)) {
-                                if (!opts.offlineMode && !opts.quiet && !interruptedByUser) {
-                                    synchronized(progressPrintLock) {
-                                        System.err.println("\nWarning: Online synthesis failed for part ${spec.index + 1}, falling back to offline voice '${offlineInstalled.folderName}'.")
-                                    }
+                                if (!opts.offlineMode && !interruptedByUser) {
+                                    cliDiagnostic(
+                                        "part ${spec.index + 1}: online synthesis failed, " +
+                                            "falling back to offline voice '${offlineInstalled.folderName}'"
+                                    )
                                 }
                                 partData = OfflineTtsEngine.synthesizePart(
                                     voiceDir = offlineInstalled.dir,
