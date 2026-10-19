@@ -131,15 +131,16 @@ object OfflineTtsEngine {
         onProcessingStart: () -> Unit = {}
     ): ByteArray {
         return try {
-            val pcmBytes = synthesizePcmBlocking(
+            if (shouldAbort()) return ByteArray(0)
+            onProcessingStart()
+            val rawAudio = synthesizeRawBlocking(
                 voiceDir = voiceDir,
                 text = text,
                 rate = rate,
                 pitch = pitch,
-                shouldAbort = shouldAbort,
-                onProcessingStart = onProcessingStart
+                shouldAbort = shouldAbort
             )
-            if (pcmBytes.isEmpty() || shouldAbort()) ByteArray(0) else buildWav(pcmBytes)
+            if (rawAudio.isEmpty() || shouldAbort()) ByteArray(0) else normalizeToWav(rawAudio)
         } catch (t: Throwable) {
             System.err.println("$TAG: synthesizeWavBlocking failed: ${t.message}")
             ByteArray(0)
@@ -157,7 +158,14 @@ object OfflineTtsEngine {
         return try {
             if (shouldAbort()) return ByteArray(0)
             onProcessingStart()
-            pcmParallel(voiceDir, text, rate, pitch, shouldAbort)
+            val rawAudio = synthesizeRawBlocking(
+                voiceDir = voiceDir,
+                text = text,
+                rate = rate,
+                pitch = pitch,
+                shouldAbort = shouldAbort
+            )
+            if (rawAudio.isEmpty() || shouldAbort()) ByteArray(0) else stripRiff(rawAudio)
         } catch (t: Throwable) {
             if (!shouldAbort()) {
                 System.err.println("$TAG: synthesizePcmBlocking failed: ${t.message}")
@@ -249,7 +257,7 @@ object OfflineTtsEngine {
         }
     }
 
-    private fun pcmParallel(
+    private fun synthesizeRawBlocking(
         voiceDir: String,
         text: String,
         rate: String,
@@ -276,7 +284,7 @@ object OfflineTtsEngine {
                         val audioData = result.audioData
                         if (audioData != null && audioData.isNotEmpty()) {
                             sessionHealthy = true
-                            return stripRiff(audioData)
+                            return audioData
                         }
                     } else if (!shouldAbort()) {
                         val details = SpeechSynthesisCancellationDetails.fromResult(result)
@@ -355,53 +363,265 @@ object OfflineTtsEngine {
             "$escaped</prosody></voice></speak>"
     }
 
-    fun stripRiff(riff: ByteArray): ByteArray {
-        if (riff.size < 44) return riff
-        val buffer = ByteBuffer.wrap(riff).order(ByteOrder.LITTLE_ENDIAN)
+    private fun findPcmSlice(riff: ByteArray, validLimit: Int = riff.size): Pair<Int, Int> {
+        if (validLimit < 44) return 0 to validLimit.coerceAtLeast(0)
+        if (riff[0] != 'R'.code.toByte() ||
+            riff[1] != 'I'.code.toByte() ||
+            riff[2] != 'F'.code.toByte() ||
+            riff[3] != 'F'.code.toByte()
+        ) {
+            return 0 to validLimit
+        }
+        val buffer = ByteBuffer.wrap(riff, 0, validLimit).order(ByteOrder.LITTLE_ENDIAN)
         var i = 12
         while (true) {
             val headerEnd = i + 8
-            if (headerEnd > riff.size) return riff
+            if (headerEnd > validLimit) return 0 to validLimit
             val chunkSize = buffer.getInt(i + 4)
             if (buffer.getInt(i) == DATA_CHUNK) {
-                return riff.copyOfRange(headerEnd, minOf(headerEnd + chunkSize, riff.size))
+                val safeChunkSize = if (chunkSize > 0) chunkSize else (riff.size - headerEnd)
+                val end = minOf(headerEnd.toLong() + safeChunkSize.toLong(), riff.size.toLong()).toInt()
+                return headerEnd to (end - headerEnd).coerceAtLeast(0)
             }
-            i += chunkSize + 8 + (chunkSize and 1)
+            if (chunkSize < 0) return 44 to (riff.size - 44).coerceAtLeast(0)
+            val next = i.toLong() + chunkSize.toLong() + 8L + (chunkSize.toLong() and 1L)
+            if (next <= i || next > validLimit) return 44 to (riff.size - 44).coerceAtLeast(0)
+            i = next.toInt()
         }
     }
 
+    private fun writeWavHeaderInPlace(target: ByteArray, pcmSize: Int) {
+        ByteBuffer.wrap(target, 0, 44).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put('R'.code.toByte()).put('I'.code.toByte()).put('F'.code.toByte()).put('F'.code.toByte())
+            putInt(pcmSize + 36)
+            put('W'.code.toByte()).put('A'.code.toByte()).put('V'.code.toByte()).put('E'.code.toByte())
+            put('f'.code.toByte()).put('m'.code.toByte()).put('t'.code.toByte()).put(' '.code.toByte())
+            putInt(16)
+            putShort(1).putShort(1)
+            putInt(SAMPLE_RATE).putInt(48000)
+            putShort(2).putShort(16)
+            put('d'.code.toByte()).put('a'.code.toByte()).put('t'.code.toByte()).put('a'.code.toByte())
+            putInt(pcmSize)
+        }
+    }
+
+    private fun normalizeToWav(rawAudio: ByteArray): ByteArray {
+        val (offset, len) = findPcmSlice(rawAudio)
+        if (len <= 0) return ByteArray(0)
+        // Fast path: standard 44-byte WAV header at the beginning of rawAudio — patch in place with 0 copies
+        if (offset == 44 && offset + len == rawAudio.size) {
+            writeWavHeaderInPlace(rawAudio, len)
+            return rawAudio
+        }
+        val out = ByteArray(44 + len)
+        writeWavHeaderInPlace(out, len)
+        System.arraycopy(rawAudio, offset, out, 44, len)
+        return out
+    }
+
+    fun stripRiff(riff: ByteArray): ByteArray {
+        val (offset, len) = findPcmSlice(riff)
+        if (offset == 0 && len == riff.size) return riff
+        return riff.copyOfRange(offset, offset + len)
+    }
+
     fun buildWav(pcm: ByteArray): ByteArray {
-        val buffer = ByteBuffer.allocate(pcm.size + 44).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.put("RIFF".toByteArray(Charsets.US_ASCII)).putInt(pcm.size + 36)
-        buffer.put("WAVEfmt ".toByteArray(Charsets.US_ASCII)).putInt(16)
-        buffer.putShort(1).putShort(1)
-        buffer.putInt(SAMPLE_RATE).putInt(48000)
-        buffer.putShort(2).putShort(16)
-        buffer.put("data".toByteArray(Charsets.US_ASCII)).putInt(pcm.size).put(pcm)
-        return buffer.array()
+        val out = ByteArray(pcm.size + 44)
+        writeWavHeaderInPlace(out, pcm.size)
+        System.arraycopy(pcm, 0, out, 44, pcm.size)
+        return out
+    }
+
+    private data class WavFileSlice(
+        val file: File,
+        val pcmOffset: Int,
+        val pcmLength: Int
+    )
+
+    private fun inspectWavFileSlice(file: File): WavFileSlice? {
+        val fileLen = file.length()
+        if (fileLen <= 0L || fileLen > Int.MAX_VALUE) return null
+        val headerProbe = ByteArray(minOf(512L, fileLen).toInt())
+        var readTotal = 0
+        FileInputStream(file).use { fis ->
+            while (readTotal < headerProbe.size) {
+                val r = fis.read(headerProbe, readTotal, headerProbe.size - readTotal)
+                if (r <= 0) break
+                readTotal += r
+            }
+        }
+        if (readTotal <= 0) return null
+        if (readTotal >= 44 &&
+            headerProbe[0] == 'R'.code.toByte() &&
+            headerProbe[1] == 'I'.code.toByte() &&
+            headerProbe[2] == 'F'.code.toByte() &&
+            headerProbe[3] == 'F'.code.toByte()
+        ) {
+            val buffer = ByteBuffer.wrap(headerProbe, 0, readTotal).order(ByteOrder.LITTLE_ENDIAN)
+            var i = 12
+            while (i + 8 <= readTotal) {
+                val chunkId = buffer.getInt(i)
+                val chunkSize = buffer.getInt(i + 4)
+                val dataStart = i + 8
+                if (chunkId == DATA_CHUNK) {
+                    val avail = (fileLen.toInt() - dataStart).coerceAtLeast(0)
+                    val pcmLen = if (chunkSize in 1..avail) chunkSize else avail
+                    return if (pcmLen > 0) WavFileSlice(file, dataStart, pcmLen) else null
+                }
+                if (chunkSize < 0) break
+                val step = chunkSize.toLong() + 8L + (chunkSize.toLong() and 1L)
+                if (step <= 0L || i.toLong() + step > readTotal.toLong()) break
+                i += step.toInt()
+            }
+            val fallbackLen = (fileLen.toInt() - 44).coerceAtLeast(0)
+            return if (fallbackLen > 0) WavFileSlice(file, 44, fallbackLen) else null
+        }
+        return WavFileSlice(file, 0, fileLen.toInt())
     }
 
     fun mergeWavFiles(wavFiles: List<File>, deleteAfterRead: Boolean = false): ByteArray {
         if (wavFiles.isEmpty()) return ByteArray(0)
-        val pcmOut = ByteArrayOutputStream()
+        val slices = ArrayList<WavFileSlice>(wavFiles.size)
+        var totalPcmBytes = 0L
         for (file in wavFiles) {
             if (file.exists()) {
                 try {
-                    val raw = file.readBytes()
-                    if (raw.isNotEmpty()) {
-                        val pcm = stripRiff(raw)
-                        if (pcm.isNotEmpty()) {
-                            pcmOut.write(pcm)
+                    val slice = inspectWavFileSlice(file)
+                    if (slice != null && slice.pcmLength > 0) {
+                        slices.add(slice)
+                        totalPcmBytes += slice.pcmLength.toLong()
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+        if (totalPcmBytes <= 0L || totalPcmBytes + 44L > Int.MAX_VALUE) {
+            if (deleteAfterRead) {
+                for (file in wavFiles) {
+                    file.delete()
+                }
+            }
+            return ByteArray(0)
+        }
+
+        val totalPcmInt = totalPcmBytes.toInt()
+        val out = ByteArray(44 + totalPcmInt)
+        writeWavHeaderInPlace(out, totalPcmInt)
+        var writePos = 44
+
+        for (slice in slices) {
+            try {
+                FileInputStream(slice.file).use { fis ->
+                    var toSkip = slice.pcmOffset.toLong()
+                    while (toSkip > 0L) {
+                        val skipped = fis.skip(toSkip)
+                        if (skipped > 0L) {
+                            toSkip -= skipped
+                        } else {
+                            if (fis.read() < 0) break
+                            toSkip--
+                        }
+                    }
+                    var rem = slice.pcmLength
+                    while (rem > 0 && writePos < out.size) {
+                        val maxRead = minOf(rem, out.size - writePos)
+                        val r = fis.read(out, writePos, maxRead)
+                        if (r <= 0) break
+                        writePos += r
+                        rem -= r
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        if (deleteAfterRead) {
+            for (file in wavFiles) {
+                file.delete()
+            }
+        }
+
+        if (writePos <= 44) return ByteArray(0)
+        if (writePos < out.size) {
+            val actualPcm = writePos - 44
+            writeWavHeaderInPlace(out, actualPcm)
+            return out.copyOf(writePos)
+        }
+        return out
+    }
+
+    fun mergeMp3AndWavFilesToMp3(
+        partFiles: List<File>,
+        introBytes: ByteArray = ByteArray(0),
+        targetKbps: Int = 96,
+        shouldAbort: () -> Boolean = { false },
+        convertWavToMp3: (ByteArray, Int) -> ByteArray?
+    ): ByteArray {
+        if (partFiles.isEmpty()) return ByteArray(0)
+        var allMp3 = true
+        var totalMp3Bytes = introBytes.size.toLong()
+        for (f in partFiles) {
+            if (!f.exists()) continue
+            if (f.extension.equals("wav", ignoreCase = true)) {
+                allMp3 = false
+            } else {
+                totalMp3Bytes += f.length().coerceAtLeast(0L)
+            }
+        }
+        if (allMp3) {
+            if (totalMp3Bytes <= 0L || totalMp3Bytes > Int.MAX_VALUE) return ByteArray(0)
+            val out = ByteArray(totalMp3Bytes.toInt())
+            var pos = 0
+            if (introBytes.isNotEmpty()) {
+                System.arraycopy(introBytes, 0, out, 0, introBytes.size)
+                pos += introBytes.size
+            }
+            for (f in partFiles) {
+                if (shouldAbort()) return ByteArray(0)
+                if (!f.exists()) continue
+                try {
+                    FileInputStream(f).use { fis ->
+                        while (pos < out.size) {
+                            val r = fis.read(out, pos, out.size - pos)
+                            if (r <= 0) break
+                            pos += r
                         }
                     }
                 } catch (_: Exception) {
                 }
-                if (deleteAfterRead) {
-                    file.delete()
+            }
+            if (pos <= introBytes.size) return ByteArray(0)
+            return if (pos < out.size) out.copyOf(pos) else out
+        }
+
+        val estimatedCap = (totalMp3Bytes + 65536L).coerceIn(4096L, 64L * 1024L * 1024L).toInt()
+        val mergeBuffer = ByteArrayOutputStream(estimatedCap)
+        if (introBytes.isNotEmpty()) {
+            mergeBuffer.write(introBytes)
+        }
+        val copyBuf = ByteArray(16384)
+        for (f in partFiles) {
+            if (shouldAbort()) return ByteArray(0)
+            if (!f.exists()) continue
+            try {
+                if (f.extension.equals("wav", ignoreCase = true)) {
+                    val rawWav = f.readBytes()
+                    val mp3Part = convertWavToMp3(rawWav, targetKbps)
+                    if (mp3Part != null && mp3Part.isNotEmpty()) {
+                        mergeBuffer.write(mp3Part)
+                    }
+                } else {
+                    FileInputStream(f).use { fis ->
+                        while (true) {
+                            val r = fis.read(copyBuf)
+                            if (r <= 0) break
+                            mergeBuffer.write(copyBuf, 0, r)
+                        }
+                    }
                 }
+            } catch (_: Exception) {
             }
         }
-        val mergedPcm = pcmOut.toByteArray()
-        return if (mergedPcm.isEmpty()) ByteArray(0) else buildWav(mergedPcm)
+        return mergeBuffer.toByteArray()
     }
 }

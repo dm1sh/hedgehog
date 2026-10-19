@@ -21,7 +21,15 @@ data class BookAudioMetadata(
     val coverMimeType: String = "",
     val coverWidth: Int = 0,
     val coverHeight: Int = 0
-)
+) {
+    @Transient
+    @Volatile
+    internal var cachedId3ApicFrame: ByteArray? = null
+
+    @Transient
+    @Volatile
+    internal var cachedOpusPictureTag: String? = null
+}
 
 object AudioMetadataTagger {
 
@@ -195,24 +203,39 @@ object AudioMetadataTagger {
 
             val cover = bookMeta.coverBytes
             if (cover != null && cover.isNotEmpty()) {
-                val info = inspectImage(cover, bookMeta.coverMimeType)
-                writeId3ApicFrame(framesOut, cover, info.mimeType)
+                val apicFrame = bookMeta.cachedId3ApicFrame ?: synchronized(bookMeta) {
+                    bookMeta.cachedId3ApicFrame ?: run {
+                        val info = inspectImage(cover, bookMeta.coverMimeType)
+                        val apicOut = ByteArrayOutputStream(32 + cover.size)
+                        writeId3ApicFrame(apicOut, cover, info.mimeType)
+                        apicOut.toByteArray().also { bookMeta.cachedId3ApicFrame = it }
+                    }
+                }
+                framesOut.write(apicFrame)
             }
 
             val framesBytes = framesOut.toByteArray()
             if (framesBytes.isEmpty()) return mp3Bytes
 
-            val totalOut = ByteArrayOutputStream(10 + framesBytes.size + (mp3Bytes.size - audioStart))
+            val audioLen = (mp3Bytes.size - audioStart).coerceAtLeast(0)
+            val result = ByteArray(10 + framesBytes.size + audioLen)
             // ID3v2.3.0 header
-            totalOut.write(byteArrayOf('I'.code.toByte(), 'D'.code.toByte(), '3'.code.toByte(), 3, 0, 0))
+            result[0] = 'I'.code.toByte()
+            result[1] = 'D'.code.toByte()
+            result[2] = '3'.code.toByte()
+            result[3] = 3
+            result[4] = 0
+            result[5] = 0
             val tagSize = framesBytes.size
-            totalOut.write((tagSize ushr 21) and 0x7F)
-            totalOut.write((tagSize ushr 14) and 0x7F)
-            totalOut.write((tagSize ushr 7) and 0x7F)
-            totalOut.write(tagSize and 0x7F)
-            totalOut.write(framesBytes)
-            totalOut.write(mp3Bytes, audioStart, mp3Bytes.size - audioStart)
-            totalOut.toByteArray()
+            result[6] = ((tagSize ushr 21) and 0x7F).toByte()
+            result[7] = ((tagSize ushr 14) and 0x7F).toByte()
+            result[8] = ((tagSize ushr 7) and 0x7F).toByte()
+            result[9] = (tagSize and 0x7F).toByte()
+            System.arraycopy(framesBytes, 0, result, 10, framesBytes.size)
+            if (audioLen > 0) {
+                System.arraycopy(mp3Bytes, audioStart, result, 10 + framesBytes.size, audioLen)
+            }
+            result
         } catch (_: Throwable) {
             mp3Bytes
         }
@@ -381,24 +404,25 @@ object AudioMetadataTagger {
 
             val cover = bookMeta.coverBytes
             if (cover != null && cover.isNotEmpty()) {
-                val info = inspectImage(cover, bookMeta.coverMimeType)
-                val w = if (bookMeta.coverWidth > 0) bookMeta.coverWidth else info.width
-                val h = if (bookMeta.coverHeight > 0) bookMeta.coverHeight else info.height
-                val picBase64 = buildFlacPictureBlockBase64(
-                    coverBytes = cover,
-                    mimeType = info.mimeType,
-                    width = w,
-                    height = h
-                )
-                comments.add("METADATA_BLOCK_PICTURE=$picBase64")
+                val pictureTag = bookMeta.cachedOpusPictureTag ?: synchronized(bookMeta) {
+                    bookMeta.cachedOpusPictureTag ?: run {
+                        val info = inspectImage(cover, bookMeta.coverMimeType)
+                        val w = if (bookMeta.coverWidth > 0) bookMeta.coverWidth else info.width
+                        val h = if (bookMeta.coverHeight > 0) bookMeta.coverHeight else info.height
+                        val picBase64 = buildFlacPictureBlockBase64(
+                            coverBytes = cover,
+                            mimeType = info.mimeType,
+                            width = w,
+                            height = h
+                        )
+                        "METADATA_BLOCK_PICTURE=$picBase64".also { bookMeta.cachedOpusPictureTag = it }
+                    }
+                }
+                comments.add(pictureTag)
             }
 
             val opusTagsPacket = buildOpusTagsPacket("Hedgehog TTS", comments)
             val serialNumber = headPage.serialNumber
-
-            val out = ByteArrayOutputStream(opusBytes.size + opusTagsPacket.size)
-            // Write Page 0 (OpusHead) untouched
-            out.write(opusBytes, headPage.offset, headPage.length)
 
             // Paginate OpusTags packet into 1 or more Ogg pages starting at sequence number 1
             var seqNum = 1
@@ -408,22 +432,40 @@ object AudioMetadataTagger {
                 startSeqNum = seqNum,
                 endGranulePosition = 0L
             )
+            var tagsPagesLen = 0
             for (tp in tagsPages) {
-                out.write(tp)
+                tagsPagesLen += tp.size
                 seqNum++
             }
 
-            // Write remaining audio pages with updated sequence numbers and recomputed Ogg CRC32
+            var audioTailLen = 0
+            for (idx in audioStartPageIdx until pages.size) {
+                audioTailLen += pages[idx].length
+            }
+
+            val result = ByteArray(headPage.length + tagsPagesLen + audioTailLen)
+            var writePos = 0
+
+            // Write Page 0 (OpusHead) untouched
+            System.arraycopy(opusBytes, headPage.offset, result, writePos, headPage.length)
+            writePos += headPage.length
+
+            for (tp in tagsPages) {
+                System.arraycopy(tp, 0, result, writePos, tp.size)
+                writePos += tp.size
+            }
+
+            // Write remaining audio pages and update sequence numbers + Ogg CRC32 in-place
             for (idx in audioStartPageIdx until pages.size) {
                 val pg = pages[idx]
-                val pageCopy = opusBytes.copyOfRange(pg.offset, pg.offset + pg.length)
-                writeLittleEndianInt(pageCopy, 18, seqNum)
-                updateOggPageCrc(pageCopy)
-                out.write(pageCopy)
+                System.arraycopy(opusBytes, pg.offset, result, writePos, pg.length)
+                writeLittleEndianInt(result, writePos + 18, seqNum)
+                updateOggPageCrcSlice(result, writePos, pg.length)
+                writePos += pg.length
                 seqNum++
             }
 
-            out.toByteArray()
+            result
         } catch (_: Throwable) {
             opusBytes
         }
@@ -567,16 +609,21 @@ object AudioMetadataTagger {
     }
 
     private fun updateOggPageCrc(page: ByteArray) {
-        page[22] = 0
-        page[23] = 0
-        page[24] = 0
-        page[25] = 0
+        updateOggPageCrcSlice(page, 0, page.size)
+    }
+
+    private fun updateOggPageCrcSlice(data: ByteArray, offset: Int, length: Int) {
+        data[offset + 22] = 0
+        data[offset + 23] = 0
+        data[offset + 24] = 0
+        data[offset + 25] = 0
         var crc = 0
-        for (b in page) {
-            val idx = ((crc ushr 24) xor (b.toInt() and 0xFF)) and 0xFF
+        val end = offset + length
+        for (i in offset until end) {
+            val idx = ((crc ushr 24) xor (data[i].toInt() and 0xFF)) and 0xFF
             crc = (crc shl 8) xor OGG_CRC_TABLE[idx]
         }
-        writeLittleEndianInt(page, 22, crc)
+        writeLittleEndianInt(data, offset + 22, crc)
     }
 
     private fun readBigEndianInt(data: ByteArray, offset: Int): Int {
