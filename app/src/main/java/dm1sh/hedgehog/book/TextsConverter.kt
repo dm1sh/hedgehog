@@ -377,14 +377,14 @@ object TextsConverter {
                 }
                 for (bodyEl in doc.select("body")) {
                     val bodyText = fb2FormatBody(bodyEl.html())
-                    if (bodyText.isNotEmpty()) {
-                        if (result.isNotEmpty() && !result.endsWith("\n")) {
+                    if (bodyText.isNotBlank()) {
+                        if (result.isNotEmpty() && !result.endsWith("\n") && !bodyText.startsWith("\n")) {
                             result.append("\n")
                         }
                         result.append(bodyText)
                     }
                 }
-                return result.toString().trim()
+                return result.toString().trimEnd()
             } catch (_: Exception) {
             }
         }
@@ -425,14 +425,14 @@ object TextsConverter {
                 stripped.substring(bodyTagEnd + 1)
             }
             val formatted = fb2FormatBody(bodyInner)
-            if (formatted.isNotEmpty()) {
-                if (result.isNotEmpty() && !result.endsWith("\n")) {
+            if (formatted.isNotBlank()) {
+                if (result.isNotEmpty() && !result.endsWith("\n") && !formatted.startsWith("\n")) {
                     result.append("\n")
                 }
                 result.append(formatted)
             }
         }
-        return result.toString().trim()
+        return result.toString().trimEnd()
     }
 
     private fun fb2ExtractMeta(ti: String): String {
@@ -1045,6 +1045,7 @@ object TextsConverter {
         val len = content.length
         val sb = StringBuilder(len / 2 + 64)
         var i = 0
+        var titleDepth = 0
         while (i < len) {
             val c = content[i]
             if (c == '<') {
@@ -1053,6 +1054,7 @@ object TextsConverter {
                 val tagContent = content.substring(i + 1, closeIdx).trim()
                 if (tagContent.isNotEmpty()) {
                     val isClosing = tagContent[0] == '/'
+                    val isSelfClosing = !isClosing && tagContent.endsWith("/")
                     val rawName = if (isClosing) tagContent.substring(1).trimStart() else tagContent
                     val tagName = extractTagNameLower(rawName)
                     if (!isClosing) {
@@ -1062,14 +1064,38 @@ object TextsConverter {
                                 i = if (endBin != -1) endBin + 9 else closeIdx + 1
                                 continue
                             }
-                            "empty-line" -> appendNormalizedChar(sb, '\n', maxNewlines = 4)
+                            "empty-line" -> {
+                                if (titleDepth > 0) {
+                                    appendNormalizedChar(sb, ' ', maxNewlines = 4)
+                                } else {
+                                    appendNormalizedChar(sb, '\n', maxNewlines = 4)
+                                }
+                            }
                             "title" -> {
-                                repeat(4) { appendNormalizedChar(sb, '\n', maxNewlines = 4) }
+                                if (!isSelfClosing) {
+                                    if (titleDepth == 0) {
+                                        if (sb.isEmpty()) {
+                                            repeat(3) { sb.append('\n') }
+                                        } else {
+                                            repeat(4) { appendNormalizedChar(sb, '\n', maxNewlines = 4) }
+                                        }
+                                    }
+                                    titleDepth++
+                                }
                             }
                         }
                     } else {
-                        if (tagName in FB2_LINE_BREAK_END_TAGS) {
-                            appendNormalizedChar(sb, '\n', maxNewlines = 4)
+                        if (tagName == "title") {
+                            if (titleDepth > 0) titleDepth--
+                            if (titleDepth == 0) {
+                                appendNormalizedChar(sb, '\n', maxNewlines = 4)
+                            }
+                        } else if (tagName in FB2_LINE_BREAK_END_TAGS) {
+                            if (titleDepth > 0) {
+                                appendNormalizedChar(sb, ' ', maxNewlines = 4)
+                            } else {
+                                appendNormalizedChar(sb, '\n', maxNewlines = 4)
+                            }
                         }
                     }
                 }
@@ -1098,7 +1124,7 @@ object TextsConverter {
                 i++
             }
         }
-        return sb.toString().trim()
+        return sb.toString().trimEnd()
     }
 
     private fun extractTagNameLower(rawTag: String): String {

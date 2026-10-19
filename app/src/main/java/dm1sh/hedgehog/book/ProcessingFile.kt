@@ -287,18 +287,16 @@ class ProcessingFile(
                 line.isNotEmpty() &&
                 sentences[i - 1].trim().isEmpty() &&
                 sentences[i - 2].trim().isEmpty() &&
-                sentences[i - 3].trim().isEmpty() &&
-                containsLetterOrDigit(currentText)
+                sentences[i - 3].trim().isEmpty()
             ) {
                 currentText.append("\n")
                 val str = currentText.toString()
-                if (str.trim().isNotEmpty()) {
+                if (str.trim().isNotEmpty() && containsLetterOrDigit(str)) {
                     outSentences.add(str)
                     outGlavs.add(glavaLabel(glavaNum, glavText))
                     currentText.setLength(0)
                 }
-                val sliceEnd = minOf(i + 3, sentences.size)
-                glavText = getGlavText(sentences.subList(i, sliceEnd).joinToString(" "))
+                glavText = getGlavText(line)
                 glavaNum++
             }
 
