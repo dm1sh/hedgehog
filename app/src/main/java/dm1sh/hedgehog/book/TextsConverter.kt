@@ -66,10 +66,19 @@ object TextsConverter {
         "amp" to "&"
     )
 
-    fun ansiToUtf8(bytes: ByteArray): String {
-        val sb = StringBuilder(bytes.size)
-        for (b in bytes) {
-            val unsigned = b.toInt() and 0xFF
+    fun readTextWithFallback(bytes: ByteArray, length: Int = bytes.size): String {
+        val safeLen = length.coerceIn(0, bytes.size)
+        if (!isValidUtf8(bytes, safeLen)) {
+            return ansiToUtf8(bytes, safeLen)
+        }
+        return String(bytes, 0, safeLen, Charsets.UTF_8)
+    }
+
+    fun ansiToUtf8(bytes: ByteArray, length: Int = bytes.size): String {
+        val safeLen = length.coerceIn(0, bytes.size)
+        val sb = StringBuilder(safeLen)
+        for (idx in 0 until safeLen) {
+            val unsigned = bytes[idx].toInt() and 0xFF
             if (unsigned < 128) {
                 sb.append(unsigned.toChar())
             } else {
@@ -79,16 +88,8 @@ object TextsConverter {
         return sb.toString()
     }
 
-    fun readTextWithFallback(bytes: ByteArray): String {
-        if (!isValidUtf8(bytes)) {
-            return ansiToUtf8(bytes)
-        }
-        return String(bytes, Charsets.UTF_8)
-    }
-
-    private fun isValidUtf8(bytes: ByteArray): Boolean {
+    private fun isValidUtf8(bytes: ByteArray, len: Int = bytes.size): Boolean {
         var i = 0
-        val len = bytes.size
         while (i < len) {
             val b0 = bytes[i].toInt() and 0xFF
             if (b0 < 0x80) {
@@ -115,6 +116,167 @@ object TextsConverter {
             i += extra + 1
         }
         return true
+    }
+
+    data class LoadedBookResult(
+        val bookName: String,
+        val metadata: BookAudioMetadata,
+        val text: String,
+        val isFb2: Boolean = true
+    )
+
+    private fun findLastAsciiTagInBytes(bytes: ByteArray, tagLowerAscii: String): Int {
+        val tLen = tagLowerAscii.length
+        if (bytes.size < tLen) return -1
+        for (i in bytes.size - tLen downTo 0) {
+            var match = true
+            for (k in 0 until tLen) {
+                val b = bytes[i + k].toInt() and 0xFF
+                val lower = if (b in 'A'.code..'Z'.code) b + 32 else b
+                if (lower != tagLowerAscii[k].code) {
+                    match = false
+                    break
+                }
+            }
+            if (match) return i
+        }
+        return -1
+    }
+
+    private fun findAsciiTagForwardInBytes(bytes: ByteArray, startPos: Int, tagLowerAscii: String): Int {
+        val tLen = tagLowerAscii.length
+        val limit = bytes.size - tLen
+        if (startPos > limit) return -1
+        for (i in startPos.coerceAtLeast(0)..limit) {
+            var match = true
+            for (k in 0 until tLen) {
+                val b = bytes[i + k].toInt() and 0xFF
+                val lower = if (b in 'A'.code..'Z'.code) b + 32 else b
+                if (lower != tagLowerAscii[k].code) {
+                    match = false
+                    break
+                }
+            }
+            if (match) return i
+        }
+        return -1
+    }
+
+    private fun extractFb2CoverBinaryFromBytes(
+        bytes: ByteArray,
+        startOffset: Int,
+        targetId: String
+    ): CoverBinaryResult {
+        var searchPos = startOffset.coerceAtLeast(0)
+        val cleanTarget = targetId.removePrefix("#").trim()
+        var fallbackRange: IntRange? = null
+        var fallbackMime = ""
+
+        while (searchPos < bytes.size) {
+            val binOpen = findAsciiTagForwardInBytes(bytes, searchPos, "<binary")
+            if (binOpen == -1) break
+            var tagClose = -1
+            val maxAttrEnd = minOf(bytes.size, binOpen + 512)
+            for (k in (binOpen + 7) until maxAttrEnd) {
+                if (bytes[k] == '>'.code.toByte()) {
+                    tagClose = k
+                    break
+                }
+            }
+            if (tagClose == -1) break
+            val binEnd = findAsciiTagForwardInBytes(bytes, tagClose + 1, "</binary>")
+            if (binEnd == -1) break
+
+            val attrs = String(bytes, binOpen + 7, tagClose - (binOpen + 7), Charsets.ISO_8859_1)
+            val idVal = Regex("(?i)\\bid\\s*=\\s*[\"']#?([^\"']+)[\"']")
+                .find(attrs)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+            val ctVal = Regex("(?i)\\bcontent-type\\s*=\\s*[\"']([^\"']+)[\"']")
+                .find(attrs)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+
+            val matchesTarget = cleanTarget.isNotEmpty() && idVal.equals(cleanTarget, ignoreCase = true)
+            if (matchesTarget) {
+                val base64Ascii = String(bytes, tagClose + 1, binEnd - (tagClose + 1), Charsets.US_ASCII)
+                val decoded = decodeBase64Quietly(base64Ascii)
+                if (decoded != null && decoded.isNotEmpty()) {
+                    val info = AudioMetadataTagger.inspectImage(decoded, ctVal)
+                    return CoverBinaryResult(decoded, info.mimeType, info.width, info.height)
+                }
+            } else if (fallbackRange == null &&
+                (idVal.contains("cover", ignoreCase = true) || (cleanTarget.isEmpty() && ctVal.startsWith("image/", ignoreCase = true)))
+            ) {
+                fallbackRange = (tagClose + 1) until binEnd
+                fallbackMime = ctVal
+            }
+
+            searchPos = binEnd + 9
+        }
+
+        if (fallbackRange != null) {
+            val len = fallbackRange.last - fallbackRange.first + 1
+            if (len > 0) {
+                val base64Ascii = String(bytes, fallbackRange.first, len, Charsets.US_ASCII)
+                val decoded = decodeBase64Quietly(base64Ascii)
+                if (decoded != null && decoded.isNotEmpty()) {
+                    val info = AudioMetadataTagger.inspectImage(decoded, fallbackMime)
+                    return CoverBinaryResult(decoded, info.mimeType, info.width, info.height)
+                }
+            }
+        }
+        return CoverBinaryResult(null, "", 0, 0)
+    }
+
+    /**
+     * Loads an FB2 (or XML) byte array without decoding trailing <binary> Base64 blocks into a UTF-16 String.
+     */
+    fun loadFb2OrXmlFromBytes(
+        bytes: ByteArray,
+        fallbackName: String,
+        forceFb2: Boolean,
+        inlineNotes: Boolean = false,
+        embedMetadata: Boolean = true
+    ): LoadedBookResult {
+        val lastBodyClose = findLastAsciiTagInBytes(bytes, "</body>")
+        val bodyEndOffset = if (lastBodyClose != -1) lastBodyClose + 7 else bytes.size
+        val bodyXml = if (lastBodyClose != -1 && bodyEndOffset < bytes.size) {
+            readTextWithFallback(bytes, bodyEndOffset) + "</FictionBook>"
+        } else {
+            readTextWithFallback(bytes, bytes.size)
+        }
+        val isFb2Doc = forceFb2 || bodyXml.contains("<FictionBook", ignoreCase = true)
+        if (!isFb2Doc) {
+            return LoadedBookResult(
+                bookName = fallbackName,
+                metadata = BookAudioMetadata(title = fallbackName),
+                text = bodyXml,
+                isFb2 = false
+            )
+        }
+        val bookName = extractFb2BookName(bodyXml, fallbackName)
+        val baseMeta = extractFb2Metadata(bodyXml, fallbackName, extractCoverFromXml = false)
+        val meta = if (embedMetadata) {
+            val coverHrefId = extractFb2CoverHrefId(bodyXml)
+            val coverSearchStart = if (lastBodyClose != -1) bodyEndOffset else 0
+            val (coverBytes, coverMime, coverW, coverH) = extractFb2CoverBinaryFromBytes(
+                bytes = bytes,
+                startOffset = coverSearchStart,
+                targetId = coverHrefId
+            )
+            baseMeta.copy(
+                coverBytes = coverBytes,
+                coverMimeType = coverMime,
+                coverWidth = coverW,
+                coverHeight = coverH
+            )
+        } else {
+            baseMeta
+        }
+        val text = convertFb2ToTxt(bodyXml, inlineNotes = inlineNotes)
+        return LoadedBookResult(
+            bookName = bookName,
+            metadata = meta,
+            text = text,
+            isFb2 = true
+        )
     }
 
     /**
@@ -371,7 +533,23 @@ object TextsConverter {
         return fallbackName
     }
 
-    fun extractFb2Metadata(fb2String: String, fallbackName: String): BookAudioMetadata {
+    private fun extractFb2CoverHrefId(fb2String: String): String {
+        val tiStart = fb2String.indexOf("<title-info>", ignoreCase = true)
+        if (tiStart == -1) return ""
+        val tiEnd = fb2String.indexOf("</title-info>", tiStart, ignoreCase = true)
+        if (tiEnd == -1) return ""
+        val ti = fb2String.substring(tiStart + "<title-info>".length, tiEnd)
+        val cm = Regex("(?si)<coverpage>(.*?)</coverpage>").find(ti) ?: return ""
+        val hrefMatch = Regex("(?i)\\b(?:[a-z0-9_]+:)?href\\s*=\\s*[\"']#?([^\"']+)[\"']")
+            .find(cm.groupValues[1])
+        return hrefMatch?.groupValues?.getOrNull(1)?.trim().orEmpty()
+    }
+
+    fun extractFb2Metadata(
+        fb2String: String,
+        fallbackName: String,
+        extractCoverFromXml: Boolean = true
+    ): BookAudioMetadata {
         return try {
             var title = ""
             var author = ""
@@ -467,7 +645,11 @@ object TextsConverter {
                 }
             }
 
-            val (coverBytes, coverMime, coverW, coverH) = extractFb2CoverBinary(fb2String, coverHrefId)
+            val (coverBytes, coverMime, coverW, coverH) = if (extractCoverFromXml) {
+                extractFb2CoverBinary(fb2String, coverHrefId)
+            } else {
+                CoverBinaryResult(null, "", 0, 0)
+            }
             BookAudioMetadata(
                 title = title.ifBlank { fallbackName },
                 author = author,
@@ -956,6 +1138,36 @@ object TextsConverter {
         }
     }
 
+    /**
+     * Opens an EPUB archive once and extracts its display name, metadata/cover, and converted text.
+     */
+    fun loadEpubBook(
+        epubPath: String,
+        fallbackName: String,
+        inlineNotes: Boolean = false,
+        embedMetadata: Boolean = true
+    ): LoadedBookResult {
+        val meta = if (embedMetadata) {
+            extractEpubMetadata(epubPath, fallbackName)
+        } else {
+            val name = extractEpubBookName(epubPath, fallbackName)
+            BookAudioMetadata(title = name)
+        }
+        val combinedName = when {
+            meta.author.isNotBlank() && meta.title.isNotBlank() && meta.title != fallbackName ->
+                sanitizeBookDisplayName("${meta.author} - ${meta.title}").ifEmpty { fallbackName }
+            meta.title.isNotBlank() -> sanitizeBookDisplayName(meta.title).ifEmpty { fallbackName }
+            else -> extractEpubBookName(epubPath, fallbackName)
+        }
+        val text = convertEpubToTxt(epubPath, inlineNotes = inlineNotes)
+        return LoadedBookResult(
+            bookName = combinedName,
+            metadata = meta,
+            text = text,
+            isFb2 = false
+        )
+    }
+
     fun convertEpubToTxt(epubPath: String, inlineNotes: Boolean = false): String {
         val textContent = StringBuilder()
         try {
@@ -1010,7 +1222,7 @@ object TextsConverter {
 
         fun soupFor(docName: String): Document? {
             if (!parsedCache.containsKey(docName)) {
-                val content = files[docName]
+                val content = files.remove(docName)
                 val doc = if (content != null) Jsoup.parse(content, "", Parser.htmlParser()) else null
                 parsedCache[docName] = doc
                 if (doc != null) {
@@ -1091,10 +1303,14 @@ object TextsConverter {
                 container?.remove()
             }
         }
+        idIndexCache.clear()
+        files.clear()
 
         val textContent = StringBuilder()
         for (docName in docs) {
-            val soup = soupFor(docName) ?: continue
+            val soup = soupFor(docName)
+            parsedCache.remove(docName)
+            if (soup == null) continue
             val page = domDocumentToText(soup)
             if (page.isNotEmpty()) {
                 if (textContent.isNotEmpty()) textContent.append("\n")
@@ -1495,10 +1711,14 @@ object TextsConverter {
                         }
                         lower.endsWith("fb2") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                            val fb2Text = readTextWithFallback(bytes)
-                            val bookName = extractFb2BookName(fb2Text, saveName)
-                            val meta = extractFb2Metadata(fb2Text, saveName)
-                            onTextEntry(bookName, convertFb2ToTxt(fb2Text, inlineNotes = inlineNotes), "", "", "", meta)
+                            val loaded = loadFb2OrXmlFromBytes(
+                                bytes = bytes,
+                                fallbackName = saveName,
+                                forceFb2 = true,
+                                inlineNotes = inlineNotes,
+                                embedMetadata = true
+                            )
+                            onTextEntry(loaded.bookName, loaded.text, "", "", "", loaded.metadata)
                         }
                         lower.endsWith(".csv") -> {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }

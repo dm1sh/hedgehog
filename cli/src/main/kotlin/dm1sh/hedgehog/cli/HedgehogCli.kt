@@ -967,15 +967,14 @@ private fun loadBooksIntoProcessingFile(
                     appendEntry(baseName, text, BookAudioMetadata(title = baseName))
                 }
                 "fb2", "xml" -> {
-                    val raw = TextsConverter.readTextWithFallback(file.readBytes())
-                    if (ext == "fb2" || raw.contains("<FictionBook", ignoreCase = true)) {
-                        val bookName = TextsConverter.extractFb2BookName(raw, baseName)
-                        val meta = TextsConverter.extractFb2Metadata(raw, baseName)
-                        val text = TextsConverter.convertFb2ToTxt(raw, inlineNotes = opts.inlineNotes)
-                        appendEntry(bookName, text, meta)
-                    } else {
-                        appendEntry(baseName, raw, BookAudioMetadata(title = baseName))
-                    }
+                    val loaded = TextsConverter.loadFb2OrXmlFromBytes(
+                        bytes = file.readBytes(),
+                        fallbackName = baseName,
+                        forceFb2 = (ext == "fb2"),
+                        inlineNotes = opts.inlineNotes,
+                        embedMetadata = opts.embedMetadata
+                    )
+                    appendEntry(loaded.bookName, loaded.text, loaded.metadata)
                 }
                 "html", "htm" -> {
                     val raw = TextsConverter.readTextWithFallback(file.readBytes())
@@ -983,10 +982,13 @@ private fun loadBooksIntoProcessingFile(
                     appendEntry(baseName, text, BookAudioMetadata(title = baseName))
                 }
                 "epub" -> {
-                    val bookName = TextsConverter.extractEpubBookName(file.absolutePath, baseName)
-                    val meta = TextsConverter.extractEpubMetadata(file.absolutePath, baseName)
-                    val text = TextsConverter.convertEpubToTxt(file.absolutePath, inlineNotes = opts.inlineNotes)
-                    appendEntry(bookName, text, meta)
+                    val loaded = TextsConverter.loadEpubBook(
+                        epubPath = file.absolutePath,
+                        fallbackName = baseName,
+                        inlineNotes = opts.inlineNotes,
+                        embedMetadata = opts.embedMetadata
+                    )
+                    appendEntry(loaded.bookName, loaded.text, loaded.metadata)
                 }
                 "zip" -> {
                     TextsConverter.extractZipEntries(

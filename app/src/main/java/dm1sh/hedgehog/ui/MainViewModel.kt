@@ -1098,30 +1098,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             appendTextEntry(baseName, text, "", "", "", BookAudioMetadata(title = baseName))
                         }
                         "fb2", "xml" -> {
-                            val raw = TextsConverter.readTextWithFallback(file.readBytes())
-                            if (ext == "fb2" || raw.contains("<FictionBook", ignoreCase = true)) {
-                                val bookName = TextsConverter.extractFb2BookName(raw, baseName)
-                                val meta = TextsConverter.extractFb2Metadata(raw, baseName)
-                                appendTextEntry(
-                                    bookName,
-                                    TextsConverter.convertFb2ToTxt(raw, inlineNotes = settings.inlineNotes),
-                                    "",
-                                    "",
-                                    "",
-                                    meta
-                                )
-                            } else {
-                                appendTextEntry(baseName, raw, "", "", "", BookAudioMetadata(title = baseName))
-                            }
+                            val loaded = TextsConverter.loadFb2OrXmlFromBytes(
+                                bytes = file.readBytes(),
+                                fallbackName = baseName,
+                                forceFb2 = (ext == "fb2"),
+                                inlineNotes = settings.inlineNotes,
+                                embedMetadata = settings.embedMetadata
+                            )
+                            appendTextEntry(
+                                loaded.bookName,
+                                loaded.text,
+                                "",
+                                "",
+                                "",
+                                loaded.metadata
+                            )
                         }
                         "epub" -> {
-                            val bookName = TextsConverter.extractEpubBookName(file.absolutePath, baseName)
-                            val meta = TextsConverter.extractEpubMetadata(file.absolutePath, baseName)
-                            val text = TextsConverter.convertEpubToTxt(
-                                file.absolutePath,
-                                inlineNotes = settings.inlineNotes
+                            val loaded = TextsConverter.loadEpubBook(
+                                epubPath = file.absolutePath,
+                                fallbackName = baseName,
+                                inlineNotes = settings.inlineNotes,
+                                embedMetadata = settings.embedMetadata
                             )
-                            appendTextEntry(bookName, text, "", "", "", meta)
+                            appendTextEntry(loaded.bookName, loaded.text, "", "", "", loaded.metadata)
                         }
                         "zip" -> {
                             TextsConverter.extractZipEntries(
@@ -1151,10 +1151,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            val extractedPlayerSentences = splitIntoPlayerSentences(
-                parts = currentBook?.allSentences.orEmpty(),
-                glavs = currentBook?.allGlavs.orEmpty()
-            )
             val computedBookKey = filesList
                 .map { p ->
                     val f = File(p)
@@ -1180,11 +1176,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (count > 0) {
                     partStatuses.addAll(java.util.Collections.nCopies(count, PartStatus.OPENED))
                 }
-                applyPlayerSentences(
-                    sentences = extractedPlayerSentences,
-                    bookKey = computedBookKey,
-                    savedState = savedPlayerState
-                )
                 statStr = "0/$count"
                 chunksStatStr = "0/$totalChunksCount"
                 statInfo = ""
@@ -1196,6 +1187,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (announceLoad) {
                     ttsSay("${bookLoadedCaption()}. $statStr")
+                }
+            }
+
+            val partsSnapshot = currentBook?.allSentences?.toList().orEmpty()
+            val glavsSnapshot = currentBook?.allGlavs?.toList().orEmpty()
+            val extractedPlayerSentences = splitIntoPlayerSentences(
+                parts = partsSnapshot,
+                glavs = glavsSnapshot
+            )
+            withContext(Dispatchers.Main) {
+                if (book === currentBook) {
+                    applyPlayerSentences(
+                        sentences = extractedPlayerSentences,
+                        bookKey = computedBookKey,
+                        savedState = savedPlayerState
+                    )
                 }
             }
         }

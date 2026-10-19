@@ -149,59 +149,46 @@ class ProcessingFile(
         var fixText = normalizeBaseCharacters(text)
 
         if (langLexx.isNotEmpty()) {
-            for (rawRule in langLexx) {
-                val rule = rawRule.trimStart('\uFEFF').trimEnd('\r')
-                if (rule.isEmpty() || rule.trimStart().startsWith("#")) continue
-                if (rule.startsWith("regex\"") && rule.contains("\"=")) {
-                    val matchArr = rule.removePrefix("regex\"").split("\"=", limit = 2)
-                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
+            val compiledRules = getOrCompileLexxRules(langLexx, lexxRegister)
+            for (rule in compiledRules) {
+                when (rule) {
+                    is CompiledLexxRule.PatternRule -> {
                         try {
-                            val r = Regex(matchArr[0])
-                            val repl = matchArr[1].removePrefix("\"").removeSuffix("\"")
-                                .replace("\\r", "\r")
-                                .replace("\\n", "\n")
-                            fixText = r.replace(fixText, repl)
+                            fixText = rule.regex.replace(fixText, rule.replacement)
                         } catch (_: Exception) {
                         }
                     }
-                } else if (rule.startsWith("\"")) {
-                    val matchArr = if (rule.contains("\"=")) {
-                        rule.removePrefix("\"").split("\"=", limit = 2)
-                    } else {
-                        rule.replace("\"", "").split("=", limit = 2)
-                    }
-                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
-                        val key = matchArr[0]
-                        val repl = matchArr[1].removePrefix("\"").removeSuffix("\"")
+                    is CompiledLexxRule.LiteralRule -> {
                         if (lexxRegister) {
-                            fixText = fixText.replace(key, repl)
-                        } else if (fixText.contains(key, ignoreCase = true)) {
-                            try {
-                                val escaped = getEscaped(key)
-                                fixText = Regex("(?i)$escaped").replace(fixText, Regex.escapeReplacement(repl))
-                            } catch (_: Exception) {
+                            if (fixText.contains(rule.key)) {
+                                fixText = fixText.replace(rule.key, rule.replacement)
+                            }
+                        } else if (fixText.contains(rule.key, ignoreCase = true)) {
+                            val r = rule.ignoreCaseRegex
+                            if (r != null) {
+                                try {
+                                    fixText = r.replace(fixText, rule.escapedReplacement)
+                                } catch (_: Exception) {
+                                }
                             }
                         }
                     }
-                } else {
-                    val matchArr = rule.split("=", limit = 2)
-                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
-                        val key = matchArr[0]
-                        val repl = matchArr[1]
+                    is CompiledLexxRule.WordRule -> {
                         if (lexxRegister) {
-                            fixText = fixText.replace(key, repl)
-                        } else if (fixText.contains(key, ignoreCase = true)) {
-                            try {
-                                val escaped = getEscaped(key)
-                                fixText = if (escaped.length == 2 && escaped[0] == '\\' && isPunctChar(escaped[1])) {
-                                    Regex("(?i)$escaped").replace(fixText, Regex.escapeReplacement(repl))
-                                } else {
-                                    val leftPrefix = if (key.first().isWhitespace()) "()" else "(^|\\s|[\\p{P}\\p{S}])"
-                                    val rightLookahead = if (key.last().isWhitespace()) "" else "(?=[\\p{P}\\p{S}]|\\s|$)"
-                                    Regex("(?i)$leftPrefix$escaped$rightLookahead")
-                                        .replace(fixText) { m -> m.groupValues[1] + repl }
+                            if (fixText.contains(rule.key)) {
+                                fixText = fixText.replace(rule.key, rule.replacement)
+                            }
+                        } else if (fixText.contains(rule.key, ignoreCase = true)) {
+                            val r = rule.ignoreCaseRegex
+                            if (r != null) {
+                                try {
+                                    fixText = if (rule.usesPrefixGroup) {
+                                        r.replace(fixText) { m -> m.groupValues[1] + rule.replacement }
+                                    } else {
+                                        r.replace(fixText, rule.escapedReplacement)
+                                    }
+                                } catch (_: Exception) {
                                 }
-                            } catch (_: Exception) {
                             }
                         }
                     }
@@ -428,5 +415,158 @@ class ProcessingFile(
             }
         }
         return k
+    }
+
+    private sealed class CompiledLexxRule {
+        data class PatternRule(
+            val regex: Regex,
+            val replacement: String
+        ) : CompiledLexxRule()
+
+        data class LiteralRule(
+            val key: String,
+            val replacement: String,
+            val escapedReplacement: String,
+            val ignoreCaseRegex: Regex?
+        ) : CompiledLexxRule()
+
+        data class WordRule(
+            val key: String,
+            val replacement: String,
+            val escapedReplacement: String,
+            val ignoreCaseRegex: Regex?,
+            val usesPrefixGroup: Boolean
+        ) : CompiledLexxRule()
+    }
+
+    companion object {
+        @Volatile
+        private var cachedRawRulesRef: List<String>? = null
+
+        @Volatile
+        private var cachedRawRulesHash: Int = 0
+
+        @Volatile
+        private var cachedLexxRegister: Boolean = true
+
+        @Volatile
+        private var cachedCompiledRules: List<CompiledLexxRule> = emptyList()
+
+        private fun isPunctCharStatic(c: Char): Boolean {
+            val t = Character.getType(c)
+            return t == Character.CONNECTOR_PUNCTUATION.toInt() ||
+                t == Character.DASH_PUNCTUATION.toInt() ||
+                t == Character.START_PUNCTUATION.toInt() ||
+                t == Character.END_PUNCTUATION.toInt() ||
+                t == Character.INITIAL_QUOTE_PUNCTUATION.toInt() ||
+                t == Character.FINAL_QUOTE_PUNCTUATION.toInt() ||
+                t == Character.OTHER_PUNCTUATION.toInt()
+        }
+
+        private fun escapeLexxKey(text: String): String {
+            val sb = StringBuilder(text.length + 8)
+            for (c in text) {
+                if (c in "\\?^*|[]{}+$().") {
+                    sb.append('\\')
+                }
+                sb.append(c)
+            }
+            return sb.toString()
+        }
+
+        private fun getOrCompileLexxRules(
+            rawRules: List<String>,
+            lexxRegister: Boolean
+        ): List<CompiledLexxRule> {
+            val hash = rawRules.hashCode()
+            if ((cachedRawRulesRef === rawRules || (cachedRawRulesHash == hash && cachedRawRulesRef == rawRules)) &&
+                cachedLexxRegister == lexxRegister
+            ) {
+                return cachedCompiledRules
+            }
+            val compiled = ArrayList<CompiledLexxRule>(rawRules.size)
+            for (rawRule in rawRules) {
+                val rule = rawRule.trimStart('\uFEFF').trimEnd('\r')
+                if (rule.isEmpty() || rule.trimStart().startsWith("#")) continue
+                if (rule.startsWith("regex\"") && rule.contains("\"=")) {
+                    val matchArr = rule.removePrefix("regex\"").split("\"=", limit = 2)
+                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
+                        try {
+                            val r = Regex(matchArr[0])
+                            val repl = matchArr[1].removePrefix("\"").removeSuffix("\"")
+                                .replace("\\r", "\r")
+                                .replace("\\n", "\n")
+                            compiled.add(CompiledLexxRule.PatternRule(r, repl))
+                        } catch (_: Exception) {
+                        }
+                    }
+                } else if (rule.startsWith("\"")) {
+                    val matchArr = if (rule.contains("\"=")) {
+                        rule.removePrefix("\"").split("\"=", limit = 2)
+                    } else {
+                        rule.replace("\"", "").split("=", limit = 2)
+                    }
+                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
+                        val key = matchArr[0]
+                        val repl = matchArr[1].removePrefix("\"").removeSuffix("\"")
+                        val icRegex = if (!lexxRegister) {
+                            try {
+                                Regex("(?i)${escapeLexxKey(key)}")
+                            } catch (_: Exception) {
+                                null
+                            }
+                        } else {
+                            null
+                        }
+                        compiled.add(
+                            CompiledLexxRule.LiteralRule(
+                                key = key,
+                                replacement = repl,
+                                escapedReplacement = Regex.escapeReplacement(repl),
+                                ignoreCaseRegex = icRegex
+                            )
+                        )
+                    }
+                } else {
+                    val matchArr = rule.split("=", limit = 2)
+                    if (matchArr.size == 2 && matchArr[0].isNotEmpty()) {
+                        val key = matchArr[0]
+                        val repl = matchArr[1]
+                        var usesPrefixGroup = false
+                        val icRegex = if (!lexxRegister) {
+                            try {
+                                val escaped = escapeLexxKey(key)
+                                if (escaped.length == 2 && escaped[0] == '\\' && isPunctCharStatic(escaped[1])) {
+                                    Regex("(?i)$escaped")
+                                } else {
+                                    usesPrefixGroup = true
+                                    val leftPrefix = if (key.first().isWhitespace()) "()" else "(^|\\s|[\\p{P}\\p{S}])"
+                                    val rightLookahead = if (key.last().isWhitespace()) "" else "(?=[\\p{P}\\p{S}]|\\s|$)"
+                                    Regex("(?i)$leftPrefix$escaped$rightLookahead")
+                                }
+                            } catch (_: Exception) {
+                                null
+                            }
+                        } else {
+                            null
+                        }
+                        compiled.add(
+                            CompiledLexxRule.WordRule(
+                                key = key,
+                                replacement = repl,
+                                escapedReplacement = Regex.escapeReplacement(repl),
+                                ignoreCaseRegex = icRegex,
+                                usesPrefixGroup = usesPrefixGroup
+                            )
+                        )
+                    }
+                }
+            }
+            cachedRawRulesRef = rawRules
+            cachedRawRulesHash = hash
+            cachedLexxRegister = lexxRegister
+            cachedCompiledRules = compiled
+            return compiled
+        }
     }
 }
