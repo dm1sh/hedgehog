@@ -118,6 +118,8 @@ Prebuilt Linux `x86_64` archives (`hedgehog-cli-<version>-linux-x86_64.zip`) are
 
 This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli/build/libs/hedgehog-cli.jar`), which only requires a Java 11+ runtime (`java`) on the host machine.
 
+The `-o`/`--output` path is a **save folder**, exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable with `--no-book-dir`). The format is selected with `--mp3`, `--opus`, or `--wav` (not by the file extension of `-o`).
+
 ### CLI Usage Examples
 
 ```bash
@@ -127,8 +129,8 @@ hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lex
 # Convert text or a book completely offline
 hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
 
-# Read from stdin / plain text to an audio file
-echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o hello.mp3
+# Read from stdin / plain text into the save folder
+echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o ./out --mp3
 
 # Generate / save default configuration file (~/.config/hedgehog/config.ini) from CLI arguments
 hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --chapters --opus --save-config
