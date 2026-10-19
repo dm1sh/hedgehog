@@ -178,28 +178,6 @@ fun EdgeTtsScreen(
                 }
             },
         topBar = {
-            val topBarStatus = when {
-                vm.statInfo.isNotBlank() -> {
-                    if (vm.runWork && vm.totalPartsCount > 0) {
-                        val elapsedSuffix = if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
-                            val etaPart = if (vm.etaTimeText.isNotEmpty()) " (~${vm.etaTimeText})" else ""
-                            " • ${vm.elapsedTimeText}$etaPart"
-                        } else {
-                            ""
-                        }
-                        "${vm.statInfo}: ${vm.statStr} • ${vm.chunksStatStr}$elapsedSuffix"
-                    } else if (vm.statInfoDoneHighlight && vm.totalPartsCount > 0) {
-                        "${vm.statInfo} • ${vm.statStr} • ${vm.chunksStatStr}"
-                    } else {
-                        vm.statInfo
-                    }
-                }
-                vm.bookLoaded || vm.totalPartsCount > 0 -> {
-                    "${vm.bookLoadedCaption()} • ${vm.statStr} • ${vm.chunksStatStr}"
-                }
-                else -> ""
-            }
-
             Column(modifier = Modifier.fillMaxWidth()) {
                 TopAppBar(
                     title = {
@@ -210,20 +188,7 @@ fun EdgeTtsScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (topBarStatus.isNotEmpty()) {
-                                Text(
-                                    text = topBarStatus,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = if (vm.statInfo.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = when {
-                                        vm.statInfoDoneHighlight -> MaterialTheme.colorScheme.primary
-                                        vm.statInfo.isNotBlank() -> MaterialTheme.colorScheme.secondary
-                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            TopBarSubtitleStatus(vm = vm)
                         }
                     },
                     actions = {
@@ -312,25 +277,7 @@ fun EdgeTtsScreen(
                         titleContentColor = MaterialTheme.colorScheme.onSurface
                     )
                 )
-                if (vm.progressBarVisible) {
-                    val progress = if (vm.progressBarMax > 0) {
-                        (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
-                    } else 0f
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp),
-                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                    )
-                } else if (vm.offlineVoicesBusy || vm.onlineVoicesBusy || vm.isBookLoading) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp),
-                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                    )
-                }
+                TopBarProgressStrip(vm = vm)
             }
         },
         bottomBar = {
@@ -688,96 +635,10 @@ private fun BookStatusGridCard(
                         modifier = Modifier.weight(1f)
                     )
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
-                            Surface(
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Timer,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Text(
-                                        text = if (vm.etaTimeText.isNotEmpty()) {
-                                            "${vm.elapsedTimeText} • ~${vm.etaTimeText}"
-                                        } else {
-                                            vm.elapsedTimeText
-                                        },
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
-                                }
-                            }
-                        }
-
-                        Surface(
-                            shape = MaterialTheme.shapes.small,
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.EditNote,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = vm.statStr,
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
-
-                        Surface(
-                            shape = MaterialTheme.shapes.small,
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = vm.chunksStatStr,
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
-                    }
+                    BookStatusHeaderBadges(vm = vm)
                 }
 
-                if (vm.progressBarVisible) {
-                    val progress = if (vm.progressBarMax > 0) {
-                        (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
-                    } else 0f
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp),
-                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                    )
-                }
+                BookStatusProgressBar(vm = vm)
 
                 HorizontalDivider()
             }
@@ -791,6 +652,164 @@ private fun BookStatusGridCard(
                 modifier = Modifier.fillMaxWidth()
             )
         }
+    }
+}
+
+@Composable
+private fun TopBarSubtitleStatus(vm: MainViewModel) {
+    val topBarStatus = when {
+        vm.statInfo.isNotBlank() -> {
+            if (vm.runWork && vm.totalPartsCount > 0) {
+                val elapsedSuffix = if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
+                    val etaPart = if (vm.etaTimeText.isNotEmpty()) " (~${vm.etaTimeText})" else ""
+                    " • ${vm.elapsedTimeText}$etaPart"
+                } else {
+                    ""
+                }
+                "${vm.statInfo}: ${vm.statStr} • ${vm.chunksStatStr}$elapsedSuffix"
+            } else if (vm.statInfoDoneHighlight && vm.totalPartsCount > 0) {
+                "${vm.statInfo} • ${vm.statStr} • ${vm.chunksStatStr}"
+            } else {
+                vm.statInfo
+            }
+        }
+        vm.bookLoaded || vm.totalPartsCount > 0 -> {
+            "${vm.bookLoadedCaption()} • ${vm.statStr} • ${vm.chunksStatStr}"
+        }
+        else -> ""
+    }
+    if (topBarStatus.isNotEmpty()) {
+        Text(
+            text = topBarStatus,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (vm.statInfo.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
+            color = when {
+                vm.statInfoDoneHighlight -> MaterialTheme.colorScheme.primary
+                vm.statInfo.isNotBlank() -> MaterialTheme.colorScheme.secondary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun TopBarProgressStrip(vm: MainViewModel) {
+    if (vm.progressBarVisible) {
+        val progress = if (vm.progressBarMax > 0) {
+            (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
+        } else 0f
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp),
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+        )
+    } else if (vm.offlineVoicesBusy || vm.onlineVoicesBusy || vm.isBookLoading) {
+        LinearProgressIndicator(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp),
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+        )
+    }
+}
+
+@Composable
+private fun BookStatusHeaderBadges(vm: MainViewModel) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Timer,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = if (vm.etaTimeText.isNotEmpty()) {
+                            "${vm.elapsedTimeText} • ~${vm.etaTimeText}"
+                        } else {
+                            vm.elapsedTimeText
+                        },
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
+
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.EditNote,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = vm.statStr,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
+
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = vm.chunksStatStr,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookStatusProgressBar(vm: MainViewModel) {
+    if (vm.progressBarVisible) {
+        val progress = if (vm.progressBarMax > 0) {
+            (vm.progressBarValue.toFloat() / vm.progressBarMax.toFloat()).coerceIn(0f, 1f)
+        } else 0f
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp),
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+        )
     }
 }
 

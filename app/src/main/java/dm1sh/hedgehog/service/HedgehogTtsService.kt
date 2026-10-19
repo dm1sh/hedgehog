@@ -105,15 +105,35 @@ class HedgehogTtsService : TextToSpeechService() {
     @Volatile
     private var currentLanguage: Array<String> = arrayOf("rus", "RUS", "")
 
+    private var cachedRepo: SettingsRepository? = null
+    private var cachedSettings: AppSettings? = null
+    private var cachedSettingsMtime: Long = -1L
+    private var cachedVoicesMtime: Long = -1L
+
     private var cachedLexxPath: String = ""
     private var cachedLexxMtime: Long = -1L
     private var cachedLexxRules: List<String> = emptyList()
 
+    @Synchronized
+    private fun getRepoAndSettingsCached(): Pair<SettingsRepository, AppSettings> {
+        val repo = cachedRepo ?: SettingsRepository(applicationContext).also { cachedRepo = it }
+        val sMtime = repo.settingsLastModified()
+        val vMtime = repo.voicesJsonLastModified()
+        val current = cachedSettings
+        if (current != null && sMtime == cachedSettingsMtime && vMtime == cachedVoicesMtime) {
+            return repo to current
+        }
+        val loaded = repo.loadSettings()
+        cachedSettings = loaded
+        cachedSettingsMtime = repo.settingsLastModified()
+        cachedVoicesMtime = repo.voicesJsonLastModified()
+        return repo to loaded
+    }
+
     override fun onCreate() {
         super.onCreate()
         try {
-            val repo = SettingsRepository(applicationContext)
-            val settings = repo.loadSettings()
+            val (_, settings) = getRepoAndSettingsCached()
             val loc = parseLocaleFromVoice(settings.voicesName) ?: Locale("ru", "RU")
             currentLanguage = arrayOf(
                 loc.SafeIso3Language(),
@@ -122,6 +142,12 @@ class HedgehogTtsService : TextToSpeechService() {
             )
         } catch (_: Throwable) {
         }
+    }
+
+    override fun onDestroy() {
+        stopRequested = true
+        OfflineTtsEngine.cancelAllActive()
+        super.onDestroy()
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
@@ -154,8 +180,7 @@ class HedgehogTtsService : TextToSpeechService() {
     override fun onGetVoices(): MutableList<Voice> {
         val voices = mutableListOf<Voice>()
         return try {
-            val repo = SettingsRepository(applicationContext)
-            val settings = repo.loadSettings()
+            val (repo, settings) = getRepoAndSettingsCached()
             val readyOffline = repo.readyOfflineVoices()
             val defaultLocale = parseLocaleFromVoice(settings.voicesName) ?: Locale("ru", "RU")
 
@@ -204,8 +229,7 @@ class HedgehogTtsService : TextToSpeechService() {
 
     override fun onGetDefaultVoiceNameFor(lang: String?, country: String?, variant: String?): String {
         return try {
-            val repo = SettingsRepository(applicationContext)
-            val settings = repo.loadSettings()
+            val (repo, settings) = getRepoAndSettingsCached()
             if (settings.useOnlineVoicesSystemTts) {
                 "online:${settings.voicesName.ifBlank { "ru-RU, DmitryNeural" }}"
             } else {
@@ -227,6 +251,7 @@ class HedgehogTtsService : TextToSpeechService() {
 
     override fun onStop() {
         stopRequested = true
+        OfflineTtsEngine.cancelAllActive()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -241,8 +266,7 @@ class HedgehogTtsService : TextToSpeechService() {
         }
 
         try {
-            val repo = SettingsRepository(applicationContext)
-            val settings = repo.loadSettings()
+            val (repo, settings) = getRepoAndSettingsCached()
 
             val processedText = preprocessTextForTts(rawText, settings).trim()
             if (processedText.isEmpty()) {

@@ -47,6 +47,13 @@ class SettingsRepository(private val context: Context) {
     var offlineVoices: MutableList<String> = mutableListOf()
         private set
 
+    @Volatile
+    private var lastLoadedVoicesMtime: Long = -1L
+
+    fun settingsLastModified(): Long = settingsFile.lastModified()
+
+    fun voicesJsonLastModified(): Long = voicesJsonFile.lastModified()
+
     fun hasAllFilesAccess(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Environment.isExternalStorageManager()
@@ -201,7 +208,6 @@ class SettingsRepository(private val context: Context) {
             }
             val root = JSONObject().apply {
                 put("settings", s)
-                put("voices", buildVoicesJsonObject())
             }
             settingsFile.writeText(root.toString(), Charsets.UTF_8)
         } catch (e: Exception) {
@@ -228,6 +234,10 @@ class SettingsRepository(private val context: Context) {
         val file = voicesJsonFile
         if (!file.exists()) {
             saveVoicesJson()
+            return
+        }
+        val mtime = file.lastModified()
+        if (mtime > 0L && mtime == lastLoadedVoicesMtime) {
             return
         }
         try {
@@ -265,6 +275,7 @@ class SettingsRepository(private val context: Context) {
                 }
                 offlineVoices = offList
             }
+            lastLoadedVoicesMtime = mtime
         } catch (e: Exception) {
             onlineVoices = DefaultVoices.ONLINE_VOICES
         }
@@ -275,6 +286,7 @@ class SettingsRepository(private val context: Context) {
             val dataDir = File(programDir, "Data")
             if (!dataDir.exists() && !dataDir.mkdirs()) return
             voicesJsonFile.writeText(buildVoicesJsonObject().toString(4), Charsets.UTF_8)
+            lastLoadedVoicesMtime = voicesJsonFile.lastModified()
         } catch (e: Exception) {
             e.printStackTrace()
         }

@@ -210,6 +210,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var conversionMasterJob: Job? = null
     private var elapsedJob: Job? = null
     private var previewJob: Job? = null
+    private var settingsSaveJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
     private var voicePreviewPrevStatus: String? = null
 
@@ -406,9 +407,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         val oldLoadDir = settings.loadDir
-        settings = transform(settings)
-        repo.saveSettings(settings)
-        if (settings.loadDir != oldLoadDir) {
+        val updated = transform(settings)
+        settings = updated
+        settingsSaveJob?.cancel()
+        settingsSaveJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(180)
+            repo.saveSettings(updated)
+        }
+        if (updated.loadDir != oldLoadDir) {
             refreshLoadDirFiles()
         }
     }
@@ -2083,11 +2089,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun clearTransientPlayerStatuses() {
         val toRemove = playerSentenceStatuses.entries
-            .filter { (idx, st) -> st != PartStatus.SAVED || !playerCachedFiles.containsKey(idx) }
+            .filter { (_, st) -> st != PartStatus.SAVED }
             .map { it.key }
         for (idx in toRemove) {
             playerSentenceStatuses.remove(idx)
             playerSentenceOnlineMap.remove(idx)
+        }
+    }
+
+    private fun evictOldBehindPlayheadPlayerFiles(currentPlayIdx: Int) {
+        if (playerIsSharedText) return
+        val keepFromIdx = currentPlayIdx - PLAYER_KEEP_BEHIND_SENTENCES
+        if (keepFromIdx <= 0) return
+        for (idx in playerCachedFiles.keys) {
+            if (idx < keepFromIdx) {
+                val evicted = playerCachedFiles.remove(idx)
+                if (evicted != null) {
+                    try {
+                        evicted.delete()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
         }
     }
 
@@ -2292,6 +2315,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     break
                 }
                 playIdx++
+                evictOldBehindPlayheadPlayerFiles(playIdx)
             }
 
             producerJob.cancel()
@@ -3744,6 +3768,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        settingsSaveJob?.cancel()
+        repo.saveSettings(settings)
         PlayerNotificationService.actionListener = null
         voicePreviewStop()
         stopPlayerPlayback(clearCache = true)
@@ -3755,5 +3781,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val MERGED_PREFIX = "F"
         private const val MAX_SAVE_PATH_LEN = 220
+        private const val PLAYER_KEEP_BEHIND_SENTENCES = 5
     }
 }
