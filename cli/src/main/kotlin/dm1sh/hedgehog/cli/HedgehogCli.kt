@@ -43,6 +43,7 @@ private const val DEFAULT_CHAPTER_REGEX = "глава |раздел |эпизо�
 /* Mirrors the Android app defaults so both frontends stream identically. */
 private const val DEFAULT_MAX_THREADS = 50
 private const val MAX_THREADS_LIMIT = 100
+private const val DEFAULT_RATE = 50
 private const val DEFAULT_STALL_TIMEOUT_SEC = 10
 private const val HEX_DIGITS = "0123456789abcdef"
 private val LEGACY_PART_EXTS = arrayOf("wav", "mp3")
@@ -73,19 +74,21 @@ data class CliOptions(
     var voicesDir: File = File(System.getProperty("user.home"), "EdgeTTS/Voices"),
     var lexxPath: String? = null,
     var lexxRegister: Boolean = true,
-    var chapters: Boolean = false,
+    /* Media defaults mirror the Android app (AppSettings.DEFAULT_*). */
+    var chapters: Boolean = true,
+    var chaptersExplicitlySet: Boolean = false,
     var chapterTitleSpeak: Boolean = false,
     var chapterRegex: String = DEFAULT_CHAPTER_REGEX,
     var chapterMp3Path: String? = null,
-    var inlineNotes: Boolean = false,
+    var inlineNotes: Boolean = true,
     var filterEmojis: Boolean = true,
-    var opusOutput: Boolean = false,
+    var opusOutput: Boolean = true,
     var wavOutput: Boolean = false,
-    var lowBitrate: Boolean = false,
+    var lowBitrate: Boolean = true,
     var embedMetadata: Boolean = true,
     /* Same default as the Android app's "Create book folders" setting. */
     var bookDirCreate: Boolean = true,
-    var rate: Int = 0,
+    var rate: Int = DEFAULT_RATE,
     var pitch: Int = 0,
     /* Same default as the app (AppSettings.DEFAULT_MAX_THREADS). */
     var maxThreads: Int = DEFAULT_MAX_THREADS,
@@ -276,7 +279,10 @@ private fun loadConfigIntoOptions(configFile: File, opts: CliOptions) {
                 "voices_dir" -> if (value.isNotEmpty()) opts.voicesDir = expandPath(value)
                 "lexx", "lexx_path" -> opts.lexxPath = value.ifEmpty { null }
                 "lexx_register" -> opts.lexxRegister = parseBoolConfig(value)
-                "chapters" -> opts.chapters = parseBoolConfig(value)
+                "chapters" -> {
+                    opts.chapters = parseBoolConfig(value)
+                    opts.chaptersExplicitlySet = true
+                }
                 "chapter_title" -> opts.chapterTitleSpeak = parseBoolConfig(value)
                 "chapter_regex" -> if (value.isNotEmpty()) opts.chapterRegex = value
                 "chapter_mp3" -> opts.chapterMp3Path = value.ifEmpty { null }
@@ -314,6 +320,7 @@ private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
     return try {
         val content = buildString {
             appendLine("# Hedgehog CLI configuration file")
+            appendLine("# Media defaults mirror the Android app: Opus, 48 kbps, inline notes, chapters, +50 % speed.")
             appendLine("offline = ${opts.offlineMode}")
             appendLine("allow_offline_fallback = ${opts.allowOfflineFallback}")
             appendLine("voice = \"${opts.onlineVoice}\"")
@@ -420,8 +427,14 @@ private fun parseArgs(args: Array<String>): CliOptions {
             arg == "--lexx-register" || arg == "--case-sensitive-lexx" -> opts.lexxRegister = true
             arg == "--no-lexx-register" || arg == "--ignore-case-lexx" -> opts.lexxRegister = false
 
-            arg == "--chapters" -> opts.chapters = true
-            arg == "--no-chapters" -> opts.chapters = false
+            arg == "--chapters" -> {
+                opts.chapters = true
+                opts.chaptersExplicitlySet = true
+            }
+            arg == "--no-chapters" -> {
+                opts.chapters = false
+                opts.chaptersExplicitlySet = true
+            }
             arg == "--chapter-title" || arg == "--glav-text" -> opts.chapterTitleSpeak = true
             arg == "--chapter-regex" -> opts.chapterRegex = requireNext(arg)
             arg.startsWith("--chapter-regex=") -> opts.chapterRegex = arg.substringAfter("=")
@@ -449,6 +462,7 @@ private fun parseArgs(args: Array<String>): CliOptions {
             arg == "--output-format" -> setOutputFormat(opts, requireNext(arg))
             arg.startsWith("--output-format=") -> setOutputFormat(opts, arg.substringAfter("="))
             arg == "--low-bitrate" -> opts.lowBitrate = true
+            arg == "--high-bitrate" || arg == "--no-low-bitrate" -> opts.lowBitrate = false
 
             arg == "--embed-metadata" -> opts.embedMetadata = true
             arg == "--no-embed-metadata" -> opts.embedMetadata = false
@@ -605,22 +619,25 @@ private fun printHelp() {
           --lexx <file>                    Path to .lexx pronunciation dictionary file
           --lexx-register                  Case-sensitive .lexx rules (default)
           --no-lexx-register               Case-insensitive .lexx rules
-          --chapters                       Split output audio by book chapters
+          --chapters                       Split output audio by book chapters (default: on, as in the app)
+          --no-chapters                    Keep the book in one piece (merged per --merge-files)
           --chapter-title                  Speak chapter title at the start of each chapter
           --chapter-regex <pattern>        Custom regex for chapter headings
           --chapter-mp3 <file>             Insert MP3 jingle at the beginning of each chapter
-          --inline-notes                   Inline footnotes/endnotes in FB2 and EPUB books
+          --inline-notes                   Inline footnotes/endnotes in FB2 and EPUB books (default: on, as in the app)
+          --no-inline-notes                Leave footnotes/endnotes out of the spoken text
           --no-filter-emojis               Keep emojis in text instead of filtering them out
 
         Audio Encoding & Prosody:
-          --opus                           Encode output to Ogg Opus (32 kbps VBR VoIP mono)
-          --mp3                            Encode output to MP3 (default)
+          --opus                           Encode output to Ogg Opus (32 kbps VBR VoIP mono, default)
+          --mp3                            Encode output to MP3 (96 kbps, or 48 kbps with --low-bitrate)
           --wav                            Write raw WAV audio (offline voices only)
           --output-format <mp3|opus|wav>   Select the output format explicitly (folder output only;
                                            a file given to -o selects the format by its extension)
           --book-dir / --no-book-dir       Put multi-chapter books into their own folder (default: on, as in the app)
-          --low-bitrate                    Use 48 kbps instead of 96 kbps for MP3 output
-          --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +0)
+          --low-bitrate                    Use 48 kbps instead of 96 kbps for MP3 output (default: on, as in the app)
+          --high-bitrate, --no-low-bitrate Use 96 kbps MP3 output
+          --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +50, same as the app)
           --pitch <hz>                     Speech pitch adjustment from -50 to +50 (default: +0)
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
           -j, --threads <n>                Maximum parallel synthesis streams (default: 50, same as the app;
@@ -635,8 +652,11 @@ private fun printHelp() {
           -V, --version                    Show version
 
         Examples:
-          # Convert a book using an online voice
-          hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lexx --chapters --inline-notes --opus
+          # Convert a book using an online voice (Opus, chapters, inline notes, +50 % speed are defaults)
+          hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lexx
+
+          # Plain 96 kbps MP3 without chapter splitting, at normal speed
+          hedgehog-cli -i book.fb2 -o ./out --mp3 --high-bitrate --no-chapters --rate 0
 
           # Convert text or a book completely offline
           hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
@@ -648,7 +668,7 @@ private fun printHelp() {
           echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o ./out --mp3
 
           # Generate default config file from CLI arguments
-          hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --chapters --opus --save-config
+          hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --save-config
 
           # Download offline voices or list available voices on Linux
           hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices
@@ -1150,12 +1170,22 @@ private suspend fun runConversion(opts: CliOptions): Int {
             }
         }
         if (opts.chapters) {
-            System.err.println(
-                "Error: --chapters splits the book into one file per chapter and cannot be used with " +
-                    "a single output file ('${explicitOutFile.name}').\n" +
-                    "Pass a save folder instead (e.g. -o ./out) or drop --chapters."
-            )
-            return 1
+            if (opts.chaptersExplicitlySet) {
+                System.err.println(
+                    "Error: --chapters splits the book into one file per chapter and cannot be used with " +
+                        "a single output file ('${explicitOutFile.name}').\n" +
+                        "Pass a save folder instead (e.g. -o ./out) or drop --chapters."
+                )
+                return 1
+            }
+            /* Chapter splitting is the app default; an explicitly named single file wins. */
+            opts.chapters = false
+            if (!opts.quiet) {
+                System.err.println(
+                    "Note: '${explicitOutFile.name}' is a single output file, so chapter splitting is disabled " +
+                        "(pass a folder to -o to split a multi-chapter book into chapter files)."
+                )
+            }
         }
         if (opts.mergeFilesExplicitlySet && opts.mergeFiles > 0) {
             System.err.println(

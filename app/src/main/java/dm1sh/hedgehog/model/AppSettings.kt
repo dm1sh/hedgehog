@@ -52,8 +52,8 @@ data class AppSettings(
         const val DEFAULT_MAX_THREADS = 50
         const val DEFAULT_RESTART_DELAY = 10000
 
-        /* Synthesis defaults: unchanged speed, 48 kbps MP3 input to Opus, footnotes inlined, split by chapters. */
-        const val DEFAULT_RATE = 0
+        /* Synthesis defaults: +50 % speed, 48 kbps MP3 input to Opus, footnotes inlined, split by chapters. */
+        const val DEFAULT_RATE = 50
         const val DEFAULT_LOW_BITRATE = true
         const val DEFAULT_OPUS_OUTPUT = true
         const val DEFAULT_INLINE_NOTES = true

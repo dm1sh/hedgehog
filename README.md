@@ -120,8 +120,9 @@ This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli
 
 ### CLI streaming behavior
 
-`hedgehog-cli` uses the same streaming engine and defaults as the Android app:
+`hedgehog-cli` uses the same engine and defaults as the Android app:
 
+- **Output defaults** — Opus output (`32 kbps`, fed from `48 kbps` MP3), inline footnotes, chapter splitting and `+50 %` speed, exactly like a fresh app install. Override them with `--mp3`, `--high-bitrate`, `--no-inline-notes`, `--no-chapters` and `--rate <percent>`.
 - **Parallel streams** — `50` by default (`-j/--threads`, clamped to `1..100`, same as the app's thread setting). Offline TTS is additionally bounded to the CPU core count by the shared engine.
 - **Idle timeout** — a stream is restarted when the server sends nothing for `10` s (`--timeout`/`--restart-delay <sec>`, the app's "restart delay" setting; `0` disables it, like the app's ∞).
 - **Restart backoff** — after a failed attempt the stream is restarted with exponential backoff (`4 s`, `8 s`, `16 s`, capped at `30 s`, ±20 % jitter). Parallel streams usually fail together when the endpoint throttles, so a fixed delay would make them reconnect in lockstep and get reset again.
@@ -135,13 +136,16 @@ A mid-stream TCP reset comes from the endpoint itself (or a proxy/VPN on the way
 `-o`/`--output` accepts two kinds of paths:
 
 - **Save folder** — a directory path (e.g. `-o ./out`), which behaves exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable the subfolder with `--no-book-dir`). The format comes from `--mp3`, `--opus`, `--wav`, or `--output-format`. Like the app, a book without detected chapters is written as one file (`--merge-files` defaults to `0`, meaning the whole book in one file; use `--merge-files <n>` to split it every `n` parts).
-- **Single output file** — a path ending in `.mp3`, `.opus`, or `.wav` (e.g. `-o "Book.opus"`): the whole book is merged into exactly that file and the extension selects the format. In this mode chapter splitting is impossible, so `--chapters` and a splitting `--merge-files N` (`N > 0`) are refused with an explanatory error, and multiple input books are rejected.
+- **Single output file** — a path ending in `.mp3`, `.opus`, or `.wav` (e.g. `-o "Book.opus"`): the whole book is merged into exactly that file and the extension selects the format. In this mode chapter splitting is impossible, so an explicit `--chapters` and a splitting `--merge-files N` (`N > 0`) are refused with an explanatory error, multiple input books are rejected, and the default chapter splitting is switched off with a note.
 
 ### CLI Usage Examples
 
 ```bash
-# Convert a book using an online voice
-hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lexx --chapters --inline-notes --opus
+# Convert a book using an online voice (Opus, chapters, inline notes and +50 % speed are the defaults)
+hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lexx
+
+# Plain 96 kbps MP3, no chapter splitting, normal speed
+hedgehog-cli -i book.fb2 -o ./out --mp3 --high-bitrate --no-chapters --rate 0
 
 # Convert text or a book completely offline
 hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
@@ -153,7 +157,7 @@ hedgehog-cli -i book.fb2 -o "Book.opus" --voice "ru-RU, DmitryNeural"
 echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o ./out --mp3
 
 # Generate / save default configuration file (~/.config/hedgehog/config.ini) from CLI arguments
-hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --chapters --opus --save-config
+hedgehog-cli --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices --save-config
 
 # Download offline voices or list available voices on Linux
 hedgehog-cli --download-offline-voices --voices-dir ~/EdgeTTS/Voices
