@@ -86,6 +86,7 @@ data class CliOptions(
     var maxThreads: Int = maxOf(10, Runtime.getRuntime().availableProcessors()),
     var threadsExplicitlySet: Boolean = false,
     var mergeFiles: Int = 50,
+    var mergeFilesExplicitlySet: Boolean = false,
     var timeoutSec: Int = 60,
     var downloadOfflineVoices: Boolean = false,
     val downloadVoiceNames: MutableList<String> = mutableListOf(),
@@ -290,7 +291,10 @@ private fun loadConfigIntoOptions(configFile: File, opts: CliOptions) {
                     opts.maxThreads = t
                     opts.threadsExplicitlySet = true
                 }
-                "merge_files" -> value.toIntOrNull()?.coerceAtLeast(0)?.let { m -> opts.mergeFiles = m }
+                "merge_files" -> value.toIntOrNull()?.coerceAtLeast(0)?.let { m ->
+                    opts.mergeFiles = m
+                    opts.mergeFilesExplicitlySet = true
+                }
                 "timeout", "timeout_sec" -> value.toIntOrNull()?.let { t -> opts.timeoutSec = t }
                 "quiet" -> opts.quiet = parseBoolConfig(value)
             }
@@ -328,7 +332,9 @@ private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
             if (opts.threadsExplicitlySet) {
                 appendLine("threads = ${opts.maxThreads}")
             }
-            appendLine("merge_files = ${opts.mergeFiles}")
+            if (opts.mergeFilesExplicitlySet) {
+                appendLine("merge_files = ${opts.mergeFiles}")
+            }
             appendLine("timeout = ${opts.timeoutSec}")
             appendLine("quiet = ${opts.quiet}")
         }
@@ -468,9 +474,11 @@ private fun parseArgs(args: Array<String>): CliOptions {
 
             arg == "--merge-files" -> {
                 opts.mergeFiles = requireNext(arg).toIntOrNull()?.coerceAtLeast(0) ?: 50
+                opts.mergeFilesExplicitlySet = true
             }
             arg.startsWith("--merge-files=") -> {
                 opts.mergeFiles = arg.substringAfter("=").toIntOrNull()?.coerceAtLeast(0) ?: 50
+                opts.mergeFilesExplicitlySet = true
             }
 
             arg == "--timeout" -> {
@@ -573,8 +581,8 @@ private fun printHelp() {
         Input / Output:
           -i, --input <path>               Input book/text file (.fb2, .epub, .txt, .html, .zip), directory, or '-' for stdin
           -t, --text <text>                Synthesize plain text string directly
-          -o, --output <dir>               Save folder for generated audio, like the Save folder setting in the app
-                                           (created if missing; book subfolders and file names come from the book)
+          -o, --output <path>              Save folder (like the Save folder setting in the app) or a single output
+                                           file such as book.mp3, book.opus, or book.wav (whole book in one file)
 
         Voice & TTS Mode:
           --online                         Use online Microsoft Edge TTS (default)
@@ -601,7 +609,8 @@ private fun printHelp() {
           --opus                           Encode output to Ogg Opus (32 kbps VBR VoIP mono)
           --mp3                            Encode output to MP3 (default)
           --wav                            Write raw WAV audio (offline voices only)
-          --output-format <mp3|opus|wav>   Select the output format explicitly
+          --output-format <mp3|opus|wav>   Select the output format explicitly (folder output only;
+                                           a file given to -o selects the format by its extension)
           --book-dir / --no-book-dir       Put multi-chapter books into their own folder (default: on, as in the app)
           --low-bitrate                    Use 48 kbps instead of 96 kbps for MP3 output
           --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +0)
@@ -621,6 +630,9 @@ private fun printHelp() {
 
           # Convert text or a book completely offline
           hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
+
+          # Merge the whole book into one output file (format taken from the extension)
+          hedgehog-cli -i book.fb2 -o "Book.opus" --voice "ru-RU, DmitryNeural"
 
           # Read from stdin / plain text into the save folder
           echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o ./out --mp3
@@ -1102,26 +1114,60 @@ private fun loadBooksIntoProcessingFile(
 
 private suspend fun runConversion(opts: CliOptions): Int {
     val outRaw = opts.outputPath?.trim().orEmpty()
-    val targetWavDirect = opts.wavOutput
+    val outCandidate = if (outRaw.isNotEmpty()) expandPath(outRaw) else null
 
     /*
-     * `-o/--output` mirrors the "Save folder" setting of the Android app: it is always a
-     * folder that receives the generated files, never a file name. Book subfolders and file
-     * names are derived from the book itself, exactly like the app does.
+     * `-o/--output` behaves like the Android "Save folder" setting when it points at a folder,
+     * and like an explicit output file when it carries a .mp3/.opus/.wav extension. In the file
+     * case the whole book is written into that single file.
      */
-    val saveDirFile: File = if (outRaw.isNotEmpty()) expandPath(outRaw) else File(".")
-    if (saveDirFile.exists() && !saveDirFile.isDirectory) {
-        System.err.println(
-            "Error: --output must be a save folder, but '${saveDirFile.absolutePath}' is a file.\n" +
-                "Choose the format with --mp3, --opus, or --wav; output file names come from the book itself."
-        )
-        return 1
+    val explicitOutFile: File? = outCandidate?.takeIf {
+        !it.isDirectory && AUDIO_EXTENSIONS.contains(it.extension.lowercase(Locale.ROOT))
     }
-    if (AUDIO_EXTENSIONS.contains(saveDirFile.extension.lowercase(Locale.ROOT))) {
+    if (explicitOutFile != null) {
+        when (explicitOutFile.extension.lowercase(Locale.ROOT)) {
+            "opus" -> {
+                opts.opusOutput = true
+                opts.wavOutput = false
+            }
+            "wav" -> {
+                opts.wavOutput = true
+                opts.opusOutput = false
+            }
+            else -> {
+                opts.opusOutput = false
+                opts.wavOutput = false
+            }
+        }
+        if (opts.chapters) {
+            System.err.println(
+                "Error: --chapters splits the book into one file per chapter and cannot be used with " +
+                    "a single output file ('${explicitOutFile.name}').\n" +
+                    "Pass a save folder instead (e.g. -o ./out) or drop --chapters."
+            )
+            return 1
+        }
+        if (opts.mergeFilesExplicitlySet && opts.mergeFiles > 0) {
+            System.err.println(
+                "Error: --merge-files ${opts.mergeFiles} splits the book into several files and cannot be " +
+                    "used with a single output file ('${explicitOutFile.name}').\n" +
+                    "Pass a save folder instead (e.g. -o ./out), or use --merge-files 0."
+            )
+            return 1
+        }
+    }
+
+    val targetWavDirect = opts.wavOutput
+    val saveDirFile: File = when {
+        explicitOutFile != null -> explicitOutFile.absoluteFile.parentFile ?: File(".")
+        outCandidate != null -> outCandidate
+        else -> File(".")
+    }
+    if (outCandidate != null && explicitOutFile == null && outCandidate.exists() && !outCandidate.isDirectory) {
         System.err.println(
-            "Error: --output is the save folder (like the Save folder setting in the Android app), " +
-                "not an output file name: '${saveDirFile.absolutePath}'.\n" +
-                "Pass a folder (e.g. -o ./out) and choose the format with --mp3, --opus, or --wav."
+            "Error: --output must be a save folder or an audio file name, but " +
+                "'${outCandidate.absolutePath}' is not a folder.\n" +
+                "Use a folder (e.g. -o ./out) or an audio file with a .mp3/.opus/.wav extension."
         )
         return 1
     }
@@ -1132,7 +1178,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
 
     if (targetWavDirect && !opts.offlineMode) {
         System.err.println(
-            "Error: --wav output requires --offline (online voices synthesize MP3 audio).\n" +
+            "Error: WAV output requires --offline (online voices synthesize MP3 audio).\n" +
                 "Use --offline, or save as MP3/Opus instead."
         )
         return 1
@@ -1231,6 +1277,13 @@ private suspend fun runConversion(opts: CliOptions): Int {
     val partToChunkMap = arrayOfNulls<ChunkJobSpec>(total)
     val specsByBook = specs.groupBy { File(bookStem(it.fileName)).name.trim().ifEmpty { "Book" } }
     val multipleBooks = specsByBook.size > 1
+    if (explicitOutFile != null && multipleBooks) {
+        System.err.println(
+            "Error: a single output file cannot receive several books " +
+                "(${specsByBook.size} inputs). Pass a save folder instead (e.g. -o ./out)."
+        )
+        return 1
+    }
     val bookMetaByFolder = activeBook.fileNames.associateBy(
         keySelector = { File(bookStem(it.fileName)).name.trim().ifEmpty { "Book" } },
         valueTransform = { it.metadata }
@@ -1243,17 +1296,22 @@ private suspend fun runConversion(opts: CliOptions): Int {
     for ((bookFolderName, bookParts) in specsByBook) {
         val bookMeta = bookMetaByFolder[bookFolderName] ?: BookAudioMetadata(title = bookFolderName)
         val bookVoice = bookVoiceByFolder[bookFolderName] ?: activeVoiceDisplay
-        val partsByGlava = bookParts.groupBy { it.glava }
         val rawChunksForBook = ArrayList<Triple<String, Int, List<PartJobSpec>>>()
-        for ((glava, glavaParts) in partsByGlava) {
-            val chunkSize = when {
-                glava.isNotEmpty() -> glavaParts.size
-                opts.mergeFiles <= 0 -> glavaParts.size
-                else -> opts.mergeFiles
-            }.coerceAtLeast(1)
-            val chunked = glavaParts.chunked(chunkSize)
-            for ((cIdx, cParts) in chunked.withIndex()) {
-                rawChunksForBook.add(Triple(glava, cIdx, cParts))
+        if (explicitOutFile != null) {
+            /* Single output file: the whole book becomes one chunk. */
+            rawChunksForBook.add(Triple("", 0, bookParts))
+        } else {
+            val partsByGlava = bookParts.groupBy { it.glava }
+            for ((glava, glavaParts) in partsByGlava) {
+                val chunkSize = when {
+                    glava.isNotEmpty() -> glavaParts.size
+                    opts.mergeFiles <= 0 -> glavaParts.size
+                    else -> opts.mergeFiles
+                }.coerceAtLeast(1)
+                val chunked = glavaParts.chunked(chunkSize)
+                for ((cIdx, cParts) in chunked.withIndex()) {
+                    rawChunksForBook.add(Triple(glava, cIdx, cParts))
+                }
             }
         }
 
@@ -1279,7 +1337,12 @@ private suspend fun runConversion(opts: CliOptions): Int {
                 totalChunksForBook = totalChunksForBook,
                 bookChunkNumber = bookChunkIdx + 1,
                 targetBaseName = targetBaseName,
-                includeGlavaIntro = (cIdx == 0 && glava.isNotEmpty() && soundGlavaBytes.isNotEmpty()),
+                /* A single output file gets the chapter jingle once, at its beginning. */
+                includeGlavaIntro = if (explicitOutFile != null) {
+                    soundGlavaBytes.isNotEmpty()
+                } else {
+                    cIdx == 0 && glava.isNotEmpty() && soundGlavaBytes.isNotEmpty()
+                },
                 fileNums = cParts.map { it.fileNum },
                 partIndices = cParts.map { it.index },
                 chapterTextHash = BookConversionIndex.computeChapterTextHash(cParts.map { it.text }),
@@ -1358,6 +1421,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
         val targetFile = resolveCliChunkTargetFile(
             chunkSpec = cSpec,
             outDir = wDir,
+            explicitOutFile = explicitOutFile,
             targetWavDirect = targetWavDirect,
             opts = opts
         )
@@ -1481,6 +1545,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                         chunkSpec = chunkSpec,
                                         bookWorkDir = bookWorkDir,
                                         bookIndex = bookIndex,
+                                        explicitOutFile = explicitOutFile,
                                         targetWavDirect = targetWavDirect,
                                         opts = opts,
                                         soundGlavaBytes = soundGlavaBytes
@@ -1619,6 +1684,7 @@ private suspend fun runConversion(opts: CliOptions): Int {
                                         chunkSpec = chunkSpec,
                                         bookWorkDir = bookWorkDir,
                                         bookIndex = bookIndex,
+                                        explicitOutFile = explicitOutFile,
                                         targetWavDirect = targetWavDirect,
                                         opts = opts,
                                         soundGlavaBytes = soundGlavaBytes
@@ -1776,6 +1842,7 @@ private fun resolveCliBookOutDir(
 private fun resolveCliChunkTargetFile(
     chunkSpec: ChunkJobSpec,
     outDir: File,
+    explicitOutFile: File?,
     targetWavDirect: Boolean,
     opts: CliOptions
 ): File {
@@ -1789,7 +1856,7 @@ private fun resolveCliChunkTargetFile(
         opts.opusOutput -> "opus"
         else -> "mp3"
     }
-    return File(outDir, "$finalBaseName.$ext")
+    return explicitOutFile ?: File(outDir, "$finalBaseName.$ext")
 }
 
 private fun finalizeCliChunkOutput(
@@ -1850,6 +1917,7 @@ private fun assembleCliChunk(
     chunkSpec: ChunkJobSpec,
     bookWorkDir: File,
     bookIndex: BookConversionIndex?,
+    explicitOutFile: File?,
     targetWavDirect: Boolean,
     opts: CliOptions,
     soundGlavaBytes: ByteArray
@@ -1860,6 +1928,7 @@ private fun assembleCliChunk(
     val targetFile = resolveCliChunkTargetFile(
         chunkSpec = chunkSpec,
         outDir = bookWorkDir,
+        explicitOutFile = explicitOutFile,
         targetWavDirect = targetWavDirect,
         opts = opts
     )

@@ -118,7 +118,10 @@ Prebuilt Linux `x86_64` archives (`hedgehog-cli-<version>-linux-x86_64.zip`) are
 
 This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli/build/libs/hedgehog-cli.jar`), which only requires a Java 11+ runtime (`java`) on the host machine.
 
-The `-o`/`--output` path is a **save folder**, exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable with `--no-book-dir`). The format is selected with `--mp3`, `--opus`, or `--wav` (not by the file extension of `-o`).
+`-o`/`--output` accepts two kinds of paths:
+
+- **Save folder** — a directory path (e.g. `-o ./out`), which behaves exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable the subfolder with `--no-book-dir`). The format comes from `--mp3`, `--opus`, `--wav`, or `--output-format`.
+- **Single output file** — a path ending in `.mp3`, `.opus`, or `.wav` (e.g. `-o "Book.opus"`): the whole book is merged into exactly that file and the extension selects the format. In this mode chapter splitting is impossible, so `--chapters` and a splitting `--merge-files N` (`N > 0`) are refused with an explanatory error, and multiple input books are rejected.
 
 ### CLI Usage Examples
 
@@ -128,6 +131,9 @@ hedgehog-cli -i book.fb2 -o ./out --voice "ru-RU, DmitryNeural" --lexx rules.lex
 
 # Convert text or a book completely offline
 hedgehog-cli -i book.epub -o ./out --offline --offline-voice Dmitry --voices-dir ~/EdgeTTS/Voices
+
+# Merge the whole book into a single output file (format taken from the extension)
+hedgehog-cli -i book.fb2 -o "Book.opus" --voice "ru-RU, DmitryNeural"
 
 # Read from stdin / plain text into the save folder
 echo "Привет, мир!" | hedgehog-cli -i - --offline --offline-voice Dmitry -o ./out --mp3
