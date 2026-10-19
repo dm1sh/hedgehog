@@ -48,7 +48,6 @@ fun StatusGridView(
     val fallbackOutlineColor = MaterialTheme.colorScheme.onSurface
 
     val density = LocalDensity.current
-    val boxesPerRow = 10
     val boxSizeDp = 16.dp
     val boxGapDp = 6.dp
     val boxSizePx = with(density) { boxSizeDp.toPx() }
@@ -61,6 +60,11 @@ fun StatusGridView(
 
     val cellStepPx = boxSizePx + gapPx
     val rowHeightPx = boxSizePx + gapPx
+    val boxesPerRow = if (containerWidthPx > 0 && cellStepPx > 0f) {
+        ((containerWidthPx + gapPx) / cellStepPx).toInt().coerceAtLeast(1)
+    } else {
+        10
+    }
     val gridWidthPx = boxesPerRow * boxSizePx + (boxesPerRow - 1) * gapPx
     val startXPx = if (containerWidthPx > 0) {
         max(0f, (containerWidthPx - gridWidthPx) / 2f)
