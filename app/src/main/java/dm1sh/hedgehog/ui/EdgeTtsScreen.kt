@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -586,7 +587,7 @@ private fun BookLoadingCard(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BookStatusGridCard(
     vm: MainViewModel,
@@ -619,29 +620,37 @@ private fun BookStatusGridCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .animateContentSize()
                     .onSizeChanged { onHeaderHeightChanged(it.height) },
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (vm.statInfoDoneHighlight) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (vm.statInfoDoneHighlight) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .basicMarquee(iterations = Int.MAX_VALUE)
-                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (vm.statInfoDoneHighlight) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (vm.statInfoDoneHighlight) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .align(Alignment.CenterVertically)
+                            .padding(end = 8.dp)
+                    )
 
-                BookStatusHeaderBadges(
-                    vm = vm,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    BookStatusHeaderBadges(
+                        vm = vm,
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+                }
 
                 BookStatusProgressBar(vm = vm)
 
@@ -726,16 +735,15 @@ private fun TopBarProgressStrip(vm: MainViewModel) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BookStatusHeaderBadges(
     vm: MainViewModel,
     modifier: Modifier = Modifier
 ) {
-    FlowRow(
+    Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         if (vm.elapsedVisible && vm.elapsedTimeText.isNotEmpty()) {
             Surface(

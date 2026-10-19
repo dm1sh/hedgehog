@@ -1,5 +1,6 @@
 package dm1sh.hedgehog.ui
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -78,13 +79,17 @@ fun StatusGridView(
     val minViewportHeightDp = boxSizeDp * minRows + boxGapDp * (minRows - 1)
     val effectiveMaxHeightDp = maxOf(minViewportHeightDp, maxHeightDp)
     val viewportHeightDp = contentHeightDp.coerceIn(minViewportHeightDp, effectiveMaxHeightDp)
+    val animatedViewportHeightDp by animateDpAsState(
+        targetValue = viewportHeightDp,
+        label = "statusGridViewportHeight"
+    )
 
     val scrollState = rememberScrollState()
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(viewportHeightDp)
+            .height(animatedViewportHeightDp)
             .onSizeChanged {
                 containerWidthPx = it.width
                 containerHeightPx = it.height
