@@ -85,7 +85,7 @@ data class CliOptions(
     var pitch: Int = 0,
     var maxThreads: Int = maxOf(10, Runtime.getRuntime().availableProcessors()),
     var threadsExplicitlySet: Boolean = false,
-    var mergeFiles: Int = 50,
+    var mergeFiles: Int = 0,
     var mergeFilesExplicitlySet: Boolean = false,
     var timeoutSec: Int = 60,
     var downloadOfflineVoices: Boolean = false,
@@ -473,11 +473,11 @@ private fun parseArgs(args: Array<String>): CliOptions {
             }
 
             arg == "--merge-files" -> {
-                opts.mergeFiles = requireNext(arg).toIntOrNull()?.coerceAtLeast(0) ?: 50
+                opts.mergeFiles = requireNext(arg).toIntOrNull()?.coerceAtLeast(0) ?: 0
                 opts.mergeFilesExplicitlySet = true
             }
             arg.startsWith("--merge-files=") -> {
-                opts.mergeFiles = arg.substringAfter("=").toIntOrNull()?.coerceAtLeast(0) ?: 50
+                opts.mergeFiles = arg.substringAfter("=").toIntOrNull()?.coerceAtLeast(0) ?: 0
                 opts.mergeFilesExplicitlySet = true
             }
 
@@ -617,7 +617,7 @@ private fun printHelp() {
           --pitch <hz>                     Speech pitch adjustment from -50 to +50 (default: +0)
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
           -j, --threads <n>                Maximum parallel synthesis workers (default: 10)
-          --merge-files <n>                Parts per merged output file when --chapters is off (default: 50, 0 = all in 1)
+          --merge-files <n>                Parts per merged output file when --chapters is off (default: 0 = whole book in 1)
           -c, --config <file>              Load configuration file (default: ~/.config/hedgehog/config.ini)
           --save-config [file]             Generate/save configuration file from the passed CLI arguments
           -q, --quiet                      Suppress progress output

@@ -120,7 +120,7 @@ This produces a self-executing binary at `cli/build/libs/hedgehog-cli` (and `cli
 
 `-o`/`--output` accepts two kinds of paths:
 
-- **Save folder** — a directory path (e.g. `-o ./out`), which behaves exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable the subfolder with `--no-book-dir`). The format comes from `--mp3`, `--opus`, `--wav`, or `--output-format`.
+- **Save folder** — a directory path (e.g. `-o ./out`), which behaves exactly like the **Save folder** setting in the Android app: it is created when missing, single-file books are written as `<Author - Title>.<ext>` directly inside it, and multi-chapter books get an `<Author - Title>/` subfolder with `<NNNN> <Chapter>.<ext>` files (disable the subfolder with `--no-book-dir`). The format comes from `--mp3`, `--opus`, `--wav`, or `--output-format`. Like the app, a book without detected chapters is written as one file (`--merge-files` defaults to `0`, meaning the whole book in one file; use `--merge-files <n>` to split it every `n` parts).
 - **Single output file** — a path ending in `.mp3`, `.opus`, or `.wav` (e.g. `-o "Book.opus"`): the whole book is merged into exactly that file and the extension selects the format. In this mode chapter splitting is impossible, so `--chapters` and a splitting `--merge-files N` (`N > 0`) are refused with an explanatory error, and multiple input books are rejected.
 
 ### CLI Usage Examples
