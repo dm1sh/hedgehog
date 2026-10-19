@@ -3136,11 +3136,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             /* Encode the part to Ogg Opus right away: chapters become a cheap stream copy. */
                             val sendData: ByteArray = if (runOpusOutput) {
                                 val opusData = OpusConverter.convertMp3ToOpus(rawPartData)
-                                if (opusData == null || opusData.isEmpty()) {
-                                    return@launch
+                                if (opusData != null && opusData.isNotEmpty()) {
+                                    partExt = "opus"
+                                    opusData
+                                } else {
+                                    /* Keep the raw part: chapter assembly transcodes it later. */
+                                    System.err.println(
+                                        "Hedgehog: Opus encoding failed for part ${spec.index + 1}, keeping .$partExt part"
+                                    )
+                                    rawPartData
                                 }
-                                partExt = "opus"
-                                opusData
                             } else {
                                 rawPartData
                             }

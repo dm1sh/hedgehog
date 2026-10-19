@@ -92,7 +92,6 @@ PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" \
     --disable-swscale \
     --disable-postproc \
     --disable-avfilter \
-    --disable-pthreads \
     --disable-asm \
     --enable-small \
     --enable-static \
@@ -116,7 +115,7 @@ popd > /dev/null
 
 # 4. Link JNI shared library libhedgehog_opus.so for Linux x86_64
 mkdir -p "$OUT_DIR"
-gcc -shared -fPIC -O2 -ffunction-sections -fdata-sections \
+gcc -shared -fPIC -O2 -pthread -ffunction-sections -fdata-sections \
     -I"$JAVA_HOME_DIR/include" \
     -I"$JAVA_HOME_DIR/include/linux" \
     -I"$PREFIX/include" \

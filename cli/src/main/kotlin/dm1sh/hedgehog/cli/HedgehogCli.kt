@@ -1556,14 +1556,20 @@ private suspend fun runConversion(opts: CliOptions): Int {
                         /* Encode the part to Ogg Opus right away: chapters become a cheap stream copy. */
                         val saveData: ByteArray = if (opts.opusOutput && !targetWavDirect) {
                             val opusData = OpusConverter.convertMp3ToOpus(rawPartData)
-                            if (opusData == null || opusData.isEmpty()) {
-                                if (!interruptedByUser && isActive) {
-                                    failedAtomic.incrementAndGet()
+                            if (opusData != null && opusData.isNotEmpty()) {
+                                partExt = "opus"
+                                opusData
+                            } else {
+                                /* Keep the raw part: chapter assembly transcodes it later. */
+                                if (!opts.quiet) {
+                                    synchronized(progressPrintLock) {
+                                        System.err.println(
+                                            "\nWarning: Opus encoding failed for part ${spec.index + 1}, keeping .$partExt part."
+                                        )
+                                    }
                                 }
-                                return@launch
+                                rawPartData
                             }
-                            partExt = "opus"
-                            opusData
                         } else {
                             rawPartData
                         }

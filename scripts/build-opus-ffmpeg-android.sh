@@ -125,7 +125,6 @@ build_for_abi() {
         --disable-swscale \
         --disable-postproc \
         --disable-avfilter \
-        --disable-pthreads \
         --disable-asm \
         --enable-small \
         --enable-static \
@@ -149,7 +148,7 @@ build_for_abi() {
 
     # 4. Link JNI shared library libhedgehog_opus.so
     mkdir -p "$JNILIBS_DIR/$ABI"
-    "$CC" -shared -fPIC -O2 -ffunction-sections -fdata-sections \
+    "$CC" -shared -fPIC -O2 -pthread -ffunction-sections -fdata-sections \
         -I"$PREFIX/include" \
         "$CPP_SRC" \
         -L"$PREFIX/lib" \

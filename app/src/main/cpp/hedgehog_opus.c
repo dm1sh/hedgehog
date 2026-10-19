@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,100 @@
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 #include <lame/lame.h>
+
+/*
+ * libavcodec builds codec-private static tables lazily on the first
+ * avcodec_open2() -- for the MP3 decoder that means the Huffman VLC tables in
+ * libavcodec/mpegaudiodec_common.c. FFmpeg guards that with ff_thread_once(),
+ * which is a real pthread_once() only when FFmpeg is built with threading; in
+ * single-threaded builds (see libavutil/thread.h) it degrades to a non-atomic
+ * `if (!flag) { init(); flag = 1; }`. Since several conversion workers open the
+ * MP3 decoder at the same time, that initializer could run twice, build the
+ * same static table twice and abort inside libavcodec/vlc.c
+ * ("incorrect codes" / "Assertion ret >= 0 failed").
+ *
+ * Building those tables once, from a single thread, before any concurrent use
+ * keeps the lazy initialization race-free even in single-threaded builds.
+ */
+static pthread_once_t codec_init_once = PTHREAD_ONCE_INIT;
+
+static void warm_up_codec(const char *name, int is_encoder, int sample_rate, int channels)
+{
+    const AVCodec *codec = is_encoder
+        ? avcodec_find_encoder_by_name(name)
+        : avcodec_find_decoder_by_name(name);
+    if (!codec) return;
+
+    AVCodecContext *ctx = avcodec_alloc_context3(codec);
+    if (!ctx) return;
+
+    if (is_encoder) {
+        ctx->sample_rate = sample_rate;
+        ctx->sample_fmt = (codec->sample_fmts && codec->sample_fmts[0] != AV_SAMPLE_FMT_NONE)
+            ? codec->sample_fmts[0]
+            : AV_SAMPLE_FMT_S16;
+        av_channel_layout_default(&ctx->ch_layout, channels);
+        ctx->bit_rate = 32000;
+        ctx->time_base = (AVRational){ 1, sample_rate };
+    } else {
+        /* Decoder tables do not depend on these, but provide sane defaults. */
+        ctx->sample_rate = sample_rate > 0 ? sample_rate : 24000;
+        av_channel_layout_default(&ctx->ch_layout, 1);
+        ctx->thread_count = 1;
+        ctx->thread_type = 0;
+    }
+
+    avcodec_open2(ctx, codec, NULL);
+    avcodec_free_context(&ctx);
+}
+
+static void warm_up_codecs(void)
+{
+    av_log_set_level(AV_LOG_ERROR);
+    /* MP3 decoders share the lazily-built Huffman VLC tables. */
+    warm_up_codec("mp3", 0, 0, 0);
+    warm_up_codec("mp3float", 0, 0, 0);
+    /* Encoders are opened from worker threads as well. */
+    warm_up_codec("libopus", 1, 24000, 1);
+    warm_up_codec("libmp3lame", 1, 24000, 1);
+}
+
+static void hedgehog_ensure_codecs_ready(void)
+{
+    pthread_once(&codec_init_once, warm_up_codecs);
+}
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
+{
+    (void)vm;
+    (void)reserved;
+    hedgehog_ensure_codecs_ready();
+    return JNI_VERSION_1_6;
+}
+
+/*
+ * Quick sanity check for MPEG audio payloads (ID3 tag or a frame sync within
+ * the first few KiB). Used to reject non-audio data before handing it to
+ * libavformat, instead of letting format probing guess a random demuxer.
+ */
+static int looks_like_mp3(const uint8_t *data, size_t size)
+{
+    if (!data || size < 4) return 0;
+    if (memcmp(data, "ID3", 3) == 0) return 1;
+    size_t limit = size < 4096 ? size : 4096;
+    for (size_t i = 0; i + 3 < limit; i++) {
+        if (data[i] != 0xFF) continue;
+        /* Frame sync: 11 bits set, version != reserved, layer != reserved. */
+        if ((data[i + 1] & 0xE0) != 0xE0) continue;
+        if ((data[i + 1] & 0x18) == 0x08) continue;
+        if ((data[i + 1] & 0x06) == 0x00) continue;
+        uint8_t bitrate_index = (uint8_t)((data[i + 2] & 0xF0) >> 4);
+        uint8_t sample_rate_index = (uint8_t)((data[i + 2] & 0x0C) >> 2);
+        if (bitrate_index == 0x0F || sample_rate_index == 0x03) continue;
+        return 1;
+    }
+    return 0;
+}
 
 typedef struct {
     const uint8_t *data;
@@ -335,6 +430,7 @@ static int hedgehog_pcm24k_mono_to_opus_mem(
 ) {
     *out_data = NULL;
     *out_size = 0;
+    hedgehog_ensure_codecs_ready();
     size_t total_samples = pcm_bytes / 2;
     if (!pcm_ptr || total_samples == 0) return -1;
     av_log_set_level(AV_LOG_ERROR);
@@ -535,6 +631,9 @@ static int decode_fmt_ctx_into_opus_fifo(
 
     int ret = -1;
     if (avcodec_parameters_to_context(dec_ctx, in_codecpar) < 0) goto done;
+    /* Single-threaded decoding: chapters are already assembled in parallel. */
+    dec_ctx->thread_count = 1;
+    dec_ctx->thread_type = 0;
     if (avcodec_open2(dec_ctx, decoder, NULL) < 0) goto done;
 
     if (dec_ctx->ch_layout.nb_channels <= 0) {
@@ -633,6 +732,7 @@ done:
 static int decode_mem_buffer_into_opus_fifo(
     const uint8_t *in_data,
     size_t in_size,
+    const AVInputFormat *demuxer,
     AVCodecContext *enc_ctx,
     AVFormatContext *out_fmt_ctx,
     AVStream *out_stream,
@@ -685,7 +785,12 @@ static int decode_mem_buffer_into_opus_fifo(
     in_fmt_ctx->max_analyze_duration = 0;
 
     int ret = -1;
-    if (avformat_open_input(&in_fmt_ctx, NULL, NULL, NULL) >= 0) {
+    /*
+     * Pin the demuxer instead of letting format probing pick one: with the
+     * deliberately tiny probe size, stray bytes could otherwise be detected as
+     * another container and fail in unrelated codec initialization code.
+     */
+    if (demuxer && avformat_open_input(&in_fmt_ctx, NULL, demuxer, NULL) >= 0) {
         ret = decode_fmt_ctx_into_opus_fifo(
             in_fmt_ctx,
             enc_ctx,
@@ -725,13 +830,26 @@ int hedgehog_mp3_to_opus_mem(
     *out_size = 0;
     if (!in_data || in_size == 0) return -1;
 
+    hedgehog_ensure_codecs_ready();
+
     const uint8_t *pcm_ptr = NULL;
     size_t pcm_bytes = 0;
     int wav_rate = 0, wav_ch = 0, wav_bits = 0;
-    if (parse_wav_mem_header(in_data, in_size, &pcm_ptr, &pcm_bytes, &wav_rate, &wav_ch, &wav_bits) &&
+    int has_wav_header = parse_wav_mem_header(
+        in_data, in_size, &pcm_ptr, &pcm_bytes, &wav_rate, &wav_ch, &wav_bits);
+    if (has_wav_header &&
         wav_rate == 24000 && wav_ch == 1 && wav_bits == 16 && pcm_bytes >= 2) {
         return hedgehog_pcm24k_mono_to_opus_mem(pcm_ptr, pcm_bytes, out_data, out_size);
     }
+
+    int is_mp3 = !has_wav_header && looks_like_mp3(in_data, in_size);
+    if (!has_wav_header && !is_mp3) {
+        av_log(NULL, AV_LOG_ERROR,
+               "hedgehog: input is neither RIFF/WAVE nor MPEG audio, refusing to transcode\n");
+        return -1;
+    }
+    const AVInputFormat *demuxer = av_find_input_format(is_mp3 ? "mp3" : "wav");
+    if (!demuxer) return -1;
 
     av_log_set_level(AV_LOG_ERROR);
 
@@ -762,6 +880,7 @@ int hedgehog_mp3_to_opus_mem(
     if (decode_mem_buffer_into_opus_fifo(
             in_data,
             in_size,
+            demuxer,
             enc_ctx,
             out_fmt_ctx,
             out_stream,
@@ -820,6 +939,7 @@ cleanup:
  */
 int hedgehog_merge_opus_files(int num_files, const char **input_paths, const char *output_path) {
     if (num_files <= 0 || !input_paths || !output_path) return -1;
+    hedgehog_ensure_codecs_ready();
     av_log_set_level(AV_LOG_ERROR);
 
     int ret = -1;
@@ -836,9 +956,12 @@ int hedgehog_merge_opus_files(int num_files, const char **input_paths, const cha
     pkt = av_packet_alloc();
     if (!pkt) goto cleanup;
 
+    /* Part files are always Ogg Opus: pin the demuxer instead of probing. */
+    const AVInputFormat *ogg_demuxer = av_find_input_format("ogg");
+
     for (int i = 0; i < num_files; i++) {
         AVFormatContext *in_fmt_ctx = NULL;
-        if (avformat_open_input(&in_fmt_ctx, input_paths[i], NULL, NULL) < 0) {
+        if (avformat_open_input(&in_fmt_ctx, input_paths[i], ogg_demuxer, NULL) < 0) {
             continue;
         }
         /* Part files are small standalone Ogg Opus streams: avoid scanning extra pages. */
@@ -942,6 +1065,7 @@ int hedgehog_wav_to_mp3_mem(
     *out_data = NULL;
     *out_size = 0;
     if (!in_data || in_size < 2) return -1;
+    hedgehog_ensure_codecs_ready();
 
     int sample_rate = 24000;
     const uint8_t *pcm_ptr = in_data;
@@ -1026,6 +1150,7 @@ int hedgehog_wav_files_to_mp3(
     *out_data = NULL;
     *out_size = 0;
     if (num_files <= 0 || !input_paths) return -1;
+    hedgehog_ensure_codecs_ready();
 
     size_t total_pcm_bytes = 0;
     int sample_rate = 24000;

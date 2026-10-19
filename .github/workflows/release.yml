@@ -62,7 +62,7 @@ jobs:
           path: |
             app/src/main/jniLibs
             cli/src/main/resources/NATIVE
-          key: jni-opus-ffmpeg-v2-${{ hashFiles('app/src/main/cpp/**', 'scripts/build-opus-ffmpeg-android.sh', 'scripts/build-opus-ffmpeg-linux.sh') }}
+          key: jni-opus-ffmpeg-v3-${{ hashFiles('app/src/main/cpp/**', 'scripts/build-opus-ffmpeg-android.sh', 'scripts/build-opus-ffmpeg-linux.sh') }}
 
       - name: Build minimal FFmpeg + libopus JNI libraries (Android & Linux CLI)
         run: |
