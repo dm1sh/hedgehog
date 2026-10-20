@@ -321,7 +321,6 @@ private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
     return try {
         val content = buildString {
             appendLine("# Hedgehog CLI configuration file")
-            appendLine("# Media defaults mirror the Android app: Opus, 48 kbps, inline notes, chapters, +50 % speed.")
             appendLine("offline = ${opts.offlineMode}")
             appendLine("allow_offline_fallback = ${opts.allowOfflineFallback}")
             appendLine("voice = \"${opts.onlineVoice}\"")
@@ -349,7 +348,7 @@ private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
             if (opts.mergeFilesExplicitlySet) {
                 appendLine("merge_files = ${opts.mergeFiles}")
             }
-            appendLine("# idle timeout in seconds (alias: restart_delay), same as the app's restart delay; 0 = no timeout")
+            appendLine("# idle timeout in seconds (alias: restart_delay); 0 = no timeout")
             appendLine("timeout = ${opts.timeoutSec}")
             appendLine("quiet = ${opts.quiet}")
         }
@@ -603,8 +602,8 @@ private fun printHelp() {
         Input / Output:
           -i, --input <path>               Input book/text file (.fb2, .epub, .txt, .html, .zip), directory, or '-' for stdin
           -t, --text <text>                Synthesize plain text string directly
-          -o, --output <path>              Save folder (like the Save folder setting in the app) or a single output
-                                           file such as book.mp3, book.opus, or book.wav (whole book in one file)
+          -o, --output <path>              Save folder, or a single output file such as book.mp3,
+                                           book.opus, or book.wav (whole book in one file)
 
         Voice & TTS Mode:
           --online                         Use online Microsoft Edge TTS (default)
@@ -620,12 +619,12 @@ private fun printHelp() {
           --lexx <file>                    Path to .lexx pronunciation dictionary file
           --lexx-register                  Case-sensitive .lexx rules (default)
           --no-lexx-register               Case-insensitive .lexx rules
-          --chapters                       Split output audio by book chapters (default: on, as in the app)
+          --chapters                       Split output audio by book chapters (default: on)
           --no-chapters                    Keep the book in one piece (merged per --merge-files)
           --chapter-title                  Speak chapter title at the start of each chapter
           --chapter-regex <pattern>        Custom regex for chapter headings
           --chapter-mp3 <file>             Insert MP3 jingle at the beginning of each chapter
-          --inline-notes                   Inline footnotes/endnotes in FB2 and EPUB books (default: on, as in the app)
+          --inline-notes                   Inline footnotes/endnotes in FB2 and EPUB books (default: on)
           --no-inline-notes                Leave footnotes/endnotes out of the spoken text
           --no-filter-emojis               Keep emojis in text instead of filtering them out
 
@@ -635,17 +634,17 @@ private fun printHelp() {
           --wav                            Write raw WAV audio (offline voices only)
           --output-format <mp3|opus|wav>   Select the output format explicitly (folder output only;
                                            a file given to -o selects the format by its extension)
-          --book-dir / --no-book-dir       Put multi-chapter books into their own folder (default: on, as in the app)
-          --low-bitrate                    Use 48 kbps instead of 96 kbps for MP3 output (default: on, as in the app)
+          --book-dir / --no-book-dir       Put multi-chapter books into their own folder (default: on)
+          --low-bitrate                    Use 48 kbps instead of 96 kbps for MP3 output (default: on)
           --high-bitrate, --no-low-bitrate Use 96 kbps MP3 output
-          --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +50, same as the app)
+          --rate, --speed <percent>        Speech rate adjustment from -50 to +100 (default: +50)
           --pitch <hz>                     Speech pitch adjustment from -50 to +50 (default: +0)
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
-          -j, --threads <n>                Maximum parallel synthesis streams (default: 50, same as the app;
+          -j, --threads <n>                Maximum parallel synthesis streams (default: 50;
                                            lower it when the endpoint keeps resetting streams)
           --timeout, --restart-delay <sec>  Restart a stream when it stays silent for <sec> seconds
-                                           (default: 10000, the app's restart delay; 0 = no timeout)
-                                          Network errors and timeouts are reported on stderr
+                                           (default: 10000; 0 = no timeout)
+                                           Network errors and timeouts are reported on stderr
           --merge-files <n>                Parts per merged output file when --chapters is off (default: 0 = whole book in 1)
           -c, --config <file>              Load configuration file (default: ~/.config/hedgehog/config.ini)
           --save-config [file]             Generate/save configuration file from the passed CLI arguments
