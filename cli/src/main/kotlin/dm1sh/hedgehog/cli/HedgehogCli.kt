@@ -44,7 +44,8 @@ private const val DEFAULT_CHAPTER_REGEX = "глава |раздел |эпизо�
 private const val DEFAULT_MAX_THREADS = 50
 private const val MAX_THREADS_LIMIT = 100
 private const val DEFAULT_RATE = 50
-private const val DEFAULT_STALL_TIMEOUT_SEC = 10
+/* Same idle timeout as AppSettings.DEFAULT_RESTART_DELAY, which the app treats as seconds. */
+private const val DEFAULT_RESTART_DELAY_SEC = 10000
 private const val HEX_DIGITS = "0123456789abcdef"
 private val LEGACY_PART_EXTS = arrayOf("wav", "mp3")
 private val PART_FILE_EXTS = arrayOf("wav", "mp3", "opus")
@@ -95,8 +96,8 @@ data class CliOptions(
     var threadsExplicitlySet: Boolean = false,
     var mergeFiles: Int = 0,
     var mergeFilesExplicitlySet: Boolean = false,
-    /* Idle (stall) timeout per stream, same "restart delay" setting as the app; <= 0 = infinite. */
-    var timeoutSec: Int = DEFAULT_STALL_TIMEOUT_SEC,
+    /* Idle (stall) timeout per stream, i.e. the app's "restart delay" setting (seconds); <= 0 = no timeout. */
+    var timeoutSec: Int = DEFAULT_RESTART_DELAY_SEC,
     var downloadOfflineVoices: Boolean = false,
     val downloadVoiceNames: MutableList<String> = mutableListOf(),
     var listVoices: Boolean = false,
@@ -348,7 +349,7 @@ private fun saveConfigFromOptions(opts: CliOptions, targetFile: File): Boolean {
             if (opts.mergeFilesExplicitlySet) {
                 appendLine("merge_files = ${opts.mergeFiles}")
             }
-            appendLine("# idle timeout in seconds (alias: restart_delay), same as the app; 0 = no timeout")
+            appendLine("# idle timeout in seconds (alias: restart_delay), same as the app's restart delay; 0 = no timeout")
             appendLine("timeout = ${opts.timeoutSec}")
             appendLine("quiet = ${opts.quiet}")
         }
@@ -503,10 +504,10 @@ private fun parseArgs(args: Array<String>): CliOptions {
             }
 
             arg == "--timeout" || arg == "--restart-delay" -> {
-                opts.timeoutSec = requireNext(arg).toIntOrNull() ?: DEFAULT_STALL_TIMEOUT_SEC
+                opts.timeoutSec = requireNext(arg).toIntOrNull() ?: DEFAULT_RESTART_DELAY_SEC
             }
             arg.startsWith("--timeout=") || arg.startsWith("--restart-delay=") -> {
-                opts.timeoutSec = arg.substringAfter("=").toIntOrNull() ?: DEFAULT_STALL_TIMEOUT_SEC
+                opts.timeoutSec = arg.substringAfter("=").toIntOrNull() ?: DEFAULT_RESTART_DELAY_SEC
             }
 
             arg == "--download-offline-voices" || arg == "--download-offline-voice" -> {
@@ -642,7 +643,8 @@ private fun printHelp() {
           --no-embed-metadata              Disable embedding title, author, track tags, and cover art
           -j, --threads <n>                Maximum parallel synthesis streams (default: 50, same as the app;
                                            lower it when the endpoint keeps resetting streams)
-          --timeout, --restart-delay <sec>  Restart a stream when it stays silent for <sec> seconds (default: 10, same as the app; 0 = no timeout)
+          --timeout, --restart-delay <sec>  Restart a stream when it stays silent for <sec> seconds
+                                           (default: 10000, the app's restart delay; 0 = no timeout)
                                           Network errors and timeouts are reported on stderr
           --merge-files <n>                Parts per merged output file when --chapters is off (default: 0 = whole book in 1)
           -c, --config <file>              Load configuration file (default: ~/.config/hedgehog/config.ini)
@@ -1431,10 +1433,10 @@ private suspend fun runConversion(opts: CliOptions): Int {
             opts.lowBitrate -> "MP3 (48 kbps)"
             else -> "MP3 (96 kbps)"
         }
-        val timeoutLabel = if (opts.timeoutSec <= 0) "default" else opts.timeoutSec.toString()
+        val idleTimeoutLabel = formatIdleTimeoutLabel(opts.timeoutSec)
         System.err.println(
             "Hedgehog CLI: $total parts • $totalChunksCount chapters/chunks • Mode: $modeLabel • Format: $fmtLabel • " +
-                "Streams: $timeoutLabel s idle timeout, retry backoff 4-30 s"
+                "Streams: $idleTimeoutLabel idle timeout, retry backoff 4-30 s"
         )
     }
 
@@ -1909,6 +1911,14 @@ private suspend fun runConversion(opts: CliOptions): Int {
         }
     }
     return 0
+}
+
+/* Reports the timeout the shared worker will really apply, not just the configured number. */
+private fun formatIdleTimeoutLabel(timeoutSec: Int): String {
+    val configuredMsec = if (timeoutSec <= 0) 0L else timeoutSec * 1000L
+    val effectiveSec = SocketEdgeTtsWorker.effectiveStallTimeoutMsec(configuredMsec) / 1000L
+    val usesWorkerDefault = configuredMsec <= 0L || configuredMsec >= 10_000_000L
+    return if (usesWorkerDefault) "${effectiveSec}s (worker default)" else "${effectiveSec}s"
 }
 
 private fun formatClockDuration(elapsedMs: Long): String {

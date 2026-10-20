@@ -81,6 +81,17 @@ object SocketEdgeTtsWorker {
     }
 
     /**
+     * Idle (stall) timeout a stream is actually given for the configured [timeoutMsec]:
+     * previews use 30 s, "no timeout" (<= 0) and the maximum setting (>= 10000 s) fall back
+     * to 60 s. Both frontends share this so the CLI can report the value the app would use.
+     */
+    fun effectiveStallTimeoutMsec(timeoutMsec: Long, isPreview: Boolean = false): Long = when {
+        isPreview -> PREVIEW_TIMEOUT_MSEC
+        timeoutMsec <= 0L || timeoutMsec >= 10_000_000L -> DEFAULT_STALL_TIMEOUT_MSEC
+        else -> timeoutMsec
+    }
+
+    /**
      * Exponential backoff with jitter for the next stream attempt.
      *
      * Dozens of parallel streams tend to fail together when the endpoint starts throttling
@@ -176,11 +187,7 @@ object SocketEdgeTtsWorker {
                 continue
             }
 
-            val effectiveTimeout = when {
-                isPreview -> PREVIEW_TIMEOUT_MSEC
-                timeoutMsec <= 0L || timeoutMsec >= 10_000_000L -> DEFAULT_STALL_TIMEOUT_MSEC
-                else -> timeoutMsec
-            }
+            val effectiveTimeout = effectiveStallTimeoutMsec(timeoutMsec, isPreview)
 
             val wsOpened = AtomicBoolean(false)
             val result = attemptSingleWebSocketSynthesis(
