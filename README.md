@@ -35,6 +35,7 @@
 - **Preview & Edit Before Converting (`View text` Tab)**:
   - Browse and edit individual text parts, edit chapter titles and skip between chapters, listen to a voice preview of any part, or customize the output book title before saving.
   - The trash button left of **OK** deletes the current part; a long press on it deletes the whole chapter the part belongs to. Both actions ask for confirmation first.
+- **No Tracking**: The app ships no analytics, crash-reporting or advertising SDKs. Offline conversion stays fully offline — the Microsoft embedded Speech SDK's telemetry extension is explicitly disabled (`EmbeddedSpeech-DisableTelemetry`), so nothing is uploaded while synthesising with local voices.
 - **Background Conversion & Live ETA**:
   - Converts books in multiple parallel streams and assembles finished chapters concurrently in the background as soon as their parts complete, displaying live counters for synthesized parts and postprocessed chapters, elapsed time, and combined ETA in the status grid, top bar, and system notification—even while your screen is off.
 

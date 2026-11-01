@@ -220,6 +220,14 @@ object OfflineTtsEngine {
             val key = resolvedKeyCache.getOrPut(voiceDir) { resolveKey(voiceDir, v.licensed) }
             val config = EmbeddedSpeechConfig.fromPath(voiceDir)
             try {
+                // The embedded Speech SDK ships Microsoft's 1DS ("OneCollector") telemetry extension and
+                // starts it by default whenever an embedded TTS session is created: it would upload
+                // usage/device metadata to mobile.events.data.microsoft.com even though synthesis runs
+                // fully offline. Both properties are read by the SDK before the 1DS manager is created
+                // (EmbeddedSpeechConfig.setProperty forwards them to the same native config object), so
+                // opting out here keeps the offline engine completely offline.
+                config.setProperty("EmbeddedSpeech-DisableTelemetry", "true")
+                config.setProperty("EmbeddedSpeech-TelemetrySamplingRatio", "0")
                 config.setSpeechSynthesisVoice(v.name, key)
                 config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm)
                 val synthesizer = SpeechSynthesizer(config, null)
