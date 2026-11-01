@@ -163,7 +163,7 @@ fun main(args: Array<String>) {
             val opts = parseArgs(args)
 
             if (opts.showVersion) {
-                val ver = object {}.javaClass.`package`?.implementationVersion ?: "1.3.5"
+                val ver = object {}.javaClass.`package`?.implementationVersion ?: "1.3.6"
                 println("hedgehog-cli $ver")
                 return@runBlocking
             }
@@ -630,7 +630,7 @@ private fun printHelp() {
 
         Audio Encoding & Prosody:
           --opus                           Encode output to Ogg Opus (32 kbps VBR VoIP mono, default)
-          --mp3                            Encode output to MP3 (96 kbps, or 48 kbps with --low-bitrate)
+          --mp3                            Encode output to MP3 (48 kbps by default, 96 kbps with --high-bitrate)
           --wav                            Write raw WAV audio (offline voices only)
           --output-format <mp3|opus|wav>   Select the output format explicitly (folder output only;
                                            a file given to -o selects the format by its extension)
