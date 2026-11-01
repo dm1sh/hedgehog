@@ -116,6 +116,10 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
+                    viewModel.dopModal == DopModal.REMOVE_PART ||
+                        viewModel.dopModal == DopModal.REMOVE_CHAPTER -> {
+                        viewModel.cancelRemoveEditorSelection()
+                    }
                     viewModel.dopModal != DopModal.NONE -> {
                         viewModel.dopModal = DopModal.NONE
                     }

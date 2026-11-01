@@ -415,6 +415,76 @@ class ProcessingFile(
         return k
     }
 
+    /**
+     * Removes [count] parts starting at [startIndex] together with their chapter titles.
+     * File boundaries are clamped so no book meta keeps pointing past the new end.
+     * Returns the number of parts left in the book.
+     */
+    fun removeParts(startIndex: Int, count: Int = 1): Int {
+        if (startIndex < 0 || startIndex >= allSentences.size || count <= 0) return allSentences.size
+        val removeCount = count.coerceAtMost(allSentences.size - startIndex)
+        val removeEnd = startIndex + removeCount
+        val oldBooks = fileNames.map { meta ->
+            meta to (meta.endSentenceIndex.coerceIn(0, allSentences.size))
+        }
+        val keptGlavByBook = oldBooks.map { (_, end) -> allGlavs.getOrNull(end - 1).orEmpty() }
+
+        repeat(removeCount) {
+            allSentences.removeAt(startIndex)
+            if (startIndex < allGlavs.size) {
+                allGlavs.removeAt(startIndex)
+            }
+        }
+        // Keep the lists in sync even if a legacy book had fewer glavs than parts.
+        while (allGlavs.size < allSentences.size) {
+            allGlavs.add(if (allGlavs.isEmpty()) keptGlavByBook.firstOrNull().orEmpty() else "")
+        }
+        while (allGlavs.size > allSentences.size) {
+            allGlavs.removeAt(allGlavs.lastIndex)
+        }
+
+        // Remap the book ranges; drop books whose parts were all removed.
+        val newBooks = mutableListOf<FileBookMeta>()
+        var prevEnd = 0
+        for ((meta, end) in oldBooks) {
+            val bookStart = prevEnd
+            prevEnd = end
+            var firstNew = -1
+            var lastNewExclusive = -1
+            for (i in bookStart until end) {
+                if (i in startIndex until removeEnd) continue
+                val newIndex = if (i < startIndex) i else i - removeCount
+                if (firstNew < 0) firstNew = newIndex
+                lastNewExclusive = newIndex + 1
+            }
+            if (firstNew >= 0 && lastNewExclusive > firstNew && lastNewExclusive <= allSentences.size) {
+                meta.endSentenceIndex = lastNewExclusive
+                newBooks.add(meta)
+            }
+        }
+        if (newBooks.isNotEmpty()) {
+            fileNames.clear()
+            fileNames.addAll(newBooks)
+            fileNames.last().endSentenceIndex = allSentences.size
+        } else if (allSentences.isNotEmpty()) {
+            // Everything was removed from one book: keep a single title over the remaining parts.
+            val fallbackTitle = oldBooks.firstOrNull()?.first?.fileName.orEmpty()
+            fileNames.clear()
+            fileNames.add(
+                FileBookMeta(
+                    fileName = fallbackTitle,
+                    endSentenceIndex = allSentences.size,
+                    voice = "",
+                    rate = "",
+                    pitch = ""
+                )
+            )
+        } else {
+            fileNames.forEach { it.endSentenceIndex = 0 }
+        }
+        return allSentences.size
+    }
+
     private sealed class CompiledLexxRule {
         data class PatternRule(
             val regex: Regex,

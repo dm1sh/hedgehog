@@ -67,6 +67,7 @@ import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Description
@@ -460,6 +461,10 @@ fun EdgeTtsScreen(
         )
     } else if (vm.dopModal == DopModal.RECYCLE_BIN) {
         EmptyRecycleBinDialog(vm = vm)
+    } else if (vm.dopModal == DopModal.REMOVE_PART) {
+        RemoveEditorUnitDialog(vm = vm, isChapter = false)
+    } else if (vm.dopModal == DopModal.REMOVE_CHAPTER) {
+        RemoveEditorUnitDialog(vm = vm, isChapter = true)
     }
 }
 
@@ -2811,19 +2816,74 @@ private fun TextAreaEditorPanel(
                 }
             }
 
-            Button(
-                onClick = { vm.onEditorSavePressed() },
-                enabled = !vm.runWork
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
+                EditorRemoveUnitButton(
+                    vm = vm,
+                    enabled = !vm.runWork && vm.totalPartsCount > 0
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(vm.tr("KEY_OK"))
+
+                Button(
+                    onClick = { vm.onEditorSavePressed() },
+                    enabled = !vm.runWork
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(vm.tr("KEY_OK"))
+                }
             }
         }
+    }
+}
+
+/**
+ * Deletes the part currently open in the editor on tap and the whole chapter on long press.
+ * Both actions ask for confirmation before anything is removed.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EditorRemoveUnitButton(
+    vm: MainViewModel,
+    enabled: Boolean
+) {
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+    }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(
+                if (enabled) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
+                }
+            )
+            .combinedClickable(
+                enabled = enabled,
+                onClickLabel = vm.tr("KEY_REMOVE_PART"),
+                onLongClickLabel = vm.tr("KEY_REMOVE_CHAPTER"),
+                onClick = { vm.requestRemoveCurrentPart() },
+                onLongClick = { vm.requestRemoveCurrentChapter() }
+            )
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Delete,
+            contentDescription = vm.tr("KEY_REMOVE_PART"),
+            tint = contentColor,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 
@@ -3141,6 +3201,72 @@ private fun EmptyRecycleBinDialog(vm: MainViewModel) {
         },
         dismissButton = {
             TextButton(onClick = { vm.cancelEmptyRecycleBin() }) {
+                Text(vm.tr("KEY_NO"))
+            }
+        }
+    )
+}
+
+@Composable
+private fun RemoveEditorUnitDialog(vm: MainViewModel, isChapter: Boolean) {
+    val partsUnit = vm.tr("KEY_PARTS_UNIT")
+    val details = if (isChapter) {
+        buildString {
+            val title = vm.removePendingChapterTitle
+            if (title.isNotBlank()) {
+                append("\u00AB").append(title).append("\u00BB \u2022 ")
+            }
+            append(vm.removePendingCount).append(' ').append(partsUnit)
+        }
+    } else {
+        "${vm.tr("KEY_PART_NUMBER")} ${vm.removePendingPartNumber} / ${vm.totalPartsCount}"
+    }
+
+    AlertDialog(
+        onDismissRequest = { vm.cancelRemoveEditorSelection() },
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Delete,
+                contentDescription = null
+            )
+        },
+        title = {
+            Text(text = vm.tr(if (isChapter) "KEY_REMOVE_CHAPTER" else "KEY_REMOVE_PART"))
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = vm.tr(
+                        if (isChapter) "KEY_REMOVE_CHAPTER_CONFIRM" else "KEY_REMOVE_PART_CONFIRM"
+                    )
+                )
+                Text(
+                    text = details,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!isChapter) {
+                    Text(
+                        text = vm.tr("KEY_REMOVE_LONG_PRESS_HINT"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { vm.confirmRemoveEditorSelection() },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Text(vm.tr("KEY_YES"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { vm.cancelRemoveEditorSelection() }) {
                 Text(vm.tr("KEY_NO"))
             }
         }

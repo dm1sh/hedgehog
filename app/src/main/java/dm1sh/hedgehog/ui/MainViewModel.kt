@@ -75,7 +75,7 @@ enum class NativePickerType {
 }
 
 enum class DopModal {
-    NONE, REGEX_GLAVA, RECYCLE_BIN
+    NONE, REGEX_GLAVA, RECYCLE_BIN, REMOVE_PART, REMOVE_CHAPTER
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -180,6 +180,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var editorPartFieldText by mutableStateOf("0")
     var partPreviewActive by mutableStateOf(false)
         private set
+
+    // Pending "remove part / remove chapter" confirmation, captured when the dialog opens
+    var removePendingIsChapter by mutableStateOf(false)
+        private set
+    var removePendingStart by mutableIntStateOf(0)
+        private set
+    var removePendingCount by mutableIntStateOf(0)
+        private set
+    var removePendingChapterTitle by mutableStateOf("")
+        private set
+
+    val removePendingPartNumber: Int
+        get() = (removePendingStart + 1).coerceAtLeast(1)
 
     private var editorSnapshot: List<String> = emptyList()
     private var editorSnapshotGlavs: List<String> = emptyList()
@@ -1396,6 +1409,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 editorPartIndex = editorPartIndex.coerceIn(0, (currentBook.allSentences.size - 1).coerceAtLeast(0))
             }
         }
+        refreshAfterPartsChanged()
+        ttsSay(tr("KEY_SAVED"))
+    }
+
+    /** Recomputes counts, statuses and the player list after parts were added, edited or removed. */
+    private fun refreshAfterPartsChanged() {
         val finalCount = book?.allSentences?.size ?: 0
         syncBookTitlesFromBook()
         loadedBooksCount = bookTitles.size.coerceAtLeast(if (finalCount > 0) 1 else 0)
@@ -1427,7 +1446,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         editorLoadCurrentPart()
         takeEditorSnapshot()
-        ttsSay(tr("KEY_SAVED"))
+    }
+
+    /** Asks for confirmation before deleting the part currently shown in the editor. */
+    fun requestRemoveCurrentPart() {
+        if (runWork) return
+        val b = book ?: return
+        if (editorPartIndex !in b.allSentences.indices) return
+        val target = editorPartIndex
+        removePendingIsChapter = false
+        removePendingStart = target
+        removePendingCount = 1
+        removePendingChapterTitle = ""
+        dopModal = DopModal.REMOVE_PART
+        ttsSay(tr("KEY_REMOVE_PART"))
+    }
+
+    /** Asks for confirmation before deleting the whole chapter the current part belongs to. */
+    fun requestRemoveCurrentChapter() {
+        if (runWork) return
+        val b = book ?: return
+        if (editorPartIndex !in b.allSentences.indices) return
+        val bounds = findChapterBounds(b, editorPartIndex)
+        removePendingIsChapter = true
+        removePendingStart = bounds.first
+        removePendingCount = bounds.last - bounds.first + 1
+        removePendingChapterTitle = extractDisplayChapterTitle(
+            b.allGlavs.getOrNull(bounds.first).orEmpty()
+        )
+        dopModal = DopModal.REMOVE_CHAPTER
+        ttsSay(tr("KEY_REMOVE_CHAPTER"))
+    }
+
+    fun confirmRemoveEditorSelection() {
+        val wasChapter = removePendingIsChapter
+        val start = removePendingStart
+        val count = removePendingCount
+        val removedParts = count.coerceAtLeast(1)
+        dopModal = DopModal.NONE
+        if (runWork) return
+        val b = book
+        if (b == null || start !in b.allSentences.indices) {
+            resetRemoveSelection()
+            return
+        }
+        if (partPreviewActive) voicePreviewStop()
+        // Keep the chapter title edits the user may have made in the fields above.
+        if (editorPartIndex in b.allSentences.indices) {
+            b.allSentences[editorPartIndex] = textAreaText
+            commitCurrentChapterTitleToBook()
+        }
+        b.removeParts(start, removedParts)
+        if (b.allSentences.isEmpty()) {
+            b.allSentences.add("")
+            b.allGlavs.add("")
+        }
+        textAreaText = ""
+        editorPartIndex = start.coerceIn(0, b.allSentences.lastIndex)
+        resetRemoveSelection()
+        refreshAfterPartsChanged()
+        ttsSay(
+            if (wasChapter) tr("KEY_CHAPTER_REMOVED") else tr("KEY_PART_REMOVED")
+        )
+    }
+
+    fun cancelRemoveEditorSelection() {
+        dopModal = DopModal.NONE
+        resetRemoveSelection()
+        ttsSay(tr("KEY_CANCEL"))
+    }
+
+    private fun resetRemoveSelection() {
+        removePendingIsChapter = false
+        removePendingCount = 0
+        removePendingChapterTitle = ""
     }
 
     fun onEditorPrevPressed() {

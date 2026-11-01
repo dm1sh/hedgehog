@@ -154,13 +154,10 @@ KEY_PARTS_UNIT,parts,Teile,partes,osaa,parties,parti,パート,파트,części,p
 KEY_CHAPTERS_UNIT,chapters,Kapitel,capítulos,lukua,chapitres,capitoli,章,장,rozdziałów,capítulos,глав,章節
 KEY_EMBED_METADATA,Embed cover and metadata into audio files,Cover und Metadaten in Audiodateien einbetten,Incrustar portada y metadatos en los archivos de audio,Upota kansikuva ja metatiedot äänitiedostoihin,Intégrer la couverture et les métadonnées dans les fichiers audio,Incorpora copertina e metadati nei file audio,音声ファイルに表紙とメタデータを埋め込む,오디오 파일에 표지 및 메타데이터 포함,Osadzaj okładkę i metadane w plikach audio,Incorporar capa e metadados nos arquivos de áudio,Встраивать обложку и метаданные в аудиофайлы,在音訊檔案中嵌入封面與元數據
 KEY_FILTER_EMOJIS,Filter out emojis,Emojis herausfiltern,Filtrar emojis,Suodata emojit pois,Filtrer les émojis,Filtra le emoji,絵文字を除外する,이모지 필터링,Filtruj emotikony,Filtrar emojis,Фильтровать эмодзи,過濾表情符號
-
-
-
-
-
-
-
-
-
-
+KEY_REMOVE_PART,Remove part,Teil entfernen,Eliminar parte,Poista osa,Supprimer la partie,Rimuovi parte,パートを削除,파트 삭제,Usuń część,Remover parte,Удалить часть,刪除部份
+KEY_REMOVE_CHAPTER,Remove chapter,Kapitel entfernen,Eliminar capítulo,Poista luku,Supprimer le chapitre,Rimuovi capitolo,章を削除,장 삭제,Usuń rozdział,Remover capítulo,Удалить главу,刪除章節
+KEY_REMOVE_PART_CONFIRM,Delete this part from the book?,Diesen Teil aus dem Buch löschen?,¿Eliminar esta parte del libro?,Poistetaanko tämä osa kirjasta?,Supprimer cette partie du livre ?,Rimuovere questa parte dal libro?,このパートを本から削除しますか？,이 파트를 책에서 삭제할까요?,Usunąć tę część z książki?,Remover esta parte do livro?,Удалить эту часть из книги?,要從書中刪除此部份嗎？
+KEY_REMOVE_CHAPTER_CONFIRM,Delete this chapter and all of its parts from the book?,Dieses Kapitel und alle seine Teile aus dem Buch löschen?,¿Eliminar este capítulo y todas sus partes del libro?,Poistetaanko tämä luku ja kaikki sen osat kirjasta?,Supprimer ce chapitre et toutes ses parties du livre ?,Rimuovere questo capitolo e tutte le sue parti dal libro?,この章とそのすべてのパートを本から削除しますか？,이 장과 모든 파트를 책에서 삭제할까요?,Usunąć ten rozdział i wszystkie jego części z książki?,Remover este capítulo e todas as suas partes do livro?,Удалить эту главу и все её части из книги?,要從書中刪除此章節及其所有部份嗎？
+KEY_REMOVE_LONG_PRESS_HINT,Tip: a long press removes the whole chapter,Tipp: langes Drücken entfernt das ganze Kapitel,Consejo: una pulsación larga elimina todo el capítulo,Vihje: pitkä painallus poistaa koko luvun,Astuce : un appui long supprime tout le chapitre,Suggerimento: una pressione lunga rimuove l'intero capitolo,ヒント: 長押しで章全体を削除します,팁: 길게 누르면 전체 장이 삭제됩니다,Wskazówka: długie naciśnięcie usuwa cały rozdział,Dica: um toque longo remove o capítulo inteiro,Подсказка: долгое нажатие удаляет всю главу,提示：長按可刪除整個章節
+KEY_PART_REMOVED,Part removed,Teil entfernt,Parte eliminada,Osa poistettu,Partie supprimée,Parte rimossa,パートを削除しました,파트가 삭제되었습니다,Część usunięta,Parte removida,Часть удалена,已刪除部份
+KEY_CHAPTER_REMOVED,Chapter removed,Kapitel entfernt,Capítulo eliminado,Luku poistettu,Chapitre supprimé,Capitolo rimosso,章を削除しました,장이 삭제되었습니다,Rozdział usunięty,Capítulo removido,Глава удалена,已刪除章節
