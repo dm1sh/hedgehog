@@ -960,7 +960,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val activeLexx = resolveActiveLexxRules()
             val sharedMeta = BookAudioMetadata(title = saveName)
             val createdBook = ProcessingFile(
-                fileName = saveName,
+                fileName = TextsConverter.limitSaveName(saveName),
                 text = text,
                 langLexx = activeLexx,
                 lexxRegister = settings.lexxRegister,
@@ -1084,10 +1084,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 metadata: BookAudioMetadata = BookAudioMetadata(title = saveName)
             ) {
                 if (content.isEmpty()) return
+                /* Keep every derived book/folder name within the filesystem's component limit. */
+                val safeName = TextsConverter.limitSaveName(saveName)
                 val b = currentBook
                 if (b == null) {
                     currentBook = ProcessingFile(
-                        fileName = saveName,
+                        fileName = safeName,
                         text = content,
                         langLexx = activeLexx,
                         lexxRegister = settings.lexxRegister,
@@ -1101,7 +1103,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         metadata = metadata
                     )
                 } else {
-                    b.addNewText(saveName, content, voice, rate, pitch, metadata)
+                    b.addNewText(safeName, content, voice, rate, pitch, metadata)
                 }
             }
 
@@ -2794,6 +2796,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 meta.fileName = "Text ${"%04d".format(i + 1)}"
             }
         }
+        /* Names typed into the Book field are not shrunk automatically; refuse before any work starts. */
+        val overlongBookName = activeBook.fileNames.firstOrNull { meta ->
+            TextsConverter.utf8Length(saveNameStem(meta.fileName)) > TextsConverter.MAX_SAVE_NAME_BYTES
+        }
+        if (overlongBookName != null) {
+            statInfoDoneHighlight = false
+            statInfo = tr("KEY_BOOK_NAME_TOO_LONG")
+            ttsSay(statInfo)
+            return
+        }
         val total = activeBook.allSentences.size
         processedPartsCount = 0
         totalPartsCount = total
@@ -2865,7 +2877,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Ensure each loaded book has a clean, unique book folder/stem name
         val usedBookStems = HashSet<String>()
         val bookFolderNames = activeBook.fileNames.mapIndexed { idx, meta ->
-            val baseStem = File(bookStem(meta.fileName)).name.trim().ifEmpty { "Text ${"%04d".format(idx + 1)}" }
+            val baseStem = saveNameStem(meta.fileName).ifEmpty { "Text ${"%04d".format(idx + 1)}" }
             if (usedBookStems.add(baseStem)) {
                 baseStem
             } else {
@@ -3876,6 +3888,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val ext = f.extension.lowercase()
         return if (AppSettings.BOOK_EXTENSIONS.contains(ext)) f.nameWithoutExtension else name
     }
+
+    /** The save-name component (book folder / output-file stem) derived from a book name. */
+    private fun saveNameStem(name: String): String = File(bookStem(name)).name.trim()
+
+    /** True when an edited book name still fits into a single filesystem path component. */
+    fun bookNameFitsLimit(name: String): Boolean =
+        TextsConverter.utf8Length(saveNameStem(name)) <= TextsConverter.MAX_SAVE_NAME_BYTES
 
     private fun stripBookName(inBookDir: Boolean, dir: String, name: String, glava: String): Boolean {
         val candidate = "$dir/${mp3BaseName(false, name, glava, "0000", merged = true)}.mp3"

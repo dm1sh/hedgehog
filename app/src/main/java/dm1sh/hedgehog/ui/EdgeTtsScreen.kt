@@ -529,11 +529,13 @@ private fun BookTabContent(
                         ) {
                             val multiBooks = vm.bookTitles.size > 1
                             vm.bookTitles.forEachIndexed { idx, title ->
+                                val nameFits = vm.bookNameFitsLimit(title)
                                 OutlinedTextField(
                                     value = title,
                                     onValueChange = { if (!vm.runWork) vm.updateBookTitle(idx, it) },
                                     readOnly = vm.runWork,
                                     singleLine = true,
+                                    isError = !nameFits,
                                     label = {
                                         Text(
                                             text = if (multiBooks) {
@@ -542,6 +544,9 @@ private fun BookTabContent(
                                                 vm.tr("KEY_BOOK")
                                             }
                                         )
+                                    },
+                                    supportingText = if (nameFits) null else {
+                                        { Text(vm.tr("KEY_BOOK_NAME_TOO_LONG")) }
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 )

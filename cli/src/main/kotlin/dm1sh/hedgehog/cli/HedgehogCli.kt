@@ -1015,10 +1015,12 @@ private fun loadBooksIntoProcessingFile(
         metadata: BookAudioMetadata = BookAudioMetadata(title = saveName)
     ) {
         if (content.isBlank()) return
+        /* Keep every derived book/folder name within the filesystem's component limit. */
+        val safeName = TextsConverter.limitSaveName(saveName)
         val b = currentBook
         if (b == null) {
             currentBook = ProcessingFile(
-                fileName = saveName,
+                fileName = safeName,
                 text = content,
                 langLexx = lexxRules,
                 lexxRegister = opts.lexxRegister,
@@ -1032,7 +1034,7 @@ private fun loadBooksIntoProcessingFile(
                 metadata = metadata
             )
         } else {
-            b.addNewText(saveName, content, resolvedVoice, rateStr, pitchStr, metadata)
+            b.addNewText(safeName, content, resolvedVoice, rateStr, pitchStr, metadata)
         }
     }
 

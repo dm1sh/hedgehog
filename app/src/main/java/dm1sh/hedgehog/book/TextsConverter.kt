@@ -500,6 +500,123 @@ object TextsConverter {
         return sb.toString().trim().trimEnd('.')
     }
 
+    /**
+     * Upper bound for a single save-name component (book folder or output-file stem), in UTF-8
+     * bytes. Linux, Android's FUSE/sdcardfs and Windows all limit one path component to 255
+     * bytes, and a Cyrillic letter takes two of them, so a long author list easily overflows and
+     * every write then fails with ENAMETOOLONG. The margin covers the " (2)" disambiguation
+     * suffix and the ".mp3"/".opus" extension.
+     */
+    const val MAX_SAVE_NAME_BYTES = 200
+
+    /** Tail marker for a save name that had to be cut. */
+    private const val NAME_ELLIPSIS = "…"
+
+    /** Suffix of an author list that had to be shortened (Russian "et al."). */
+    private const val ET_AL_SUFFIX = "и др."
+
+    /** UTF-8 length in bytes, computed without encoding the whole string into a ByteArray. */
+    fun utf8Length(text: String): Int {
+        var bytes = 0
+        var index = 0
+        while (index < text.length) {
+            val cp = Character.codePointAt(text, index)
+            bytes += when {
+                cp < 0x80 -> 1
+                cp < 0x800 -> 2
+                cp < 0x10000 -> 3
+                else -> 4
+            }
+            index += Character.charCount(cp)
+        }
+        return bytes
+    }
+
+    /**
+     * Cuts [text] so that it occupies at most [maxBytes] UTF-8 bytes, ending with an ellipsis
+     * when anything was removed. Cuts on a word boundary when one is reasonably close.
+     */
+    fun ellipsizeToBytes(text: String, maxBytes: Int): String {
+        if (text.isEmpty() || maxBytes <= 0) return ""
+        if (utf8Length(text) <= maxBytes) return text
+        val budget = maxBytes - utf8Length(NAME_ELLIPSIS)
+        if (budget <= 0) return ""
+
+        val sb = StringBuilder(text.length)
+        var bytes = 0
+        var index = 0
+        var lastSpace = -1
+        while (index < text.length) {
+            val cp = Character.codePointAt(text, index)
+            val size = when {
+                cp < 0x80 -> 1
+                cp < 0x800 -> 2
+                cp < 0x10000 -> 3
+                else -> 4
+            }
+            if (bytes + size > budget) break
+            if (cp == ' '.code) lastSpace = sb.length
+            sb.appendCodePoint(cp)
+            bytes += size
+            index += Character.charCount(cp)
+        }
+        /* Mid-word cut: back off to the last space unless that would throw away most of the name. */
+        if (index < text.length && sb.isNotEmpty() && Character.codePointAt(text, index) != ' '.code) {
+            if (lastSpace > 0 && lastSpace >= sb.length * 3 / 5) {
+                sb.setLength(lastSpace)
+            }
+        }
+        val trimmed = sb.toString().trimEnd(' ', ',', ';', ':', '-', '.', '–', '—')
+        return if (trimmed.isEmpty()) NAME_ELLIPSIS else trimmed + NAME_ELLIPSIS
+    }
+
+    /** Sanitizes [name] and bounds it to [maxBytes] UTF-8 bytes (see [MAX_SAVE_NAME_BYTES]). */
+    fun limitSaveName(name: String, maxBytes: Int = MAX_SAVE_NAME_BYTES): String =
+        ellipsizeToBytes(sanitizeBookDisplayName(name), maxBytes)
+
+    /**
+     * Builds the "Author - Title" display/save name, shrinking it to [maxBytes] UTF-8 bytes.
+     *
+     * Authors are dropped from the end of the list first and the shortened list ends with
+     * "и др."; at least one author is always kept. If a single author plus the full title still
+     * does not fit, the title is cut and ends with an ellipsis.
+     */
+    fun buildBookDisplayName(
+        authors: List<String>,
+        title: String,
+        maxBytes: Int = MAX_SAVE_NAME_BYTES
+    ): String {
+        val cleanAuthors = authors.map { sanitizeBookDisplayName(it) }.filter { it.isNotEmpty() }
+        val cleanTitle = sanitizeBookDisplayName(title)
+
+        fun combine(authorsText: String): String = when {
+            authorsText.isNotEmpty() && cleanTitle.isNotEmpty() -> "$authorsText - $cleanTitle"
+            authorsText.isNotEmpty() -> authorsText
+            else -> cleanTitle
+        }
+
+        val full = combine(cleanAuthors.joinToString(", "))
+        if (utf8Length(full) <= maxBytes) return full
+        if (cleanAuthors.isEmpty()) return ellipsizeToBytes(cleanTitle, maxBytes)
+
+        for (keep in cleanAuthors.size - 1 downTo 1) {
+            val candidate = combine(cleanAuthors.take(keep).joinToString(", ") + " $ET_AL_SUFFIX")
+            if (utf8Length(candidate) <= maxBytes) return candidate
+        }
+
+        val oneAuthor = if (cleanAuthors.size > 1) "${cleanAuthors[0]} $ET_AL_SUFFIX" else cleanAuthors[0]
+        if (cleanTitle.isNotEmpty()) {
+            val head = "$oneAuthor - "
+            val titleBudget = maxBytes - utf8Length(head) - utf8Length(NAME_ELLIPSIS)
+            /* Keep at least one character of the title next to the ellipsis. */
+            if (titleBudget >= 4) {
+                return head + ellipsizeToBytes(cleanTitle, titleBudget)
+            }
+        }
+        if (utf8Length(oneAuthor) <= maxBytes) return oneAuthor
+        return ellipsizeToBytes(combine(oneAuthor), maxBytes)
+    }
+
     fun extractFb2BookName(fb2String: String, fallbackName: String): String {
         try {
             val tiStart = fb2String.indexOf("<title-info>", ignoreCase = true)
@@ -512,25 +629,19 @@ object TextsConverter {
                         val name = fb2AuthorName(m.groupValues[1]).trim()
                         if (name.isNotEmpty()) authors.add(name)
                     }
-                    val authorStr = authors.joinToString(", ")
                     val titleStr = Regex("(?si)<book-title>(.*?)</book-title>")
                         .find(ti)
                         ?.let { fb2StripTags(it.groupValues[1]).trim() }
                         .orEmpty()
 
-                    val combined = when {
-                        authorStr.isNotEmpty() && titleStr.isNotEmpty() -> "$authorStr - $titleStr"
-                        titleStr.isNotEmpty() -> titleStr
-                        authorStr.isNotEmpty() -> authorStr
-                        else -> ""
-                    }
-                    val clean = sanitizeBookDisplayName(combined)
-                    if (clean.isNotEmpty()) return clean
+                    /* Shrink here, at import, so the Book tab shows the name that will be saved. */
+                    val saveName = buildBookDisplayName(authors, titleStr)
+                    if (saveName.isNotEmpty()) return saveName
                 }
             }
         } catch (_: Exception) {
         }
-        return fallbackName
+        return limitSaveName(fallbackName)
     }
 
     private fun extractFb2CoverHrefId(fb2String: String): String {
@@ -761,22 +872,16 @@ object TextsConverter {
                         val creators = soup.select("dc|creator, creator")
                             .map { it.text().trim() }
                             .filter { it.isNotEmpty() }
-                        val authorStr = creators.joinToString(", ")
                         val titleStr = soup.selectFirst("dc|title, title")?.text()?.trim().orEmpty()
-                        val combined = when {
-                            authorStr.isNotEmpty() && titleStr.isNotEmpty() -> "$authorStr - $titleStr"
-                            titleStr.isNotEmpty() -> titleStr
-                            authorStr.isNotEmpty() -> authorStr
-                            else -> ""
-                        }
-                        val clean = sanitizeBookDisplayName(combined)
-                        if (clean.isNotEmpty()) return clean
+                        /* Shrink here, at import, so the Book tab shows the name that will be saved. */
+                        val saveName = buildBookDisplayName(creators, titleStr)
+                        if (saveName.isNotEmpty()) return saveName
                     }
                 }
             }
         } catch (_: Exception) {
         }
-        return fallbackName
+        return limitSaveName(fallbackName)
     }
 
     fun extractEpubMetadata(epubPath: String, fallbackName: String): BookAudioMetadata {
@@ -1181,8 +1286,8 @@ object TextsConverter {
         }
         val combinedName = when {
             meta.author.isNotBlank() && meta.title.isNotBlank() && meta.title != fallbackName ->
-                sanitizeBookDisplayName("${meta.author} - ${meta.title}").ifEmpty { fallbackName }
-            meta.title.isNotBlank() -> sanitizeBookDisplayName(meta.title).ifEmpty { fallbackName }
+                buildBookDisplayName(listOf(meta.author), meta.title).ifEmpty { limitSaveName(fallbackName) }
+            meta.title.isNotBlank() -> limitSaveName(meta.title).ifEmpty { limitSaveName(fallbackName) }
             else -> extractEpubBookName(epubPath, fallbackName)
         }
         val text = convertEpubToTxt(epubPath, inlineNotes = inlineNotes)
