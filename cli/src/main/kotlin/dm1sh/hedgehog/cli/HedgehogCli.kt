@@ -163,7 +163,7 @@ fun main(args: Array<String>) {
             val opts = parseArgs(args)
 
             if (opts.showVersion) {
-                val ver = object {}.javaClass.`package`?.implementationVersion ?: "1.3.6"
+                val ver = object {}.javaClass.`package`?.implementationVersion ?: "1.3.7"
                 println("hedgehog-cli $ver")
                 return@runBlocking
             }
