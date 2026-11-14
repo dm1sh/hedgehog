@@ -10,6 +10,10 @@ data class AppSettings(
     val useOnlineVoices: Boolean = true,
     val useOnlineVoicesPlayer: Boolean = false,
     val useOnlineVoicesSystemTts: Boolean = false,
+    /* Player-only pauses (ms) inserted between sentences, paragraphs and chapters. */
+    val pauseSentenceMs: Int = DEFAULT_PAUSE_SENTENCE_MS,
+    val pauseParagraphMs: Int = DEFAULT_PAUSE_PARAGRAPH_MS,
+    val pauseChapterMs: Int = DEFAULT_PAUSE_CHAPTER_MS,
     val rate: Int = DEFAULT_RATE,
     val pitch: Int = 0,
     val maxThreads: Int = DEFAULT_MAX_THREADS,
@@ -59,6 +63,14 @@ data class AppSettings(
         const val DEFAULT_INLINE_NOTES = true
         const val DEFAULT_BOOK_CHAPTER = true
         const val DEFAULT_REGEX_GLAVA = "глава |раздел |эпизод |рассказ |chapter "
+
+        /* Player pauses: sentences keep the natural tail, paragraph/chapter boundaries get air. */
+        const val DEFAULT_PAUSE_SENTENCE_MS = 0
+        const val DEFAULT_PAUSE_PARAGRAPH_MS = 350
+        const val DEFAULT_PAUSE_CHAPTER_MS = 1500
+        const val MAX_PAUSE_SENTENCE_MS = 2000
+        const val MAX_PAUSE_PARAGRAPH_MS = 3000
+        const val MAX_PAUSE_CHAPTER_MS = 5000
 
         val RESTART_DELAY_STEPS = listOf(
             10, 20, 30, 40,

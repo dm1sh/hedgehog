@@ -113,6 +113,12 @@ class SettingsRepository(private val context: Context) {
                 useOnlineVoices = s.optBoolean("use_online_voices", true),
                 useOnlineVoicesPlayer = s.optBoolean("use_online_voices_player", false),
                 useOnlineVoicesSystemTts = s.optBoolean("use_online_voices_system_tts", false),
+                pauseSentenceMs = s.optInt("pause_sentence_ms", AppSettings.DEFAULT_PAUSE_SENTENCE_MS)
+                    .coerceIn(0, AppSettings.MAX_PAUSE_SENTENCE_MS),
+                pauseParagraphMs = s.optInt("pause_paragraph_ms", AppSettings.DEFAULT_PAUSE_PARAGRAPH_MS)
+                    .coerceIn(0, AppSettings.MAX_PAUSE_PARAGRAPH_MS),
+                pauseChapterMs = s.optInt("pause_chapter_ms", AppSettings.DEFAULT_PAUSE_CHAPTER_MS)
+                    .coerceIn(0, AppSettings.MAX_PAUSE_CHAPTER_MS),
                 rate = s.optInt("rate", AppSettings.DEFAULT_RATE),
                 pitch = s.optInt("pitch", 0),
                 maxThreads = if (hasAppVersion) s.optInt("max_threads", AppSettings.DEFAULT_MAX_THREADS) else AppSettings.DEFAULT_MAX_THREADS,
@@ -168,6 +174,9 @@ class SettingsRepository(private val context: Context) {
                 put("use_online_voices", settings.useOnlineVoices)
                 put("use_online_voices_player", settings.useOnlineVoicesPlayer)
                 put("use_online_voices_system_tts", settings.useOnlineVoicesSystemTts)
+                put("pause_sentence_ms", settings.pauseSentenceMs)
+                put("pause_paragraph_ms", settings.pauseParagraphMs)
+                put("pause_chapter_ms", settings.pauseChapterMs)
                 put("rate", settings.rate)
                 put("pitch", settings.pitch)
                 put("max_threads", settings.maxThreads)

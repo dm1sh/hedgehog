@@ -18,6 +18,7 @@ import dm1sh.hedgehog.accessibility.ScreenReaderTts
 import dm1sh.hedgehog.book.AudioMetadataTagger
 import dm1sh.hedgehog.book.BookAudioMetadata
 import dm1sh.hedgehog.book.BookConversionIndex
+import dm1sh.hedgehog.book.PlayerSentenceSplitter
 import dm1sh.hedgehog.book.ProcessingFile
 import dm1sh.hedgehog.book.TextsConverter
 import dm1sh.hedgehog.data.SettingsRepository
@@ -578,6 +579,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updateSettings { it.copy(pitch = clamped) }
             invalidatePlayerCache()
             ttsSay("${tr("KEY_PITCH")} ${formatSignedValue(clamped)}Hz")
+        }
+    }
+
+    /** Rounds a stored pause to the slider's step so the label and the thumb agree. */
+    fun pauseStep(valueMs: Int, stepMs: Int): Int =
+        if (stepMs <= 0) valueMs else ((valueMs + stepMs / 2) / stepMs) * stepMs
+
+    fun setPauseSentence(value: Int) {
+        val clamped = pauseStep(value, 50).coerceIn(0, AppSettings.MAX_PAUSE_SENTENCE_MS)
+        if (clamped != settings.pauseSentenceMs) {
+            updateSettings { it.copy(pauseSentenceMs = clamped) }
+            ttsSay("${tr("KEY_PAUSE_SENTENCE")} $clamped ms")
+        }
+    }
+
+    fun setPauseParagraph(value: Int) {
+        val clamped = pauseStep(value, 50).coerceIn(0, AppSettings.MAX_PAUSE_PARAGRAPH_MS)
+        if (clamped != settings.pauseParagraphMs) {
+            updateSettings { it.copy(pauseParagraphMs = clamped) }
+            ttsSay("${tr("KEY_PAUSE_PARAGRAPH")} $clamped ms")
+        }
+    }
+
+    fun setPauseChapter(value: Int) {
+        val clamped = pauseStep(value, 100).coerceIn(0, AppSettings.MAX_PAUSE_CHAPTER_MS)
+        if (clamped != settings.pauseChapterMs) {
+            updateSettings { it.copy(pauseChapterMs = clamped) }
+            ttsSay("${tr("KEY_PAUSE_CHAPTER")} $clamped ms")
         }
     }
 
@@ -1700,143 +1729,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         detectChapters: Boolean = true
     ): List<PlayerSentenceItem> {
         if (parts.isEmpty()) return emptyList()
-        val chapterRegex = try {
-            Regex(
-                settings.regexGlavaCompile.ifEmpty { AppSettings.DEFAULT_REGEX_GLAVA },
-                RegexOption.IGNORE_CASE
+        val pattern = settings.regexGlavaCompile.ifEmpty { AppSettings.DEFAULT_REGEX_GLAVA }
+        return PlayerSentenceSplitter.split(parts, glavs, detectChapters, pattern).map {
+            PlayerSentenceItem(
+                text = it.text,
+                startsNewParagraph = it.startsNewParagraph,
+                startsNewChapter = it.startsNewChapter,
+                chapterTitle = it.chapterTitle
             )
-        } catch (_: Exception) {
-            Regex(AppSettings.DEFAULT_REGEX_GLAVA, RegexOption.IGNORE_CASE)
         }
-        val leadingNumPrefixRegex = Regex("^\\d{4}\\s*")
-        val result = ArrayList<PlayerSentenceItem>(parts.size * 16)
-        var lastPartGlav = ""
-        var pendingParagraphBreak = false
-        var pendingChapterTitle: String? = null
-        var currentChapterTitle: String? = null
-        var consecutiveEmptyLines = 0
-
-        fun emitSentence(raw: String) {
-            val s = raw.trim()
-            if (s.isEmpty()) return
-            val isFirstInBook = result.isEmpty()
-            val isNewChapter = pendingChapterTitle != null
-            if (pendingChapterTitle != null) {
-                currentChapterTitle = pendingChapterTitle
-            }
-            val isNewParagraph = !isFirstInBook && (pendingParagraphBreak || isNewChapter)
-            result.add(
-                PlayerSentenceItem(
-                    text = s,
-                    startsNewParagraph = isNewParagraph,
-                    startsNewChapter = isNewChapter,
-                    chapterTitle = currentChapterTitle
-                )
-            )
-            pendingParagraphBreak = false
-            pendingChapterTitle = null
-        }
-
-        for (partIdx in parts.indices) {
-            val part = parts[partIdx]
-            if (detectChapters) {
-                val rawGlav = glavs.getOrNull(partIdx)?.trim().orEmpty()
-                if (rawGlav.isNotEmpty() && rawGlav != lastPartGlav) {
-                    lastPartGlav = rawGlav
-                    val stripped = rawGlav.replaceFirst(leadingNumPrefixRegex, "").trim()
-                    if (stripped.isNotEmpty()) {
-                        pendingChapterTitle = stripped
-                    } else if (rawGlav != "0000") {
-                        pendingChapterTitle = rawGlav
-                    }
-                }
-            }
-
-            val len = part.length
-            var chunkStart = 0
-            var alnumCount = 0
-            var lastClauseEnd = -1
-            var lastSpace = -1
-            var lineCheckedForChapter = false
-            var i = 0
-            while (i < len) {
-                if (detectChapters && !lineCheckedForChapter) {
-                    lineCheckedForChapter = true
-                    var lineEnd = part.indexOf('\n', i)
-                    if (lineEnd == -1) lineEnd = len
-                    val rawLine = part.substring(i, lineEnd)
-                    val trimmedLine = rawLine.trim()
-                    if (trimmedLine.isEmpty()) {
-                        consecutiveEmptyLines++
-                    } else {
-                        if (trimmedLine.length < 50 && chapterRegex.containsMatchIn(trimmedLine)) {
-                            pendingChapterTitle = trimmedLine
-                        } else if (consecutiveEmptyLines >= 3 && result.isNotEmpty()) {
-                            pendingChapterTitle = trimmedLine.take(60)
-                        }
-                        consecutiveEmptyLines = 0
-                    }
-                }
-
-                val c = part[i]
-                if (Character.isLetterOrDigit(c)) {
-                    alnumCount++
-                } else if (c == ' ' || c == '\t') {
-                    lastSpace = i
-                } else if (c == ',' || c == ':' || c == '—' || c == '-') {
-                    lastClauseEnd = i + 1
-                }
-
-                val isNewline = c == '\n' || c == '\r'
-                val isSentenceEndPunct = (c == '.' || c == '!' || c == '?' || c == '…' || c == ';') &&
-                    (i + 1 == len || part[i + 1].isWhitespace() || part[i + 1] == '"' || part[i + 1] == '»' || part[i + 1] == ')')
-
-                val spanLen = i + 1 - chunkStart
-                if (isNewline) {
-                    if (alnumCount > 0) {
-                        emitSentence(part.substring(chunkStart, i))
-                        pendingParagraphBreak = true
-                    } else if (result.isNotEmpty()) {
-                        pendingParagraphBreak = true
-                    }
-                    chunkStart = i + 1
-                    alnumCount = 0
-                    lastClauseEnd = -1
-                    lastSpace = -1
-                    lineCheckedForChapter = false
-                } else if (isSentenceEndPunct && alnumCount >= 4) {
-                    var endIdx = i + 1
-                    while (endIdx < len && (part[endIdx] == '"' || part[endIdx] == '»' || part[endIdx] == ')')) {
-                        endIdx++
-                    }
-                    emitSentence(part.substring(chunkStart, endIdx))
-                    i = endIdx - 1
-                    chunkStart = endIdx
-                    alnumCount = 0
-                    lastClauseEnd = -1
-                    lastSpace = -1
-                } else if (spanLen >= 340 && alnumCount >= 4) {
-                    val splitAt = when {
-                        lastClauseEnd > chunkStart + 120 -> lastClauseEnd
-                        lastSpace > chunkStart + 120 -> lastSpace
-                        else -> i + 1
-                    }
-                    emitSentence(part.substring(chunkStart, splitAt))
-                    chunkStart = splitAt
-                    alnumCount = 0
-                    lastClauseEnd = -1
-                    lastSpace = -1
-                }
-                i++
-            }
-            if (chunkStart < len && alnumCount > 0) {
-                emitSentence(part.substring(chunkStart, len))
-            }
-            if (result.isNotEmpty()) {
-                pendingParagraphBreak = true
-            }
-        }
-        return result
     }
 
     private fun applyPlayerSentences(
@@ -2354,18 +2255,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             var playIdx = targetStart
             while (isActive && playerRunIdGen.get() == runId && playIdx < total) {
-                if (playIdx > targetStart) {
-                    val nextItem = sentencesSnapshot.getOrNull(playIdx)
-                    val transitionPauseMs = when {
-                        nextItem?.startsNewChapter == true -> 1000L
-                        nextItem?.startsNewParagraph == true -> 450L
-                        else -> 0L
-                    }
-                    if (transitionPauseMs > 0L) {
-                        delay(transitionPauseMs)
-                    }
-                    if (!isActive || playerRunIdGen.get() != runId) break
-                }
                 currentPlayIdxAtomic.set(playIdx)
                 withContext(Dispatchers.Main) {
                     if (playerRunIdGen.get() == runId) {
@@ -2386,6 +2275,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (!finishedOk || !isActive || playerRunIdGen.get() != runId) {
                     break
                 }
+                /* Breathing room before the next sentence, paragraph or chapter starts. */
+                val pauseBeforeNextMs = playerPauseBefore(sentencesSnapshot, playIdx + 1)
+                if (pauseBeforeNextMs > 0) {
+                    delay(pauseBeforeNextMs.toLong())
+                    if (!isActive || playerRunIdGen.get() != runId) {
+                        break
+                    }
+                }
                 playIdx++
                 evictOldBehindPlayheadPlayerFiles(playIdx)
             }
@@ -2401,6 +2298,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * Pause (ms) the built-in player leaves before [nextIndex] starts, taken from the boundary
+     * flags of the sentence that is about to be spoken: a chapter start wins over a paragraph
+     * start, which wins over an ordinary sentence break. Each value is configurable in Settings.
+     */
+    private fun playerPauseBefore(sentences: List<PlayerSentenceItem>, nextIndex: Int): Int {
+        val next = sentences.getOrNull(nextIndex) ?: return 0
+        val current = settings
+        return when {
+            next.startsNewChapter -> current.pauseChapterMs
+            next.startsNewParagraph -> current.pauseParagraphMs
+            else -> current.pauseSentenceMs
+        }.coerceAtLeast(0)
     }
 
     private suspend fun playSinglePlayerFileSuspend(audioFile: File, expectedRunId: Int): Boolean =

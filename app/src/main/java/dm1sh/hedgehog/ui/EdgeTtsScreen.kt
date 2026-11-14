@@ -1259,6 +1259,49 @@ private fun VoiceSettingsGroupContent(vm: MainViewModel) {
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            Text(
+                text = vm.tr("KEY_PLAYER_PAUSES"),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            M3SliderSetting(
+                label = vm.tr("KEY_PAUSE_SENTENCE"),
+                valueText = "${vm.pauseStep(settings.pauseSentenceMs, 50)} ms",
+                value = settings.pauseSentenceMs.toFloat(),
+                valueRange = 0f..AppSettings.MAX_PAUSE_SENTENCE_MS.toFloat(),
+                steps = (AppSettings.MAX_PAUSE_SENTENCE_MS / 50) - 1,
+                onValueChange = { vm.setPauseSentence(it.roundToInt()) }
+            )
+
+            M3SliderSetting(
+                label = vm.tr("KEY_PAUSE_PARAGRAPH"),
+                valueText = "${vm.pauseStep(settings.pauseParagraphMs, 50)} ms",
+                value = settings.pauseParagraphMs.toFloat(),
+                valueRange = 0f..AppSettings.MAX_PAUSE_PARAGRAPH_MS.toFloat(),
+                steps = (AppSettings.MAX_PAUSE_PARAGRAPH_MS / 50) - 1,
+                onValueChange = { vm.setPauseParagraph(it.roundToInt()) }
+            )
+
+            M3SliderSetting(
+                label = vm.tr("KEY_PAUSE_CHAPTER"),
+                valueText = "${vm.pauseStep(settings.pauseChapterMs, 100)} ms",
+                value = settings.pauseChapterMs.toFloat(),
+                valueRange = 0f..AppSettings.MAX_PAUSE_CHAPTER_MS.toFloat(),
+                steps = (AppSettings.MAX_PAUSE_CHAPTER_MS / 100) - 1,
+                onValueChange = { vm.setPauseChapter(it.roundToInt()) }
+            )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         M3SwitchListItem(
             headline = vm.tr("KEY_LOWBITRATE"),
             checked = settings.lowBitrate,
