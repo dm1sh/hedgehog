@@ -17,6 +17,9 @@ object PlayerSentenceSplitter {
     private const val MIN_SPAN_BEFORE_SPLIT = 120
     private const val MIN_ALNUM_FOR_SENTENCE = 4
 
+    /** Quote and bracket characters that may open the word following a dot: «"„ ( [ * */
+    private const val OPENING_CHARS = "\u00AB\u201E\u0022(\u005B\u002A"
+
     /**
      * Lower-case abbreviation stems (without the trailing dot) whose period must not end a
      * sentence. Single letters are handled separately: they cover initials such as
@@ -205,18 +208,18 @@ object PlayerSentenceSplitter {
         val word = token.dropLast(1).trimStart('(', '«', '"', '[')
         if (word.isEmpty() || !word.all { it.isLetter() }) return false
         val isInitial = word.length == 1 && word[0].isUpperCase()
-        if (!isInitial && word.length != 1 && word.lowercase(Locale.ROOT) !in ABBREVIATIONS) return false
-        var next = splitAt
-        while (next < text.length && (text[next] == ' ' || text[next] == '\t')) next++
-        if (next >= text.length) return false
-        val nextChar = text[next]
-        /* Initials continue with a name ("А. П. Чехов"); letter abbreviations continue lowercase. */
+        /* Initials continue with a name ("А. П. Чехов"); everything else continues lowercase. */
+        if (!isInitial && !isLowercaseCapitalRule(text, splitAt)) {
+            if (word.length != 1 && word.lowercase(Locale.ROOT) !in ABBREVIATIONS) return false
+        }
+        val nextChar = firstSignificantCharAfter(text, splitAt) ?: return false
         return if (isInitial) nextChar.isLetter() else nextChar.isLowerCase()
     }
 
     /**
-     * True when the '.' at [dotIndex] closes an abbreviation or an initial rather than a sentence,
-     * so "т. д.", "т. е.", "и пр.", "см. рис." and "А. П. Чехов" stay in one player sentence.
+     * True when the '.' at [dotIndex] closes an abbreviation, an initial or any shortening rather
+     * than a sentence, so "т. д.", "т. е.", "и пр.", "см. рис.", "напр. так" and "А. П. Чехов"
+     * stay in one player sentence.
      */
     fun isAbbreviationDot(text: String, dotIndex: Int): Boolean {
         var start = dotIndex - 1
@@ -225,10 +228,40 @@ object PlayerSentenceSplitter {
         }
         start++
         if (start >= dotIndex) return false
-        val word = text.substring(start, dotIndex).trimEnd('.').lowercase(Locale.ROOT)
-        if (word.isEmpty()) return false
+        val raw = text.substring(start, dotIndex).trimEnd('.')
+        if (raw.isEmpty()) return false
         /* A lone letter is an initial ("А. П. Чехов") or a letter abbreviation ("т. д."). */
-        if (word.length == 1 && word[0].isLetter()) return true
-        return word in ABBREVIATIONS
+        if (raw.length == 1 && raw[0].isLetter()) return true
+        /* Anything in the list, whatever follows it. */
+        if (raw.lowercase(Locale.ROOT) in ABBREVIATIONS) return true
+        /*
+         * Unknown shortening: a real sentence starts with a capital letter, so "слово. слово"
+         * is a shortening ("напр. это", "т. к. так") and not the end of a sentence.
+         */
+        return raw.any { it.isLetter() } && isLowercaseCapitalRule(text, dotIndex + 1)
+    }
+
+    /**
+     * True when the text right after [afterIndex] (the first index past the dot) starts with a
+     * lowercase letter, which in normal prose means the dot belongs to a shortening and not to
+     * the end of a sentence.
+     */
+    private fun isLowercaseCapitalRule(text: String, afterIndex: Int): Boolean {
+        val next = firstSignificantCharAfter(text, afterIndex) ?: return false
+        return next.isLetter() && next.isLowerCase()
+    }
+
+    /**
+     * First character after [index] that is not whitespace or an opening quote/bracket, or null
+     * when the text ends first.
+     */
+    private fun firstSignificantCharAfter(text: String, index: Int): Char? {
+        var i = index
+        while (i < text.length) {
+            val c = text[i]
+            if (!c.isWhitespace() && c !in OPENING_CHARS) return c
+            i++
+        }
+        return null
     }
 }
